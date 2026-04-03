@@ -181,36 +181,10 @@ def get_current_user_email():
         return ""
 
 
-def show_login_screen():
-    st.title("Pricing App v13 - Full Version")
-    st.info("Please log in to continue.")
-
-    # DEBUG - remove later
-    debug_client_id = st.secrets["auth"]["client_id"]
-    st.code(f"Loaded client_id starts with: {debug_client_id[:20]}")
-    st.code(f"Loaded redirect_uri: {st.secrets['auth']['redirect_uri']}")
-
-    c1, c2, c3 = st.columns([1, 2, 1])
-    with c2:
-        st.button(
-            "Login with Google",
-            on_click=st.login,
-            use_container_width=True,
-            key="login_google_button"
-        )
-
-
-if not st.user.is_logged_in:
-    show_login_screen()
-    st.stop()
-
-
 with st.sidebar:
     st.success("Logged in")
     st.write(f"User: {get_current_user_email() or get_current_user_id()}")
 
-
-st.title("Pricing App v13 - Full Version")
 
 BASE_DIR = Path(__file__).parent
 DATA_DIR = BASE_DIR / "data"
