@@ -1,7 +1,7 @@
 __pycache__/
 *.pyc
 .env
-.streamlit/secrets.toml
 data/
 uploads/
 companies.csv
+.streamlit/secrets.toml
