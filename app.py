@@ -5,6 +5,7 @@ from pathlib import Path
 from datetime import date
 import re
 import io
+st.title("NEW TEST TITLE")
 
 from supabase import create_client, Client
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
