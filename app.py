@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 import pandas as pd
 from pathlib import Path
@@ -8,6 +9,147 @@ import io
 from supabase import create_client, Client
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+
+
+# -------------------------------------------------
+# RENDER -> CREATE .streamlit/secrets.toml FROM ENV
+# -------------------------------------------------
+BASE_DIR = Path(__file__).parent
+STREAMLIT_DIR = BASE_DIR / ".streamlit"
+STREAMLIT_DIR.mkdir(parents=True, exist_ok=True)
+SECRETS_FILE = STREAMLIT_DIR / "secrets.toml"
+
+
+def _escape_toml(value: str) -> str:
+    return str(value).replace("\\", "\\\\").replace('"', '\\"')
+
+
+def ensure_render_secrets_file():
+    if SECRETS_FILE.exists():
+        return
+
+    auth_redirect_uri = os.getenv("AUTH_REDIRECT_URI", "")
+    auth_cookie_secret = os.getenv("AUTH_COOKIE_SECRET", "")
+    auth_client_id = os.getenv("AUTH_CLIENT_ID", "")
+    auth_client_secret = os.getenv("AUTH_CLIENT_SECRET", "")
+    auth_server_metadata_url = os.getenv("AUTH_SERVER_METADATA_URL", "")
+
+    supabase_url = os.getenv("SUPABASE_URL", "")
+    supabase_key = os.getenv("SUPABASE_KEY", "")
+
+    required = [
+        auth_redirect_uri,
+        auth_cookie_secret,
+        auth_client_id,
+        auth_client_secret,
+        auth_server_metadata_url,
+    ]
+
+    if not all(required):
+        return
+
+    content = f'''SUPABASE_URL = "{_escape_toml(supabase_url)}"
+SUPABASE_KEY = "{_escape_toml(supabase_key)}"
+
+[auth]
+redirect_uri = "{_escape_toml(auth_redirect_uri)}"
+cookie_secret = "{_escape_toml(auth_cookie_secret)}"
+client_id = "{_escape_toml(auth_client_id)}"
+client_secret = "{_escape_toml(auth_client_secret)}"
+server_metadata_url = "{_escape_toml(auth_server_metadata_url)}"
+'''
+
+    SECRETS_FILE.write_text(content, encoding="utf-8")
+
+
+ensure_render_secrets_file()
+
+
+# -------------------------------------------------
+# APP CONFIG + AUTH + SUPABASE
+# -------------------------------------------------
+st.set_page_config(layout="wide")
+
+
+@st.cache_resource
+def get_supabase() -> Client:
+    supabase_url = st.secrets["SUPABASE_URL"]
+    supabase_key = st.secrets["SUPABASE_KEY"]
+    return create_client(supabase_url, supabase_key)
+
+
+def get_current_user_id():
+    try:
+        return st.user.get("sub") or st.user.get("email") or "anonymous"
+    except Exception:
+        return "anonymous"
+
+
+def get_current_user_email():
+    try:
+        return st.user.get("email", "")
+    except Exception:
+        return ""
+
+
+def auth_is_configured():
+    try:
+        auth_cfg = st.secrets["auth"]
+        required = [
+            auth_cfg["redirect_uri"],
+            auth_cfg["cookie_secret"],
+            auth_cfg["client_id"],
+            auth_cfg["client_secret"],
+            auth_cfg["server_metadata_url"],
+        ]
+        return all(required)
+    except Exception:
+        return False
+
+
+def is_logged_in():
+    try:
+        return bool(st.user.is_logged_in)
+    except Exception:
+        return False
+
+
+def show_login_screen():
+    st.title("Pricing App v13 - Full Version")
+    st.info("Please log in to continue.")
+
+    c1, c2, c3 = st.columns([1, 2, 1])
+    with c2:
+        st.button(
+            "Login with Google",
+            on_click=st.login,
+            use_container_width=True,
+            key="login_google_button"
+        )
+
+
+if not auth_is_configured():
+    st.error("Authentication is not configured correctly.")
+    st.stop()
+
+
+if not is_logged_in():
+    show_login_screen()
+    st.stop()
+
+
+with st.sidebar:
+    st.success("Logged in")
+    st.write(f"User: {get_current_user_email() or get_current_user_id()}")
+
+    st.button(
+        "Logout",
+        on_click=st.logout,
+        use_container_width=True,
+        key="logout_button"
+    )
+
+st.title("Pricing App v13 - Full Version")
 
 
 # -------------------------------------------------
