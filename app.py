@@ -209,12 +209,6 @@ with st.sidebar:
     st.success("Logged in")
     st.write(f"User: {get_current_user_email() or get_current_user_id()}")
 
-    st.button(
-        "Logout",
-        on_click=st.logout,
-        use_container_width=True,
-        key="logout_button"
-    )
 
 st.title("Pricing App v13 - Full Version")
 
