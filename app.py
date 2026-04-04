@@ -187,13 +187,13 @@ with st.sidebar:
 
 
 BASE_DIR = Path(__file__).parent
-DATA_DIR = BASE_DIR / "data"
-DATA_DIR.mkdir(exist_ok=True)
 
-# 👉 μοναδικό ID user
-user_id = get_current_user_id().replace("@", "_").replace(".", "_")
+PERSIST_ROOT = Path(os.getenv("PERSIST_ROOT", "/var/data"))
+PERSIST_ROOT.mkdir(parents=True, exist_ok=True)
 
-USER_DIR = DATA_DIR / user_id
+user_id = get_current_user_id().replace("@", "_").replace(".", "_").replace("/", "_").replace("\\", "_")
+
+USER_DIR = PERSIST_ROOT / user_id
 UPLOADS_DIR = USER_DIR / "uploads"
 COMPANIES_FILE = USER_DIR / "companies.csv"
 
