@@ -309,6 +309,29 @@ if not current_user_is_approved():
     )
     st.stop()
 
+ensure_current_user_in_registry()
+touch_current_user()
+
+if current_user_is_blocked():
+    st.error("Access denied. Your account has been blocked.")
+    st.button(
+        "Logout",
+        on_click=st.logout,
+        use_container_width=True,
+        key="blocked_logout_button"
+    )
+    st.stop()
+
+if not current_user_is_approved():
+    st.warning("Your account is pending admin approval.")
+    st.button(
+        "Logout",
+        on_click=st.logout,
+        use_container_width=True,
+        key="pending_logout_button"
+    )
+    st.stop()
+
 
 with st.sidebar:
     st.success("Logged in")
@@ -369,6 +392,150 @@ UPLOADS_DIR = USER_DIR / "uploads"
 COMPANIES_FILE = USER_DIR / "companies.csv"
 
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+
+import json
+from datetime import datetime, timedelta
+
+ADMIN_DIR = PERSIST_ROOT / "_admin"
+ADMIN_DIR.mkdir(parents=True, exist_ok=True)
+
+USERS_REGISTRY_FILE = ADMIN_DIR / "users_registry.json"
+
+ADMIN_EMAILS = [
+    "gmyl13@gmail.com"
+]
+
+
+def load_json_data(path: Path, default):
+    if not path.exists():
+        return default
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return default
+
+
+def save_json_data(path: Path, data):
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def now_iso():
+    return datetime.utcnow().isoformat()
+
+
+def parse_iso(value):
+    try:
+        return datetime.fromisoformat(value)
+    except Exception:
+        return None
+
+
+def get_user_identity():
+    try:
+        return {
+            "email": st.user.get("email", "").strip(),
+            "sub": st.user.get("sub", "").strip(),
+            "name": st.user.get("name", "").strip(),
+        }
+    except Exception:
+        return {
+            "email": "",
+            "sub": "",
+            "name": "",
+        }
+
+
+def load_users_registry():
+    return load_json_data(USERS_REGISTRY_FILE, [])
+
+
+def save_users_registry(data):
+    save_json_data(USERS_REGISTRY_FILE, data)
+
+
+def is_admin_user():
+    user = get_user_identity()
+    return user["email"] in ADMIN_EMAILS
+
+
+def find_user_index(users, email, sub):
+    for i, row in enumerate(users):
+        if row.get("email") == email and row.get("sub") == sub:
+            return i
+    return None
+
+
+def ensure_current_user_in_registry():
+    user = get_user_identity()
+    users = load_users_registry()
+
+    idx = find_user_index(users, user["email"], user["sub"])
+    if idx is None:
+        status = "approved" if user["email"] in ADMIN_EMAILS else "pending"
+        users.append({
+            "email": user["email"],
+            "sub": user["sub"],
+            "name": user["name"],
+            "status": status,
+            "first_seen": now_iso(),
+            "last_login": now_iso(),
+            "last_seen": now_iso(),
+        })
+    else:
+        users[idx]["name"] = user["name"]
+        users[idx]["last_login"] = now_iso()
+        users[idx]["last_seen"] = now_iso()
+
+    save_users_registry(users)
+
+
+def touch_current_user():
+    user = get_user_identity()
+    users = load_users_registry()
+
+    idx = find_user_index(users, user["email"], user["sub"])
+    if idx is not None:
+        users[idx]["last_seen"] = now_iso()
+        save_users_registry(users)
+
+
+def get_current_user_status():
+    user = get_user_identity()
+    users = load_users_registry()
+
+    idx = find_user_index(users, user["email"], user["sub"])
+    if idx is None:
+        return "pending"
+
+    return users[idx].get("status", "pending")
+
+
+def current_user_is_blocked():
+    return get_current_user_status() == "blocked"
+
+
+def current_user_is_approved():
+    return get_current_user_status() == "approved"
+
+
+def set_user_status(email, sub, new_status):
+    users = load_users_registry()
+    idx = find_user_index(users, email, sub)
+
+    if idx is not None:
+        users[idx]["status"] = new_status
+        save_users_registry(users)
+
+
+def online_status_from_last_seen(last_seen_value):
+    dt = parse_iso(last_seen_value)
+    if dt is None:
+        return "Offline"
+
+    if datetime.utcnow() - dt <= timedelta(minutes=2):
+        return "Online"
+
+    return "Offline"
 
 import json
 from datetime import datetime, timedelta
@@ -1251,6 +1418,77 @@ if not export_df.empty:
     )
 else:
     st.info("No data available for export yet.")
+
+# -------------------------------------------------
+# 8. ADMIN PANEL
+# -------------------------------------------------
+if is_admin_user():
+    st.markdown("---")
+    st.markdown("## 8. Admin Panel")
+
+    users_registry = load_users_registry()
+
+    if users_registry:
+        users_for_view = []
+        for row in users_registry:
+            users_for_view.append({
+                "Email": row.get("email", ""),
+                "Name": row.get("name", ""),
+                "Status": row.get("status", "pending"),
+                "First Seen": row.get("first_seen", ""),
+                "Last Login": row.get("last_login", ""),
+                "Last Seen": row.get("last_seen", ""),
+                "Online": online_status_from_last_seen(row.get("last_seen", "")),
+                "Sub": row.get("sub", ""),
+            })
+
+        users_df = pd.DataFrame(users_for_view)
+        st.dataframe(users_df, use_container_width=True, hide_index=True)
+
+        user_options = {}
+        for row in users_registry:
+            label = f"{row.get('email', '')} | {row.get('status', '')} | {online_status_from_last_seen(row.get('last_seen', ''))}"
+            user_options[label] = row
+
+        selected_user_label = st.selectbox(
+            "Select user",
+            [""] + list(user_options.keys()),
+            key="admin_selected_user_to_manage"
+        )
+
+        c1, c2, c3 = st.columns(3)
+
+        with c1:
+            if st.button("Approve User", key="approve_user_button"):
+                if not selected_user_label:
+                    st.warning("Please select a user.")
+                else:
+                    row = user_options[selected_user_label]
+                    set_user_status(row.get("email", ""), row.get("sub", ""), "approved")
+                    st.success(f"Approved: {row.get('email', '')}")
+                    st.rerun()
+
+        with c2:
+            if st.button("Block User", key="block_user_button"):
+                if not selected_user_label:
+                    st.warning("Please select a user.")
+                else:
+                    row = user_options[selected_user_label]
+                    set_user_status(row.get("email", ""), row.get("sub", ""), "blocked")
+                    st.success(f"Blocked: {row.get('email', '')}")
+                    st.rerun()
+
+        with c3:
+            if st.button("Set Pending", key="pending_user_button"):
+                if not selected_user_label:
+                    st.warning("Please select a user.")
+                else:
+                    row = user_options[selected_user_label]
+                    set_user_status(row.get("email", ""), row.get("sub", ""), "pending")
+                    st.success(f"Set to pending: {row.get('email', '')}")
+                    st.rerun()
+    else:
+        st.info("No users found yet.")
 
 # -------------------------------------------------
 # 8. ADMIN PANEL
