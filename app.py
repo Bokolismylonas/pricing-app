@@ -132,7 +132,150 @@ def show_login_screen():
 if not auth_is_configured():
     st.error("Authentication is not configured correctly.")
     st.stop()
+import json
+from datetime import datetime, timedelta
 
+ROOT_STORAGE = PERSIST_ROOT
+ADMIN_DIR = ROOT_STORAGE / "_admin"
+ADMIN_DIR.mkdir(parents=True, exist_ok=True)
+
+USERS_REGISTRY_FILE = ADMIN_DIR / "users_registry.json"
+
+ADMIN_EMAILS = [
+    "gmyl13@gmail.com"
+]
+
+
+def load_json_data(path: Path, default):
+    if not path.exists():
+        return default
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return default
+
+
+def save_json_data(path: Path, data):
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def now_iso():
+    return datetime.utcnow().isoformat()
+
+
+def parse_iso(value):
+    try:
+        return datetime.fromisoformat(value)
+    except Exception:
+        return None
+
+
+def get_user_identity():
+    try:
+        return {
+            "email": st.user.get("email", "").strip(),
+            "sub": st.user.get("sub", "").strip(),
+            "name": st.user.get("name", "").strip(),
+        }
+    except Exception:
+        return {
+            "email": "",
+            "sub": "",
+            "name": "",
+        }
+
+
+def load_users_registry():
+    return load_json_data(USERS_REGISTRY_FILE, [])
+
+
+def save_users_registry(data):
+    save_json_data(USERS_REGISTRY_FILE, data)
+
+
+def is_admin_user():
+    user = get_user_identity()
+    return user["email"] in ADMIN_EMAILS
+
+
+def find_user_index(users, email, sub):
+    for i, row in enumerate(users):
+        if row.get("email") == email and row.get("sub") == sub:
+            return i
+    return None
+
+
+def ensure_current_user_in_registry():
+    user = get_user_identity()
+    users = load_users_registry()
+
+    idx = find_user_index(users, user["email"], user["sub"])
+    if idx is None:
+        status = "approved" if user["email"] in ADMIN_EMAILS else "pending"
+        users.append({
+            "email": user["email"],
+            "sub": user["sub"],
+            "name": user["name"],
+            "status": status,
+            "first_seen": now_iso(),
+            "last_login": now_iso(),
+            "last_seen": now_iso(),
+        })
+    else:
+        users[idx]["name"] = user["name"]
+        users[idx]["last_login"] = now_iso()
+        users[idx]["last_seen"] = now_iso()
+
+    save_users_registry(users)
+
+
+def touch_current_user():
+    user = get_user_identity()
+    users = load_users_registry()
+
+    idx = find_user_index(users, user["email"], user["sub"])
+    if idx is not None:
+        users[idx]["last_seen"] = now_iso()
+        save_users_registry(users)
+
+
+def get_current_user_status():
+    user = get_user_identity()
+    users = load_users_registry()
+
+    idx = find_user_index(users, user["email"], user["sub"])
+    if idx is None:
+        return "pending"
+
+    return users[idx].get("status", "pending")
+
+
+def current_user_is_blocked():
+    return get_current_user_status() == "blocked"
+
+
+def current_user_is_approved():
+    return get_current_user_status() == "approved"
+
+
+def set_user_status(email, sub, new_status):
+    users = load_users_registry()
+    idx = find_user_index(users, email, sub)
+
+    if idx is not None:
+        users[idx]["status"] = new_status
+        save_users_registry(users)
+
+
+def online_status_from_last_seen(last_seen_value):
+    dt = parse_iso(last_seen_value)
+    if dt is None:
+        return "Offline"
+
+    if datetime.utcnow() - dt <= timedelta(minutes=2):
+        return "Online"
+
+    return "Offline"
 
 if not is_logged_in():
     show_login_screen()
