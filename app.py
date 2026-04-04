@@ -135,6 +135,11 @@ if not auth_is_configured():
 import json
 from datetime import datetime, timedelta
 
+from pathlib import Path
+
+PERSIST_ROOT = Path("/opt/render/project/src/data")
+PERSIST_ROOT.mkdir(parents=True, exist_ok=True)
+
 ROOT_STORAGE = PERSIST_ROOT
 ADMIN_DIR = ROOT_STORAGE / "_admin"
 ADMIN_DIR.mkdir(parents=True, exist_ok=True)
