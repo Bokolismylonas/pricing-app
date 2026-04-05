@@ -90,7 +90,7 @@ def stripe_webhook():
         customer_id = data_object.get("customer")
         if customer_id:
             customer = stripe.Customer.retrieve(customer_id)
-            customer_email = customer.get("email")
+            customer_email = customer.email
 
         status = data_object.get("status", "active")
         if customer_email and status in ["trialing", "active"]:
@@ -101,7 +101,7 @@ def stripe_webhook():
         customer_id = data_object.get("customer")
         if customer_id:
             customer = stripe.Customer.retrieve(customer_id)
-            customer_email = customer.get("email")
+            customer_email = customer.email
 
         status = data_object.get("status", "")
         if customer_email:
@@ -115,7 +115,7 @@ def stripe_webhook():
         customer_id = data_object.get("customer")
         if customer_id:
             customer = stripe.Customer.retrieve(customer_id)
-            customer_email = customer.get("email")
+            customer_email = customer.email
 
         if customer_email:
             set_user_premium(customer_email, False, "canceled")
