@@ -666,18 +666,17 @@ def get_catalog_row(df, display_value):
     return rows.iloc[0]
 
 
-def row_result_dict(visible_index, row_id, catalogs):
+def row_result_dict(visible_index, row_id, catalogs, selected_codes):
     result = {"Row": visible_index + 1}
-
-    supplier_info = {
-        "SINIAT": ("Siniat", catalogs.get("SINIAT")),
-        "KNAUF": ("Knauf", catalogs.get("KNAUF")),
-        "SAINT_GOBAIN": ("Saint-Gobain", catalogs.get("SAINT_GOBAIN")),
-    }
-
     final_prices = {}
 
-    for code, (label, df) in supplier_info.items():
+    for code in selected_codes:
+        company_name_row = companies_df[companies_df["code"] == code]
+        label = code
+        if not company_name_row.empty:
+            label = company_name_row.iloc[0]["name"]
+
+        df = catalogs.get(code)
         selected_product = st.session_state.get(f"row_{row_id}_{code}_product", "")
         row = get_catalog_row(df, selected_product)
 
@@ -709,18 +708,22 @@ def row_result_dict(visible_index, row_id, catalogs):
                 result[f"{label} Disc{i}"] = st.session_state.get(f"row_{row_id}_{code}_disc_{i}", 0.0)
             result[f"{label} Final Price"] = ""
 
-    result["Best Price"] = best_price(final_prices)
-    result["Knauf vs Siniat"] = compare_note("Knauf", final_prices.get("KNAUF"), "Siniat", final_prices.get("SINIAT"))
-    result["Saint-Gobain vs Siniat"] = compare_note("Saint-Gobain", final_prices.get("SAINT_GOBAIN"), "Siniat", final_prices.get("SINIAT"))
-    result["Saint-Gobain vs Knauf"] = compare_note("Saint-Gobain", final_prices.get("SAINT_GOBAIN"), "Knauf", final_prices.get("KNAUF"))
+    valid = {k: v for k, v in final_prices.items() if v is not None}
+    if valid:
+        best_code = min(valid, key=valid.get)
+        best_name_row = companies_df[companies_df["code"] == best_code]
+        best_label = best_code if best_name_row.empty else best_name_row.iloc[0]["name"]
+        result["Best Price"] = best_label
+    else:
+        result["Best Price"] = ""
 
     return result
 
 
-def build_export_dataframe(row_ids, catalogs):
+def build_export_dataframe(row_ids, catalogs, selected_codes):
     rows = []
     for visible_index, row_id in enumerate(row_ids):
-        rows.append(row_result_dict(visible_index, row_id, catalogs))
+        rows.append(row_result_dict(visible_index, row_id, catalogs, selected_codes))
     return pd.DataFrame(rows)
 
 
@@ -1010,27 +1013,45 @@ with src_d2:
 st.markdown("---")
 st.markdown("## 4. Select Saved Sources for Comparison")
 
-codes = MAIN_CODES
-cols = st.columns(3)
+company_options = {
+    f"{row['name']} ({row['code']})": row["code"]
+    for _, row in companies_df.iterrows()
+}
+
+selected_company_displays = st.multiselect(
+    "Select up to 3 companies to compare",
+    options=list(company_options.keys()),
+    default=[],
+    max_selections=3,
+    key="comparison_company_selection"
+)
+
+selected_codes = [company_options[x] for x in selected_company_displays]
+
+if not selected_codes:
+    st.info("Please select at least 1 company for comparison.")
+
 selected = {}
-
-for i, code in enumerate(codes):
-    with cols[i]:
-        if code in companies_df["code"].astype(str).str.upper().tolist():
-            files = get_company_files(code)
-            selected[code] = st.selectbox(code, [""] + files, key=f"select_{code}")
-        else:
-            selected[code] = ""
-            st.info(f"{code} is not available in the company list.")
-
 catalogs = {}
 
-for code in codes:
-    if selected[code]:
-        df = load_data(get_company_folder(code) / selected[code])
-        catalogs[code] = prepare_catalog(df)
-    else:
-        catalogs[code] = None
+if selected_codes:
+    cols = st.columns(len(selected_codes))
+
+    for i, code in enumerate(selected_codes):
+        with cols[i]:
+            files = get_company_files(code)
+            selected[code] = st.selectbox(
+                f"{code} source file",
+                [""] + files,
+                key=f"select_{code}"
+            )
+
+    for code in selected_codes:
+        if selected.get(code):
+            df = load_data(get_company_folder(code) / selected[code])
+            catalogs[code] = prepare_catalog(df)
+        else:
+            catalogs[code] = None
 
 
 # -------------------------------------------------
@@ -1039,22 +1060,15 @@ for code in codes:
 st.markdown("---")
 st.markdown("## 5. Debug")
 
-d1, d2, d3 = st.columns(3)
-
-with d1:
-    st.write("Selected Siniat file:", selected.get("SINIAT", ""))
-    if catalogs["SINIAT"] is not None:
-        st.write("Siniat prepared rows:", len(catalogs["SINIAT"]))
-
-with d2:
-    st.write("Selected Knauf file:", selected.get("KNAUF", ""))
-    if catalogs["KNAUF"] is not None:
-        st.write("Knauf prepared rows:", len(catalogs["KNAUF"]))
-
-with d3:
-    st.write("Selected Saint-Gobain file:", selected.get("SAINT_GOBAIN", ""))
-    if catalogs["SAINT_GOBAIN"] is not None:
-        st.write("Saint-Gobain prepared rows:", len(catalogs["SAINT_GOBAIN"]))
+if selected_codes:
+    dbg_cols = st.columns(len(selected_codes))
+    for i, code in enumerate(selected_codes):
+        with dbg_cols[i]:
+            st.write(f"Selected {code} file:", selected.get(code, ""))
+            if catalogs.get(code) is not None:
+                st.write(f"{code} prepared rows:", len(catalogs[code]))
+else:
+    st.info("No comparison companies selected yet.")
 
 
 # -------------------------------------------------
@@ -1063,103 +1077,102 @@ with d3:
 st.markdown("---")
 st.markdown("## 6. Multi-Line Comparison")
 
-b1, b2 = st.columns([1, 3])
+if not selected_codes:
+    st.info("Select companies first to start comparison.")
+else:
+    b1, b2 = st.columns([1, 3])
 
-with b1:
-    if st.button("Add Row", key="add_row_button"):
-        st.session_state.row_ids.append(st.session_state.next_row_id)
-        st.session_state.next_row_id += 1
-        st.rerun()
-
-with b2:
-    st.info(f"Current rows: {len(st.session_state.row_ids)}")
-
-for visible_index, row_id in enumerate(st.session_state.row_ids):
-    top1, top2 = st.columns([4, 1])
-
-    with top1:
-        st.markdown(f"### Row {visible_index + 1}")
-
-    with top2:
-        st.write("")
-        if st.button("Delete This Row", key=f"delete_row_{row_id}"):
-            st.session_state.row_ids = [r for r in st.session_state.row_ids if r != row_id]
+    with b1:
+        if st.button("Add Row", key="add_row_button"):
+            st.session_state.row_ids.append(st.session_state.next_row_id)
+            st.session_state.next_row_id += 1
             st.rerun()
 
-    row_cols = st.columns(3)
-    row_final_prices = {}
+    with b2:
+        st.info(f"Current rows: {len(st.session_state.row_ids)}")
 
-    company_meta = {
-        "SINIAT": {"label": "SINIAT", "catalog": catalogs.get("SINIAT")},
-        "KNAUF": {"label": "KNAUF", "catalog": catalogs.get("KNAUF")},
-        "SAINT_GOBAIN": {"label": "SAINT-GOBAIN", "catalog": catalogs.get("SAINT_GOBAIN")},
-    }
+    for visible_index, row_id in enumerate(st.session_state.row_ids):
+        top1, top2 = st.columns([4, 1])
 
-    for col_idx, code in enumerate(codes):
-        with row_cols[col_idx]:
-            st.write(f"#### {company_meta[code]['label']}")
-            df = company_meta[code]["catalog"]
+        with top1:
+            st.markdown(f"### Row {visible_index + 1}")
 
-            if df is not None and not df.empty:
-                options = [""] + df["DISPLAY"].tolist()
-                selected_product = st.selectbox(
-                    f"{company_meta[code]['label']} product",
-                    options,
-                    key=f"row_{row_id}_{code}_product"
-                )
+        with top2:
+            st.write("")
+            if st.button("Delete This Row", key=f"delete_row_{row_id}"):
+                st.session_state.row_ids = [r for r in st.session_state.row_ids if r != row_id]
+                st.rerun()
 
-                row = get_catalog_row(df, selected_product)
+        row_cols = st.columns(len(selected_codes))
+        row_final_prices = {}
 
-                if row is not None:
-                    st.write("SAP:", row["SAP"])
-                    st.write("MM:", row["MM"])
-                    st.write("Package:", row["Package"])
-                    st.write("Base Price:", round(float(row["Price"]), 2))
+        for col_idx, code in enumerate(selected_codes):
+            with row_cols[col_idx]:
+                company_name_row = companies_df[companies_df["code"] == code]
+                label = code if company_name_row.empty else company_name_row.iloc[0]["name"]
 
-                    discs = []
-                    for j in range(1, 6):
-                        disc_val = st.number_input(
-                            f"{company_meta[code]['label']} Disc {j}",
-                            min_value=0.0,
-                            max_value=100.0,
-                            value=0.0,
-                            step=0.1,
-                            key=f"row_{row_id}_{code}_disc_{j}"
-                        )
-                        discs.append(disc_val)
+                st.write(f"#### {label}")
+                df = catalogs.get(code)
 
-                    final = apply_discounts(row["Price"], discs)
-                    row_final_prices[code] = final
-                    st.success(f"Final Price: {final}")
+                if df is not None and not df.empty:
+                    options = [""] + df["DISPLAY"].tolist()
+                    selected_product = st.selectbox(
+                        f"{label} product",
+                        options,
+                        key=f"row_{row_id}_{code}_product"
+                    )
+
+                    row = get_catalog_row(df, selected_product)
+
+                    if row is not None:
+                        st.write("SAP:", row["SAP"])
+                        st.write("MM:", row["MM"])
+                        st.write("Package:", row["Package"])
+                        st.write("Base Price:", round(float(row["Price"]), 2))
+
+                        discs = []
+                        for j in range(1, 6):
+                            disc_val = st.number_input(
+                                f"{label} Disc {j}",
+                                min_value=0.0,
+                                max_value=100.0,
+                                value=0.0,
+                                step=0.1,
+                                key=f"row_{row_id}_{code}_disc_{j}"
+                            )
+                            discs.append(disc_val)
+
+                        final = apply_discounts(row["Price"], discs)
+                        row_final_prices[code] = final
+                        st.success(f"Final Price: {final}")
+                    else:
+                        for j in range(1, 6):
+                            st.number_input(
+                                f"{label} Disc {j}",
+                                min_value=0.0,
+                                max_value=100.0,
+                                value=0.0,
+                                step=0.1,
+                                key=f"row_{row_id}_{code}_disc_{j}"
+                            )
+                        row_final_prices[code] = None
+                        st.info("No product selected")
                 else:
-                    for j in range(1, 6):
-                        st.number_input(
-                            f"{company_meta[code]['label']} Disc {j}",
-                            min_value=0.0,
-                            max_value=100.0,
-                            value=0.0,
-                            step=0.1,
-                            key=f"row_{row_id}_{code}_disc_{j}"
-                        )
                     row_final_prices[code] = None
-                    st.info("No product selected")
+                    st.info("No data")
+
+        if row_final_prices:
+            valid = {k: v for k, v in row_final_prices.items() if v is not None}
+            if valid:
+                best_code = min(valid, key=valid.get)
+                best_name_row = companies_df[companies_df["code"] == best_code]
+                best_label = best_code if best_name_row.empty else best_name_row.iloc[0]["name"]
             else:
-                row_final_prices[code] = None
-                st.info("No data")
+                best_label = "-"
 
-    best = best_price(row_final_prices)
+            st.metric(f"Row {visible_index + 1} Best Price", best_label)
 
-    note_cols = st.columns(4)
-    with note_cols[0]:
-        st.metric(f"Row {visible_index + 1} Best Price", best if best else "-")
-    with note_cols[1]:
-        st.info(compare_note("Knauf", row_final_prices.get("KNAUF"), "Siniat", row_final_prices.get("SINIAT")) or "-")
-    with note_cols[2]:
-        st.info(compare_note("Saint-Gobain", row_final_prices.get("SAINT_GOBAIN"), "Siniat", row_final_prices.get("SINIAT")) or "-")
-    with note_cols[3]:
-        st.info(compare_note("Saint-Gobain", row_final_prices.get("SAINT_GOBAIN"), "Knauf", row_final_prices.get("KNAUF")) or "-")
-
-    st.markdown("---")
+        st.markdown("---")
 
 
 # -------------------------------------------------
@@ -1167,7 +1180,7 @@ for visible_index, row_id in enumerate(st.session_state.row_ids):
 # -------------------------------------------------
 st.markdown("## 7. Export Excel Report")
 
-export_df = build_export_dataframe(st.session_state.row_ids, catalogs)
+export_df = build_export_dataframe(st.session_state.row_ids, catalogs, selected_codes)
 
 if not export_df.empty:
     st.dataframe(export_df, use_container_width=True, hide_index=True)
