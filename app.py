@@ -274,13 +274,19 @@ def current_user_is_approved():
     return get_current_user_status() == "approved"
 
 
-def set_user_status(email, sub, new_status):
-    users = load_users_registry()
-    idx = find_user_index(users, email, sub)
+def get_current_user_status():
+    user = get_user_identity()
 
-    if idx is not None:
-        users[idx]["status"] = new_status
-        save_users_registry(users)
+    if user["email"] in ADMIN_EMAILS:
+        return "approved"
+
+    users = load_users_registry()
+
+    idx = find_user_index(users, user["email"], user["sub"])
+    if idx is None:
+        return "pending"
+
+    return users[idx].get("status", "pending")
 
 
 def online_status_from_last_seen(last_seen_value):
@@ -320,6 +326,9 @@ if not current_user_is_approved():
     st.stop()
 
 touch_current_user()
+
+st.write("DEBUG EMAIL:", get_user_identity()["email"])
+st.write("DEBUG ADMINS:", ADMIN_EMAILS)
 
 if current_user_is_blocked():
     st.error("Access denied. Your account has been blocked.")
