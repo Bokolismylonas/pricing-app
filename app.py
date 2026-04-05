@@ -942,6 +942,21 @@ if st.button("Save", key="save_source_button"):
         st.success(f"Saved as: {name}")
         st.rerun()
 
+TEMPLATE_FILE = BASE_DIR / "templates" / "source_template_english.xlsx"
+
+st.info("Download the source template, fill in your products, and upload it back to the platform.")
+
+if TEMPLATE_FILE.exists():
+    with open(TEMPLATE_FILE, "rb") as f:
+        st.download_button(
+            "Download Source Template",
+            data=f.read(),
+            file_name="source_template.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_source_template"
+        )
+else:
+    st.warning("Template file not found.")
 
 # -------------------------------------------------
 # 3. SOURCE LIBRARY
