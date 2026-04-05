@@ -78,7 +78,7 @@ def stripe_webhook():
         return jsonify({"error": "Invalid signature"}), 400
 
     event_type = event["type"]
-    data_object = event["data"]["object"]
+    data_object = event["data"]["object"].to_dict()
 
     if event_type == "checkout.session.completed":
         customer_email = data_object.get("customer_details", {}).get("email") or data_object.get("customer_email")
