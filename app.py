@@ -314,6 +314,30 @@ def online_status_from_last_seen(last_seen_value):
 if not is_logged_in():
     show_login_screen()
     st.stop()
+# Force current user into shared registry
+user = get_user_identity()
+users_registry = load_users_registry()
+
+idx = find_user_index(users_registry, user["email"], user["sub"])
+
+if idx is None:
+    users_registry.append({
+        "email": user["email"],
+        "sub": user["sub"],
+        "name": user["name"],
+        "status": "approved" if user["email"] in ADMIN_EMAILS else "pending",
+        "first_seen": now_iso(),
+        "last_login": now_iso(),
+        "last_seen": now_iso(),
+    })
+else:
+    users_registry[idx]["name"] = user["name"]
+    users_registry[idx]["last_login"] = now_iso()
+    users_registry[idx]["last_seen"] = now_iso()
+    if user["email"] in ADMIN_EMAILS:
+        users_registry[idx]["status"] = "approved"
+
+save_users_registry(users_registry)
 
 touch_current_user()
 
