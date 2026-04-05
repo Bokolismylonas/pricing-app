@@ -1144,9 +1144,8 @@ else:
 if is_admin_user():
     st.markdown("---")
     st.markdown("## 8. Admin Panel")
-
-st.write("DEBUG REGISTRY FILE:", str(USERS_REGISTRY_FILE))
-st.write("DEBUG USERS:", load_users_registry())
+    st.write("DEBUG REGISTRY FILE:", str(USERS_REGISTRY_FILE))
+    st.write("DEBUG USERS:", load_users_registry())
 
     users_registry = load_users_registry()
 
