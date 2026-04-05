@@ -372,8 +372,6 @@ if not current_user_is_approved():
 
 touch_current_user()
 
-st.write("DEBUG EMAIL:", get_user_identity()["email"])
-st.write("DEBUG ADMINS:", ADMIN_EMAILS)
 
 if current_user_is_blocked():
     st.error("Access denied. Your account has been blocked.")
@@ -1177,9 +1175,7 @@ else:
 if is_admin_user():
     st.markdown("---")
     st.markdown("## 8. Admin Panel")
-    st.write("DEBUG REGISTRY FILE:", str(USERS_REGISTRY_FILE))
-    st.write("DEBUG USERS:", load_users_registry())
-
+    
     users_registry = load_users_registry()
 
     if users_registry:
