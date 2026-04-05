@@ -49,7 +49,7 @@ def ensure_render_secrets_file():
     if not all(required):
         return
 
-    content = f'''SUPABASE_URL = "{_escape_toml(supabase_url)}"
+    content = f"""SUPABASE_URL = "{_escape_toml(supabase_url)}"
 SUPABASE_KEY = "{_escape_toml(supabase_key)}"
 
 [auth]
@@ -58,7 +58,7 @@ cookie_secret = "{_escape_toml(auth_cookie_secret)}"
 client_id = "{_escape_toml(auth_client_id)}"
 client_secret = "{_escape_toml(auth_client_secret)}"
 server_metadata_url = "{_escape_toml(auth_server_metadata_url)}"
-'''
+"""
 
     SECRETS_FILE.write_text(content, encoding="utf-8")
 
@@ -125,7 +125,7 @@ def show_login_screen():
             "Login with Google",
             on_click=st.login,
             use_container_width=True,
-            key="login_google_button"
+            key="login_google_button",
         )
 
 
@@ -142,7 +142,13 @@ PERSIST_ROOT.mkdir(parents=True, exist_ok=True)
 
 MAIN_CODES = ["SINIAT", "KNAUF", "SAINT_GOBAIN"]
 
-user_id = get_current_user_id().replace("@", "_").replace(".", "_").replace("/", "_").replace("\\", "_")
+user_id = (
+    get_current_user_id()
+    .replace("@", "_")
+    .replace(".", "_")
+    .replace("/", "_")
+    .replace("\\", "_")
+)
 
 USER_DIR = PERSIST_ROOT / user_id
 UPLOADS_DIR = USER_DIR / "uploads"
@@ -158,9 +164,7 @@ ADMIN_DIR.mkdir(parents=True, exist_ok=True)
 
 USERS_REGISTRY_FILE = ADMIN_DIR / "users_registry.json"
 
-ADMIN_EMAILS = [
-    "gmyl13@gmail.com"
-]
+ADMIN_EMAILS = ["gmyl13@gmail.com"]
 
 
 def load_json_data(path: Path, default):
@@ -213,9 +217,9 @@ def load_users_registry():
 
 def save_users_registry(data):
     USERS_REGISTRY_FILE.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
-        encoding="utf-8"
+        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+
 
 TRIAL_DAYS = 2
 
@@ -315,20 +319,22 @@ def ensure_current_user_in_registry():
     idx = find_user_index(users, user["email"], user["sub"])
     if idx is None:
         status = "approved" if user["email"] in ADMIN_EMAILS else "pending"
-        users.append({
-        "email": user["email"],
-        "sub": user["sub"],
-        "name": user["name"],
-        "status": status,
-        "first_seen": now_iso(),
-        "last_login": now_iso(),
-        "last_seen": now_iso(),
-        "trial_start": now_iso(),
-        "trial_end": (now_utc() + timedelta(days=TRIAL_DAYS)).isoformat(),
-        "billing_status": "trialing",
-        "is_premium": False,
-        })
-        
+        users.append(
+            {
+                "email": user["email"],
+                "sub": user["sub"],
+                "name": user["name"],
+                "status": status,
+                "first_seen": now_iso(),
+                "last_login": now_iso(),
+                "last_seen": now_iso(),
+                "trial_start": now_iso(),
+                "trial_end": (now_utc() + timedelta(days=TRIAL_DAYS)).isoformat(),
+                "billing_status": "trialing",
+                "is_premium": False,
+            }
+        )
+
     else:
         users[idx]["name"] = user["name"]
         users[idx]["last_login"] = now_iso()
@@ -395,6 +401,7 @@ def online_status_from_last_seen(last_seen_value):
 
     return "Offline"
 
+
 if not is_logged_in():
     show_login_screen()
     st.stop()
@@ -405,15 +412,17 @@ users_registry = load_users_registry()
 idx = find_user_index(users_registry, user["email"], user["sub"])
 
 if idx is None:
-    users_registry.append({
-        "email": user["email"],
-        "sub": user["sub"],
-        "name": user["name"],
-        "status": "approved" if user["email"] in ADMIN_EMAILS else "pending",
-        "first_seen": now_iso(),
-        "last_login": now_iso(),
-        "last_seen": now_iso(),
-    })
+    users_registry.append(
+        {
+            "email": user["email"],
+            "sub": user["sub"],
+            "name": user["name"],
+            "status": "approved" if user["email"] in ADMIN_EMAILS else "pending",
+            "first_seen": now_iso(),
+            "last_login": now_iso(),
+            "last_seen": now_iso(),
+        }
+    )
 else:
     users_registry[idx]["name"] = user["name"]
     users_registry[idx]["last_login"] = now_iso()
@@ -432,7 +441,7 @@ if current_user_is_blocked():
         "Logout",
         on_click=st.logout,
         use_container_width=True,
-        key="blocked_logout_button"
+        key="blocked_logout_button",
     )
     st.stop()
 
@@ -442,7 +451,7 @@ if not current_user_is_approved():
         "Logout",
         on_click=st.logout,
         use_container_width=True,
-        key="pending_logout_button"
+        key="pending_logout_button",
     )
     st.stop()
 
@@ -455,7 +464,7 @@ if current_user_is_blocked():
         "Logout",
         on_click=st.logout,
         use_container_width=True,
-        key="blocked_logout_button"
+        key="blocked_logout_button",
     )
     st.stop()
 
@@ -465,7 +474,7 @@ if not current_user_is_approved():
         "Logout",
         on_click=st.logout,
         use_container_width=True,
-        key="pending_logout_button"
+        key="pending_logout_button",
     )
     st.stop()
 
@@ -491,7 +500,9 @@ if not current_user_has_access():
         if st.button("🚀 Upgrade to Premium", use_container_width=True):
             try:
                 checkout_url = create_checkout_session(user_email)
-                st.link_button("👉 Continue to Stripe", checkout_url, use_container_width=True)
+                st.link_button(
+                    "👉 Continue to Stripe", checkout_url, use_container_width=True
+                )
             except Exception as e:
                 st.error(f"Stripe error: {e}")
 
@@ -499,7 +510,7 @@ if not current_user_has_access():
         "Logout",
         on_click=st.logout,
         use_container_width=True,
-        key="locked_logout_button"
+        key="locked_logout_button",
     )
     st.stop()
 
@@ -512,12 +523,14 @@ with st.sidebar:
     _, current_row, _ = get_current_user_registry_row()
 
     if current_row:
-    if current_row.get("is_premium"):
-        st.success("Plan: Premium")
-    elif current_row.get("billing_status") == "trialing":
-        st.info(f"Trial: {trial_days_left(current_row.get('trial_end', ''))} day(s) left")
-    else:
-        st.warning("Plan: Free / Locked")
+        if current_row.get("is_premium"):
+            st.success("Plan: Premium")
+        elif current_row.get("billing_status") == "trialing":
+            st.info(
+                f"Trial: {trial_days_left(current_row.get('trial_end', ''))} day(s) left"
+            )
+        else:
+            st.warning("Plan: Free / Locked")
 
     st.markdown("---")
     st.subheader("💳 Billing")
@@ -528,7 +541,9 @@ with st.sidebar:
         if st.button("🚀 Start 2-Day Free Trial", use_container_width=True):
             try:
                 checkout_url = create_checkout_session(user_email)
-                st.link_button("👉 Continue to Stripe", checkout_url, use_container_width=True)
+                st.link_button(
+                    "👉 Continue to Stripe", checkout_url, use_container_width=True
+                )
             except Exception as e:
                 st.error(f"Stripe error: {e}")
     else:
@@ -536,10 +551,7 @@ with st.sidebar:
 
     st.markdown("---")
     st.button(
-        "Logout",
-        on_click=st.logout,
-        use_container_width=True,
-        key="logout_button"
+        "Logout", on_click=st.logout, use_container_width=True, key="logout_button"
     )
 
 st.title("Pricing App v13 - Full Version")
@@ -576,11 +588,13 @@ def get_current_user_email():
 # SAFE COMPANIES LOADING
 # -------------------------------------------------
 def load_companies_safe():
-    default = pd.DataFrame([
-        {"code": "SINIAT", "name": "Siniat"},
-        {"code": "KNAUF", "name": "Knauf"},
-        {"code": "SAINT_GOBAIN", "name": "Saint-Gobain"},
-    ])
+    default = pd.DataFrame(
+        [
+            {"code": "SINIAT", "name": "Siniat"},
+            {"code": "KNAUF", "name": "Knauf"},
+            {"code": "SAINT_GOBAIN", "name": "Saint-Gobain"},
+        ]
+    )
 
     if not COMPANIES_FILE.exists():
         default.to_csv(COMPANIES_FILE, index=False)
@@ -676,19 +690,34 @@ def list_saved_sources():
 
         for f in sorted(folder.glob("*.*"), reverse=True):
             if f.suffix.lower() in [".xlsx", ".xlsm"]:
-                rows.append({
-                    "Company Code": code,
-                    "Company Name": name,
-                    "Filename": f.name,
-                    "Folder": str(folder),
-                    "Full Path": str(f),
-                    "Modified": pd.to_datetime(f.stat().st_mtime, unit="s")
-                })
+                rows.append(
+                    {
+                        "Company Code": code,
+                        "Company Name": name,
+                        "Filename": f.name,
+                        "Folder": str(folder),
+                        "Full Path": str(f),
+                        "Modified": pd.to_datetime(f.stat().st_mtime, unit="s"),
+                    }
+                )
 
     if rows:
-        return pd.DataFrame(rows).sort_values("Modified", ascending=False).reset_index(drop=True)
+        return (
+            pd.DataFrame(rows)
+            .sort_values("Modified", ascending=False)
+            .reset_index(drop=True)
+        )
 
-    return pd.DataFrame(columns=["Company Code", "Company Name", "Filename", "Folder", "Full Path", "Modified"])
+    return pd.DataFrame(
+        columns=[
+            "Company Code",
+            "Company Name",
+            "Filename",
+            "Folder",
+            "Full Path",
+            "Modified",
+        ]
+    )
 
 
 def company_has_files(code):
@@ -755,7 +784,7 @@ def apply_discounts(price, discs):
     p = float(price)
     for d in discs:
         if d is not None and d != 0:
-            p *= (1 - d / 100)
+            p *= 1 - d / 100
 
     return round(p, 2)
 
@@ -842,7 +871,9 @@ def row_result_dict(visible_index, row_id, catalogs, selected_codes):
             result[f"{label} Package"] = ""
             result[f"{label} Base Price"] = ""
             for i in range(1, 6):
-                result[f"{label} Disc{i}"] = st.session_state.get(f"row_{row_id}_{code}_disc_{i}", 0.0)
+                result[f"{label} Disc{i}"] = st.session_state.get(
+                    f"row_{row_id}_{code}_disc_{i}", 0.0
+                )
             result[f"{label} Final Price"] = ""
 
     valid = {k: v for k, v in final_prices.items() if v is not None}
@@ -902,7 +933,12 @@ def style_excel_worksheet(ws):
             fill = knauf_fill
         elif str(header).startswith("Saint-Gobain "):
             fill = sg_fill
-        elif str(header) in ["Best Price", "Knauf vs Siniat", "Saint-Gobain vs Siniat", "Saint-Gobain vs Knauf"]:
+        elif str(header) in [
+            "Best Price",
+            "Knauf vs Siniat",
+            "Saint-Gobain vs Siniat",
+            "Saint-Gobain vs Knauf",
+        ]:
             fill = result_fill
         else:
             fill = None
@@ -922,23 +958,38 @@ def style_excel_worksheet(ws):
         ws.column_dimensions[get_column_letter(col_idx)].width = adjusted_width
 
     numeric_headers = [
-        "Siniat Base Price", "Siniat Final Price",
-        "Knauf Base Price", "Knauf Final Price",
-        "Saint-Gobain Base Price", "Saint-Gobain Final Price"
+        "Siniat Base Price",
+        "Siniat Final Price",
+        "Knauf Base Price",
+        "Knauf Final Price",
+        "Saint-Gobain Base Price",
+        "Saint-Gobain Final Price",
     ]
     disc_headers = [
-        "Siniat Disc1", "Siniat Disc2", "Siniat Disc3", "Siniat Disc4", "Siniat Disc5",
-        "Knauf Disc1", "Knauf Disc2", "Knauf Disc3", "Knauf Disc4", "Knauf Disc5",
-        "Saint-Gobain Disc1", "Saint-Gobain Disc2", "Saint-Gobain Disc3", "Saint-Gobain Disc4", "Saint-Gobain Disc5"
+        "Siniat Disc1",
+        "Siniat Disc2",
+        "Siniat Disc3",
+        "Siniat Disc4",
+        "Siniat Disc5",
+        "Knauf Disc1",
+        "Knauf Disc2",
+        "Knauf Disc3",
+        "Knauf Disc4",
+        "Knauf Disc5",
+        "Saint-Gobain Disc1",
+        "Saint-Gobain Disc2",
+        "Saint-Gobain Disc3",
+        "Saint-Gobain Disc4",
+        "Saint-Gobain Disc5",
     ]
 
     for col_idx, header in enumerate(headers, start=1):
         if header in numeric_headers:
             for row_idx in range(2, ws.max_row + 1):
-                ws.cell(row=row_idx, column=col_idx).number_format = '0.00'
+                ws.cell(row=row_idx, column=col_idx).number_format = "0.00"
         if header in disc_headers:
             for row_idx in range(2, ws.max_row + 1):
-                ws.cell(row=row_idx, column=col_idx).number_format = '0.0'
+                ws.cell(row=row_idx, column=col_idx).number_format = "0.0"
 
 
 def to_excel_bytes(df):
@@ -989,11 +1040,8 @@ with add_c3:
             st.warning(f"Company {code} already exists.")
         else:
             updated_df = pd.concat(
-                [
-                    companies_df,
-                    pd.DataFrame([{"code": code, "name": name}])
-                ],
-                ignore_index=True
+                [companies_df, pd.DataFrame([{"code": code, "name": name}])],
+                ignore_index=True,
             )
 
             save_companies(updated_df)
@@ -1006,8 +1054,7 @@ st.dataframe(companies_df, use_container_width=True, hide_index=True)
 st.markdown("### Delete Company")
 
 company_delete_options = {
-    f"{row['name']} ({row['code']})": row["code"]
-    for _, row in companies_df.iterrows()
+    f"{row['name']} ({row['code']})": row["code"] for _, row in companies_df.iterrows()
 }
 
 del_c1, del_c2 = st.columns([2, 1])
@@ -1016,7 +1063,7 @@ with del_c1:
     delete_company_display = st.selectbox(
         "Select Company to Delete",
         [""] + list(company_delete_options.keys()),
-        key="delete_company_display"
+        key="delete_company_display",
     )
 
 with del_c2:
@@ -1031,7 +1078,9 @@ with del_c2:
             if delete_code in MAIN_CODES:
                 st.warning("Core companies cannot be deleted at this stage.")
             elif company_has_files(delete_code):
-                st.error("This company has source files. Delete the source files first.")
+                st.error(
+                    "This company has source files. Delete the source files first."
+                )
             else:
                 updated_df = companies_df[companies_df["code"] != delete_code].copy()
                 save_companies(updated_df)
@@ -1053,14 +1102,15 @@ st.markdown("---")
 st.markdown("## 2. Save Source")
 
 company_display_map = {
-    f"{row['name']} ({row['code']})": row["code"]
-    for _, row in companies_df.iterrows()
+    f"{row['name']} ({row['code']})": row["code"] for _, row in companies_df.iterrows()
 }
 
 s1, s2, s3 = st.columns(3)
 
 with s1:
-    selected_company_display = st.selectbox("Company", list(company_display_map.keys()), key="save_company")
+    selected_company_display = st.selectbox(
+        "Company", list(company_display_map.keys()), key="save_company"
+    )
     company = company_display_map[selected_company_display]
 
 with s2:
@@ -1084,7 +1134,9 @@ if st.button("Save", key="save_source_button"):
 
 TEMPLATE_FILE = BASE_DIR / "templates" / "source_template_english.xlsx"
 
-st.info("Download the source template, fill in your products, and upload it back to the platform.")
+st.info(
+    "Download the source template, fill in your products, and upload it back to the platform."
+)
 
 if TEMPLATE_FILE.exists():
     with open(TEMPLATE_FILE, "rb") as f:
@@ -1093,7 +1145,7 @@ if TEMPLATE_FILE.exists():
             data=f.read(),
             file_name="source_template.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="download_source_template"
+            key="download_source_template",
         )
 else:
     st.warning("Template file not found.")
@@ -1106,7 +1158,9 @@ st.markdown("## 3. Source Library")
 
 saved_df = list_saved_sources()
 if not saved_df.empty:
-    st.dataframe(saved_df.drop(columns=["Full Path"]), use_container_width=True, hide_index=True)
+    st.dataframe(
+        saved_df.drop(columns=["Full Path"]), use_container_width=True, hide_index=True
+    )
 else:
     st.info("No saved source files yet.")
 
@@ -1124,7 +1178,7 @@ with src_d1:
     delete_source_display = st.selectbox(
         "Select Source to Delete",
         [""] + list(source_delete_options.keys()),
-        key="delete_source_display"
+        key="delete_source_display",
     )
 
 with src_d2:
@@ -1151,8 +1205,7 @@ st.markdown("---")
 st.markdown("## 4. Select Saved Sources for Comparison")
 
 company_options = {
-    f"{row['name']} ({row['code']})": row["code"]
-    for _, row in companies_df.iterrows()
+    f"{row['name']} ({row['code']})": row["code"] for _, row in companies_df.iterrows()
 }
 
 selected_company_displays = st.multiselect(
@@ -1160,7 +1213,7 @@ selected_company_displays = st.multiselect(
     options=list(company_options.keys()),
     default=[],
     max_selections=3,
-    key="comparison_company_selection"
+    key="comparison_company_selection",
 )
 
 selected_codes = [company_options[x] for x in selected_company_displays]
@@ -1178,9 +1231,7 @@ if selected_codes:
         with cols[i]:
             files = get_company_files(code)
             selected[code] = st.selectbox(
-                f"{code} source file",
-                [""] + files,
-                key=f"select_{code}"
+                f"{code} source file", [""] + files, key=f"select_{code}"
             )
 
     for code in selected_codes:
@@ -1237,7 +1288,9 @@ else:
         with top2:
             st.write("")
             if st.button("Delete This Row", key=f"delete_row_{row_id}"):
-                st.session_state.row_ids = [r for r in st.session_state.row_ids if r != row_id]
+                st.session_state.row_ids = [
+                    r for r in st.session_state.row_ids if r != row_id
+                ]
                 st.rerun()
 
         row_cols = st.columns(len(selected_codes))
@@ -1246,7 +1299,9 @@ else:
         for col_idx, code in enumerate(selected_codes):
             with row_cols[col_idx]:
                 company_name_row = companies_df[companies_df["code"] == code]
-                label = code if company_name_row.empty else company_name_row.iloc[0]["name"]
+                label = (
+                    code if company_name_row.empty else company_name_row.iloc[0]["name"]
+                )
 
                 st.write(f"#### {label}")
                 df = catalogs.get(code)
@@ -1254,9 +1309,7 @@ else:
                 if df is not None and not df.empty:
                     options = [""] + df["DISPLAY"].tolist()
                     selected_product = st.selectbox(
-                        f"{label} product",
-                        options,
-                        key=f"row_{row_id}_{code}_product"
+                        f"{label} product", options, key=f"row_{row_id}_{code}_product"
                     )
 
                     row = get_catalog_row(df, selected_product)
@@ -1275,7 +1328,7 @@ else:
                                 max_value=100.0,
                                 value=0.0,
                                 step=0.1,
-                                key=f"row_{row_id}_{code}_disc_{j}"
+                                key=f"row_{row_id}_{code}_disc_{j}",
                             )
                             discs.append(disc_val)
 
@@ -1290,7 +1343,7 @@ else:
                                 max_value=100.0,
                                 value=0.0,
                                 step=0.1,
-                                key=f"row_{row_id}_{code}_disc_{j}"
+                                key=f"row_{row_id}_{code}_disc_{j}",
                             )
                         row_final_prices[code] = None
                         st.info("No product selected")
@@ -1303,7 +1356,9 @@ else:
             if valid:
                 best_code = min(valid, key=valid.get)
                 best_name_row = companies_df[companies_df["code"] == best_code]
-                best_label = best_code if best_name_row.empty else best_name_row.iloc[0]["name"]
+                best_label = (
+                    best_code if best_name_row.empty else best_name_row.iloc[0]["name"]
+                )
             else:
                 best_label = "-"
 
@@ -1329,7 +1384,7 @@ if not export_df.empty:
         data=excel_bytes,
         file_name="comparison_report.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key="download_excel_report"
+        key="download_excel_report",
     )
 else:
     st.info("No data available for export yet.")
@@ -1340,22 +1395,24 @@ else:
 if is_admin_user():
     st.markdown("---")
     st.markdown("## 8. Admin Panel")
-    
+
     users_registry = load_users_registry()
 
     if users_registry:
         users_for_view = []
         for row in users_registry:
-            users_for_view.append({
-                "Email": row.get("email", ""),
-                "Name": row.get("name", ""),
-                "Status": row.get("status", "pending"),
-                "First Seen": row.get("first_seen", ""),
-                "Last Login": row.get("last_login", ""),
-                "Last Seen": row.get("last_seen", ""),
-                "Online": online_status_from_last_seen(row.get("last_seen", "")),
-                "Sub": row.get("sub", ""),
-            })
+            users_for_view.append(
+                {
+                    "Email": row.get("email", ""),
+                    "Name": row.get("name", ""),
+                    "Status": row.get("status", "pending"),
+                    "First Seen": row.get("first_seen", ""),
+                    "Last Login": row.get("last_login", ""),
+                    "Last Seen": row.get("last_seen", ""),
+                    "Online": online_status_from_last_seen(row.get("last_seen", "")),
+                    "Sub": row.get("sub", ""),
+                }
+            )
 
         users_df = pd.DataFrame(users_for_view)
         st.dataframe(users_df, use_container_width=True, hide_index=True)
@@ -1368,7 +1425,7 @@ if is_admin_user():
         selected_user_label = st.selectbox(
             "Select user",
             [""] + list(user_options.keys()),
-            key="admin_selected_user_to_manage"
+            key="admin_selected_user_to_manage",
         )
 
         c1, c2, c3 = st.columns(3)
@@ -1379,7 +1436,9 @@ if is_admin_user():
                     st.warning("Please select a user.")
                 else:
                     row = user_options[selected_user_label]
-                    set_user_status(row.get("email", ""), row.get("sub", ""), "approved")
+                    set_user_status(
+                        row.get("email", ""), row.get("sub", ""), "approved"
+                    )
                     st.success(f"Approved: {row.get('email', '')}")
                     st.rerun()
 
