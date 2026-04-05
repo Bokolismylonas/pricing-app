@@ -61,7 +61,7 @@ def set_user_premium(email, is_premium=True, billing_status="active"):
     return True
 
 
-@app.route("/stripe-webhook", methods=["POST"])
+@app.route("/webhook", methods=["POST"])
 def stripe_webhook():
     payload = request.get_data(as_text=False)
     sig_header = request.headers.get("Stripe-Signature", "")
