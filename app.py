@@ -398,6 +398,23 @@ with st.sidebar:
     st.success("Logged in")
     st.write(f"User: {get_current_user_email() or get_current_user_id()}")
 
+from billing import create_checkout_session
+
+st.markdown("---")
+st.subheader("💳 Billing")
+
+user_email = get_current_user_email()
+
+if user_email:
+    if st.button("🚀 Upgrade to Premium"):
+        try:
+            checkout_url = create_checkout_session(user_email)
+            st.link_button("👉 Go to secure payment", checkout_url)
+        except Exception as e:
+            st.error(f"Stripe error: {e}")
+else:
+    st.warning("No email found.")
+
     st.button(
         "Logout",
         on_click=st.logout,
