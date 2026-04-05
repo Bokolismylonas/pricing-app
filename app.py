@@ -217,6 +217,75 @@ def save_users_registry(data):
         encoding="utf-8"
     )
 
+TRIAL_DAYS = 2
+
+
+def now_utc():
+    return datetime.utcnow()
+
+
+def ensure_user_billing_fields(user_row):
+    if "trial_start" not in user_row:
+        user_row["trial_start"] = now_iso()
+
+    if "trial_end" not in user_row:
+        user_row["trial_end"] = (now_utc() + timedelta(days=TRIAL_DAYS)).isoformat()
+
+    if "billing_status" not in user_row:
+        user_row["billing_status"] = "trialing"
+
+    if "is_premium" not in user_row:
+        user_row["is_premium"] = False
+
+    return user_row
+
+
+def get_current_user_registry_row():
+    user = get_user_identity()
+    users = load_users_registry()
+    idx = find_user_index(users, user["email"], user["sub"])
+
+    if idx is None:
+        return None, None, users
+
+    users[idx] = ensure_user_billing_fields(users[idx])
+    save_users_registry(users)
+    return idx, users[idx], users
+
+
+def trial_days_left(trial_end_value):
+    dt = parse_iso(trial_end_value)
+    if dt is None:
+        return 0
+    remaining = dt - now_utc()
+    if remaining.total_seconds() <= 0:
+        return 0
+    return max(1, remaining.days + (1 if remaining.seconds > 0 else 0))
+
+
+def current_user_has_access():
+    idx, row, users = get_current_user_registry_row()
+    if row is None:
+        return False
+
+    if row.get("is_premium") is True:
+        return True
+
+    billing_status = row.get("billing_status", "trialing")
+    if billing_status == "active":
+        return True
+
+    if billing_status == "trialing":
+        trial_end = parse_iso(row.get("trial_end", ""))
+        if trial_end and now_utc() <= trial_end:
+            return True
+
+        users[idx]["billing_status"] = "expired"
+        save_users_registry(users)
+        return False
+
+    return False
+
 
 def is_admin_user():
     user = get_user_identity()
@@ -246,15 +315,20 @@ def ensure_current_user_in_registry():
     idx = find_user_index(users, user["email"], user["sub"])
     if idx is None:
         status = "approved" if user["email"] in ADMIN_EMAILS else "pending"
-        users.append({
-            "email": user["email"],
-            "sub": user["sub"],
-            "name": user["name"],
-            "status": status,
-            "first_seen": now_iso(),
-            "last_login": now_iso(),
-            "last_seen": now_iso(),
-        })
+	users.append({
+    "email": user["email"],
+    "sub": user["sub"],
+    "name": user["name"],
+    "status": status,
+    "first_seen": now_iso(),
+    "last_login": now_iso(),
+    "last_seen": now_iso(),
+    "trial_start": now_iso(),
+    "trial_end": (now_utc() + timedelta(days=TRIAL_DAYS)).isoformat(),
+    "billing_status": "trialing",
+    "is_premium": False,
+})
+        
     else:
         users[idx]["name"] = user["name"]
         users[idx]["last_login"] = now_iso()
@@ -262,6 +336,7 @@ def ensure_current_user_in_registry():
 
         if user["email"] in ADMIN_EMAILS:
             users[idx]["status"] = "approved"
+	    users[idx] = ensure_user_billing_fields(users[idx])
 
     save_users_registry(users)
 
@@ -345,6 +420,7 @@ else:
     users_registry[idx]["last_seen"] = now_iso()
     if user["email"] in ADMIN_EMAILS:
         users_registry[idx]["status"] = "approved"
+	users_registry[idx] = ensure_user_billing_fields(users_registry[idx])
 
 save_users_registry(users_registry)
 
@@ -393,12 +469,55 @@ if not current_user_is_approved():
     )
     st.stop()
 
+if not current_user_has_access():
+    _, current_row, _ = get_current_user_registry_row()
+
+    st.title("Pricing App v13 - Full Version")
+    st.warning("Your free trial has ended.")
+
+    if current_row:
+        if current_row.get("billing_status") == "trialing":
+            days_left = trial_days_left(current_row.get("trial_end", ""))
+            st.info(f"Your 2-day trial is active. Days left: {days_left}")
+        elif current_row.get("is_premium"):
+            st.success("Premium access is active.")
+        else:
+            st.info("Upgrade to Premium to continue using the full app.")
+
+    from billing import create_checkout_session
+
+    user_email = get_current_user_email()
+    if user_email:
+        if st.button("🚀 Upgrade to Premium", use_container_width=True):
+            try:
+                checkout_url = create_checkout_session(user_email)
+                st.link_button("👉 Continue to Stripe", checkout_url, use_container_width=True)
+            except Exception as e:
+                st.error(f"Stripe error: {e}")
+
+    st.button(
+        "Logout",
+        on_click=st.logout,
+        use_container_width=True,
+        key="locked_logout_button"
+    )
+    st.stop()
+
 
 from billing import create_checkout_session
 
 with st.sidebar:
     st.success("Logged in")
     st.write(f"User: {get_current_user_email() or get_current_user_id()}")
+    _, current_row, _ = get_current_user_registry_row()
+
+    if current_row:
+    if current_row.get("is_premium"):
+        st.success("Plan: Premium")
+    elif current_row.get("billing_status") == "trialing":
+        st.info(f"Trial: {trial_days_left(current_row.get('trial_end', ''))} day(s) left")
+    else:
+        st.warning("Plan: Free / Locked")
 
     st.markdown("---")
     st.subheader("💳 Billing")
