@@ -406,10 +406,10 @@ st.subheader("💳 Billing")
 user_email = get_current_user_email()
 
 if user_email:
-    if st.button("🚀 Upgrade to Premium"):
+    if st.button("🚀 Start 2-Day Free Trial", use_container_width=True):
         try:
             checkout_url = create_checkout_session(user_email)
-            st.link_button("👉 Go to secure payment", checkout_url)
+            st.link_button("👉 Continue to Stripe", checkout_url, use_container_width=True)
         except Exception as e:
             st.error(f"Stripe error: {e}")
 else:

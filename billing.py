@@ -16,6 +16,9 @@ def create_checkout_session(user_email):
             "price": PRICE_ID,
             "quantity": 1,
         }],
+        subscription_data={
+            "trial_period_days": 2
+        },
         success_url=f"{APP_URL}/?payment=success",
         cancel_url=f"{APP_URL}/?payment=cancel",
     )
