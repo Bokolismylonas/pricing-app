@@ -315,7 +315,7 @@ def ensure_current_user_in_registry():
     idx = find_user_index(users, user["email"], user["sub"])
     if idx is None:
         status = "approved" if user["email"] in ADMIN_EMAILS else "pending"
-	users.append({
+    users.append({
     "email": user["email"],
     "sub": user["sub"],
     "name": user["name"],
@@ -336,7 +336,7 @@ def ensure_current_user_in_registry():
 
         if user["email"] in ADMIN_EMAILS:
             users[idx]["status"] = "approved"
-	    users[idx] = ensure_user_billing_fields(users[idx])
+        users[idx] = ensure_user_billing_fields(users[idx])
 
     save_users_registry(users)
 
@@ -420,7 +420,7 @@ else:
     users_registry[idx]["last_seen"] = now_iso()
     if user["email"] in ADMIN_EMAILS:
         users_registry[idx]["status"] = "approved"
-	users_registry[idx] = ensure_user_billing_fields(users_registry[idx])
+    users_registry[idx] = ensure_user_billing_fields(users_registry[idx])
 
 save_users_registry(users_registry)
 
