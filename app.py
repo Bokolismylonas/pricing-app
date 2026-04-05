@@ -138,6 +138,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 PERSIST_ROOT = Path(os.getenv("PERSIST_ROOT", "/var/data"))
+PERSIST_ROOT.mkdir(parents=True, exist_ok=True)
+
+MAIN_CODES = ["SINIAT", "KNAUF", "SAINT_GOBAIN"]
+
 user_id = get_current_user_id().replace("@", "_").replace(".", "_").replace("/", "_").replace("\\", "_")
 
 USER_DIR = PERSIST_ROOT / user_id
