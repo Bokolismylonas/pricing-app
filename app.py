@@ -191,9 +191,19 @@ def get_user_identity():
 
 
 def load_users_registry():
+    if not USERS_REGISTRY_FILE.exists():
+        return []
+    try:
+        return json.loads(USERS_REGISTRY_FILE.read_text(encoding="utf-8"))
+    except:
+        return []
 
 
 def save_users_registry(data):
+    USERS_REGISTRY_FILE.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8"
+    )
 
 
 def is_admin_user():
