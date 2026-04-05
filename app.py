@@ -137,7 +137,7 @@ from datetime import datetime, timedelta
 
 from pathlib import Path
 
-PERSIST_ROOT = Path("/opt/render/project/src/data")
+PERSIST_ROOT = Path(os.getenv("PERSIST_ROOT", "/var/data"))
 PERSIST_ROOT.mkdir(parents=True, exist_ok=True)
 
 ROOT_STORAGE = PERSIST_ROOT
@@ -238,6 +238,9 @@ def ensure_current_user_in_registry():
         users[idx]["name"] = user["name"]
         users[idx]["last_login"] = now_iso()
         users[idx]["last_seen"] = now_iso()
+
+        if user["email"] in ADMIN_EMAILS:
+            users[idx]["status"] = "approved"
 
     save_users_registry(users)
 
