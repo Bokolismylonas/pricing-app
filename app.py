@@ -315,19 +315,19 @@ def ensure_current_user_in_registry():
     idx = find_user_index(users, user["email"], user["sub"])
     if idx is None:
         status = "approved" if user["email"] in ADMIN_EMAILS else "pending"
-    users.append({
-    "email": user["email"],
-    "sub": user["sub"],
-    "name": user["name"],
-    "status": status,
-    "first_seen": now_iso(),
-    "last_login": now_iso(),
-    "last_seen": now_iso(),
-    "trial_start": now_iso(),
-    "trial_end": (now_utc() + timedelta(days=TRIAL_DAYS)).isoformat(),
-    "billing_status": "trialing",
-    "is_premium": False,
-})
+        users.append({
+        "email": user["email"],
+        "sub": user["sub"],
+        "name": user["name"],
+        "status": status,
+        "first_seen": now_iso(),
+        "last_login": now_iso(),
+        "last_seen": now_iso(),
+        "trial_start": now_iso(),
+        "trial_end": (now_utc() + timedelta(days=TRIAL_DAYS)).isoformat(),
+        "billing_status": "trialing",
+        "is_premium": False,
+        })
         
     else:
         users[idx]["name"] = user["name"]
