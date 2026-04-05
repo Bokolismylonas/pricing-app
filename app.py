@@ -394,27 +394,28 @@ if not current_user_is_approved():
     st.stop()
 
 
+from billing import create_checkout_session
+
 with st.sidebar:
     st.success("Logged in")
     st.write(f"User: {get_current_user_email() or get_current_user_id()}")
 
-from billing import create_checkout_session
+    st.markdown("---")
+    st.subheader("💳 Billing")
 
-st.markdown("---")
-st.subheader("💳 Billing")
+    user_email = get_current_user_email()
 
-user_email = get_current_user_email()
+    if user_email:
+        if st.button("🚀 Start 2-Day Free Trial", use_container_width=True):
+            try:
+                checkout_url = create_checkout_session(user_email)
+                st.link_button("👉 Continue to Stripe", checkout_url, use_container_width=True)
+            except Exception as e:
+                st.error(f"Stripe error: {e}")
+    else:
+        st.warning("No email found.")
 
-if user_email:
-    if st.button("🚀 Start 2-Day Free Trial", use_container_width=True):
-        try:
-            checkout_url = create_checkout_session(user_email)
-            st.link_button("👉 Continue to Stripe", checkout_url, use_container_width=True)
-        except Exception as e:
-            st.error(f"Stripe error: {e}")
-else:
-    st.warning("No email found.")
-
+    st.markdown("---")
     st.button(
         "Logout",
         on_click=st.logout,
