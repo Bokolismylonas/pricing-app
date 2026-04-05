@@ -138,6 +138,14 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 PERSIST_ROOT = Path(os.getenv("PERSIST_ROOT", "/var/data"))
+user_id = get_current_user_id().replace("@", "_").replace(".", "_").replace("/", "_").replace("\\", "_")
+
+USER_DIR = PERSIST_ROOT / user_id
+UPLOADS_DIR = USER_DIR / "uploads"
+COMPANIES_FILE = USER_DIR / "companies.csv"
+
+UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+
 PERSIST_ROOT.mkdir(parents=True, exist_ok=True)
 
 ROOT_STORAGE = PERSIST_ROOT
