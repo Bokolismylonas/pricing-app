@@ -230,6 +230,15 @@ def find_user_index(users, email, sub):
     return None
 
 
+def set_user_status(email, sub, new_status):
+    users = load_users_registry()
+    idx = find_user_index(users, email, sub)
+
+    if idx is not None:
+        users[idx]["status"] = new_status
+        save_users_registry(users)
+
+
 def ensure_current_user_in_registry():
     user = get_user_identity()
     users = load_users_registry()
