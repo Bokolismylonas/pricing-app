@@ -2,9 +2,10 @@ import os
 import streamlit as st
 import pandas as pd
 from pathlib import Path
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 import re
 import io
+import stripe
 
 
 from supabase import create_client, Client
@@ -71,6 +72,8 @@ ensure_render_secrets_file()
 # -------------------------------------------------
 st.set_page_config(layout="wide")
 
+stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+
 
 @st.cache_resource
 def get_supabase() -> Client:
@@ -136,6 +139,74 @@ import json
 from datetime import datetime, timedelta
 
 from pathlib import Path
+
+def get_stripe_subscription_row(email: str):
+    if not email:
+        return None
+
+    try:
+        customers = stripe.Customer.list(email=email.strip().lower(), limit=1)
+        if not customers.data:
+            return None
+
+        customer = customers.data[0]
+
+        subs = stripe.Subscription.list(customer=customer.id, status="all", limit=10)
+        if not subs.data:
+            return {
+                "email": email.strip().lower(),
+                "is_premium": False,
+                "billing_status": "free",
+                "trial_end": None,
+            }
+
+        preferred = None
+        for sub in subs.data:
+            if sub.status in ["trialing", "active"]:
+                preferred = sub
+                break
+
+        if preferred is None:
+            preferred = subs.data[0]
+
+        trial_end = None
+        if getattr(preferred, "trial_end", None):
+            trial_end = datetime.fromtimestamp(preferred.trial_end, tz=timezone.utc)
+
+        return {
+            "email": email.strip().lower(),
+            "is_premium": preferred.status in ["trialing", "active"],
+            "billing_status": preferred.status,
+            "trial_end": trial_end,
+            "stripe_customer_id": customer.id,
+            "stripe_subscription_id": preferred.id,
+        }
+
+    except Exception as e:
+        print("STRIPE BILLING CHECK ERROR:", repr(e))
+        return None
+
+
+def trial_days_left_from_stripe(trial_end_value):
+    if not trial_end_value:
+        return 0
+    try:
+        now_dt = datetime.now(timezone.utc)
+        delta = trial_end_value - now_dt
+        return max(0, delta.days + (1 if delta.seconds > 0 else 0))
+    except Exception:
+        return 0
+
+
+def user_has_paid_access(email: str) -> bool:
+    row = get_stripe_subscription_row(email)
+    if not row:
+        return False
+
+    if row.get("billing_status") in ["active", "trialing"]:
+        return True
+
+    return False
 
 PERSIST_ROOT = Path(os.getenv("PERSIST_ROOT", "/var/data"))
 PERSIST_ROOT.mkdir(parents=True, exist_ok=True)
@@ -451,58 +522,32 @@ if not current_user_is_approved():
         "Logout",
         on_click=st.logout,
         use_container_width=True,
-        key="pending_logout_button",
+        key="pending_logout_button"
     )
     st.stop()
 
-touch_current_user()
 
+user_email = get_current_user_email()
 
-if current_user_is_blocked():
-    st.error("Access denied. Your account has been blocked.")
-    st.button(
-        "Logout",
-        on_click=st.logout,
-        use_container_width=True,
-        key="blocked_logout_button",
-    )
-    st.stop()
-
-if not current_user_is_approved():
-    st.warning("Your account is pending admin approval.")
-    st.button(
-        "Logout",
-        on_click=st.logout,
-        use_container_width=True,
-        key="pending_logout_button",
-    )
-    st.stop()
-
-if not current_user_has_access():
-    _, current_row, _ = get_current_user_registry_row()
-
+if not user_has_paid_access(user_email):
     st.title("Pricing App v13 - Full Version")
-    st.warning("Your free trial has ended.")
+    st.warning("Your premium access is locked.")
 
-    if current_row:
-        if current_row.get("billing_status") == "trialing":
-            days_left = trial_days_left(current_row.get("trial_end", ""))
-            st.info(f"Your 2-day trial is active. Days left: {days_left}")
-        elif current_row.get("is_premium"):
-            st.success("Premium access is active.")
-        else:
-            st.info("Upgrade to Premium to continue using the full app.")
+    billing_row = get_stripe_subscription_row(user_email) if user_email else None
+
+    if billing_row and billing_row.get("billing_status") == "trialing":
+        days_left = trial_days_left_from_stripe(billing_row.get("trial_end"))
+        st.info(f"Your trial is active. Days left: {days_left}")
+    else:
+        st.info("Start your trial or upgrade to Premium to continue.")
 
     from billing import create_checkout_session
 
-    user_email = get_current_user_email()
     if user_email:
-        if st.button("🚀 Upgrade to Premium", use_container_width=True):
+        if st.button("🚀 Start 2-Day Free Trial", use_container_width=True):
             try:
                 checkout_url = create_checkout_session(user_email)
-                st.link_button(
-                    "👉 Continue to Stripe", checkout_url, use_container_width=True
-                )
+                st.link_button("👉 Continue to Stripe", checkout_url, use_container_width=True)
             except Exception as e:
                 st.error(f"Stripe error: {e}")
 
@@ -510,7 +555,7 @@ if not current_user_has_access():
         "Logout",
         on_click=st.logout,
         use_container_width=True,
-        key="locked_logout_button",
+        key="locked_logout_button"
     )
     st.stop()
 
@@ -518,19 +563,27 @@ if not current_user_has_access():
 from billing import create_checkout_session
 
 with st.sidebar:
+    ...
+
+
+from billing import create_checkout_session
+
+with st.sidebar:
     st.success("Logged in")
     st.write(f"User: {get_current_user_email() or get_current_user_id()}")
-    _, current_row, _ = get_current_user_registry_row()
+    user_email = get_current_user_email()
+billing_row = get_stripe_subscription_row(user_email) if user_email else None
 
-    if current_row:
-        if current_row.get("is_premium"):
-            st.success("Plan: Premium")
-        elif current_row.get("billing_status") == "trialing":
-            st.info(
-                f"Trial: {trial_days_left(current_row.get('trial_end', ''))} day(s) left"
-            )
-        else:
-            st.warning("Plan: Free / Locked")
+if billing_row:
+    if billing_row.get("billing_status") == "active":
+        st.success("Plan: Premium")
+    elif billing_row.get("billing_status") == "trialing":
+        days_left = trial_days_left_from_stripe(billing_row.get("trial_end"))
+        st.info(f"Trial: {days_left} day(s) left")
+    else:
+        st.warning("Plan: Free / Locked")
+else:
+    st.warning("Plan: Free / Locked")
 
     st.markdown("---")
     st.subheader("💳 Billing")
