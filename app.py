@@ -68,8 +68,130 @@ ensure_render_secrets_file()
 # -------------------------------------------------
 # APP CONFIG
 # -------------------------------------------------
-st.set_page_config(layout="wide")
+st.set_page_config(
+    page_title="Pricing App",
+    page_icon="💎",
+    layout="wide",
+)
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+
+
+# -------------------------------------------------
+# UI STYLE
+# -------------------------------------------------
+st.markdown(
+    """
+    <style>
+    .main .block-container {
+        padding-top: 1.5rem;
+        padding-bottom: 2rem;
+        max-width: 1400px;
+    }
+
+    .app-hero {
+        padding: 24px 28px;
+        border-radius: 18px;
+        background: linear-gradient(135deg, #111827 0%, #1f2937 100%);
+        color: white;
+        border: 1px solid rgba(255,255,255,0.08);
+        margin-bottom: 1rem;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.18);
+    }
+
+    .app-card {
+        background: #111827;
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 18px;
+        padding: 22px 24px;
+        color: white;
+        box-shadow: 0 8px 24px rgba(0,0,0,0.14);
+    }
+
+    .soft-card {
+        background: rgba(255,255,255,0.03);
+        border: 1px solid rgba(255,255,255,0.06);
+        border-radius: 16px;
+        padding: 16px 18px;
+    }
+
+    .muted {
+        color: #9ca3af;
+    }
+
+    .metric-pill {
+        display: inline-block;
+        padding: 8px 12px;
+        border-radius: 999px;
+        background: rgba(255,255,255,0.07);
+        border: 1px solid rgba(255,255,255,0.08);
+        font-size: 14px;
+        margin-top: 8px;
+    }
+
+    .section-title {
+        margin-top: 8px;
+        margin-bottom: 8px;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+    }
+
+    .locked-wrap {
+        max-width: 760px;
+        margin: 30px auto 0 auto;
+        padding: 32px;
+        border-radius: 22px;
+        background: linear-gradient(180deg, #0f172a 0%, #111827 100%);
+        border: 1px solid rgba(255,255,255,0.08);
+        box-shadow: 0 20px 50px rgba(0,0,0,0.22);
+        text-align: center;
+        color: white;
+    }
+
+    .locked-title {
+        font-size: 32px;
+        font-weight: 800;
+        margin-bottom: 10px;
+        letter-spacing: -0.03em;
+    }
+
+    .locked-subtitle {
+        font-size: 16px;
+        color: #cbd5e1;
+        line-height: 1.65;
+        margin-bottom: 22px;
+    }
+
+    .locked-badge {
+        display: inline-block;
+        padding: 6px 12px;
+        border-radius: 999px;
+        background: rgba(96,165,250,0.12);
+        border: 1px solid rgba(96,165,250,0.25);
+        color: #bfdbfe;
+        font-size: 13px;
+        margin-bottom: 18px;
+    }
+
+    .mini-note {
+        font-size: 13px;
+        color: #9ca3af;
+        margin-top: 8px;
+    }
+
+    div[data-testid="stSidebar"] {
+        border-right: 1px solid rgba(255,255,255,0.06);
+    }
+
+    div[data-testid="stMetric"] {
+        background: rgba(255,255,255,0.02);
+        border: 1px solid rgba(255,255,255,0.06);
+        padding: 10px 12px;
+        border-radius: 16px;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 # -------------------------------------------------
@@ -101,17 +223,31 @@ def auth_is_configured():
 
 
 def show_login_screen():
-    st.title("Pricing App v13 - Full Version")
-    st.info("Please log in to continue.")
+    st.markdown(
+        """
+        <div class="app-hero">
+            <div style="font-size:34px;font-weight:800;letter-spacing:-0.03em;">Pricing App</div>
+            <div style="font-size:16px;color:#d1d5db;margin-top:8px;">
+                Smart price comparison, source management and Excel exports in one place.
+            </div>
+            <div class="metric-pill">Secure access with Google login</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-    c1, c2, c3 = st.columns([1, 2, 1])
+    c1, c2, c3 = st.columns([1, 1.3, 1])
     with c2:
+        st.markdown('<div class="app-card">', unsafe_allow_html=True)
+        st.subheader("Sign in to continue")
+        st.write("Access your workspace and continue using the full app experience.")
         st.button(
             "Login with Google",
             on_click=st.login,
             use_container_width=True,
             key="login_google_button",
         )
+        st.markdown("</div>", unsafe_allow_html=True)
 
 
 # -------------------------------------------------
@@ -138,7 +274,7 @@ def get_stripe_subscription_row(email: str):
             return None
 
         customer = customers.data[0]
-        subs = stripe.Subscription.list(customer=customer.id, status="all", limit=10)
+        subs = stripe.Subscription.list(customer=customer.id, status="all", limit=20)
 
         if not subs.data:
             return {
@@ -146,13 +282,22 @@ def get_stripe_subscription_row(email: str):
                 "is_premium": False,
                 "billing_status": "free",
                 "trial_end": None,
+                "stripe_customer_id": customer.id,
+                "stripe_subscription_id": None,
             }
 
         preferred = None
+
         for sub in subs.data:
-            if sub.status in ["trialing", "active"]:
+            if sub.status == "active":
                 preferred = sub
                 break
+
+        if preferred is None:
+            for sub in subs.data:
+                if sub.status in ["past_due", "unpaid", "canceled", "incomplete", "incomplete_expired"]:
+                    preferred = sub
+                    break
 
         if preferred is None:
             preferred = subs.data[0]
@@ -163,7 +308,7 @@ def get_stripe_subscription_row(email: str):
 
         return {
             "email": email.strip().lower(),
-            "is_premium": preferred.status in ["trialing", "active"],
+            "is_premium": preferred.status == "active",
             "billing_status": preferred.status,
             "trial_end": trial_end,
             "stripe_customer_id": customer.id,
@@ -190,10 +335,37 @@ def user_has_paid_access(email: str) -> bool:
     row = get_stripe_subscription_row(email)
     if not row:
         return False
-    return row.get("billing_status") in ["active", "trialing"]
+    return row.get("billing_status") == "active"
 
 
 from billing import create_checkout_session
+
+
+def get_checkout_url(user_email: str):
+    if not user_email:
+        return None
+
+    cache_email = st.session_state.get("checkout_email")
+    cache_url = st.session_state.get("checkout_url")
+    cache_ts = st.session_state.get("checkout_created_at")
+
+    if cache_email == user_email and cache_url and cache_ts:
+        try:
+            created_at = datetime.fromisoformat(cache_ts)
+            if datetime.utcnow() - created_at < timedelta(minutes=20):
+                return cache_url
+        except Exception:
+            pass
+
+    try:
+        url = create_checkout_session(user_email)
+        st.session_state["checkout_email"] = user_email
+        st.session_state["checkout_url"] = url
+        st.session_state["checkout_created_at"] = datetime.utcnow().isoformat()
+        return url
+    except Exception as e:
+        st.error(f"Stripe error: {e}")
+        return None
 
 
 # -------------------------------------------------
@@ -344,27 +516,51 @@ def trial_days_left(trial_end_value):
     return max(1, remaining.days + (1 if remaining.seconds > 0 else 0))
 
 
+def sync_paid_status_from_stripe(email: str):
+    idx, row, users = get_current_user_registry_row()
+    if row is None or not email:
+        return False
+
+    stripe_row = get_stripe_subscription_row(email)
+    if not stripe_row:
+        return False
+
+    if stripe_row.get("billing_status") == "active":
+        users[idx]["billing_status"] = "active"
+        users[idx]["is_premium"] = True
+        users[idx]["stripe_customer_id"] = stripe_row.get("stripe_customer_id")
+        users[idx]["stripe_subscription_id"] = stripe_row.get("stripe_subscription_id")
+        save_users_registry(users)
+        return True
+
+    if row.get("billing_status") == "active" and stripe_row.get("billing_status") != "active":
+        users[idx]["billing_status"] = "expired"
+        users[idx]["is_premium"] = False
+        save_users_registry(users)
+
+    return False
+
+
 def current_user_has_access():
     idx, row, users = get_current_user_registry_row()
     if row is None:
         return False
 
-    if row.get("is_premium") is True:
+    if row.get("billing_status") == "active" or row.get("is_premium") is True:
         return True
 
-    billing_status = row.get("billing_status", "trialing")
-
-    if billing_status == "active":
+    trial_end = parse_iso(row.get("trial_end", ""))
+    if trial_end and now_utc() <= trial_end:
         return True
 
-    if billing_status == "trialing":
-        trial_end = parse_iso(row.get("trial_end", ""))
-        if trial_end and now_utc() <= trial_end:
-            return True
+    user_email = get_current_user_email()
+    if user_email and sync_paid_status_from_stripe(user_email):
+        return True
 
+    if idx is not None:
         users[idx]["billing_status"] = "expired"
+        users[idx]["is_premium"] = False
         save_users_registry(users)
-        return False
 
     return False
 
@@ -924,36 +1120,53 @@ if not current_user_is_approved():
 
 user_email = get_current_user_email()
 
-if (not is_admin_user()) and (not user_has_paid_access(user_email)):
-    st.title("Pricing App v13 - Full Version")
-    st.warning("Your premium access is locked.")
+if (not is_admin_user()) and (not current_user_has_access()):
+    idx, row, users = get_current_user_registry_row()
+    days_left = trial_days_left(row.get("trial_end")) if row else 0
+    checkout_url = get_checkout_url(user_email) if user_email else None
 
-    billing_row = get_stripe_subscription_row(user_email) if user_email else None
-
-    if billing_row and billing_row.get("billing_status") == "trialing":
-        days_left = trial_days_left_from_stripe(billing_row.get("trial_end"))
-        st.info(f"Your trial is active. Days left: {days_left}")
-    else:
-        st.info("Start your trial or upgrade to Premium to continue.")
-
-    if user_email:
-        if st.button("🚀 Start 2-Day Free Trial", use_container_width=True):
-            try:
-                checkout_url = create_checkout_session(user_email)
-                st.link_button(
-                    "👉 Continue to Stripe",
-                    checkout_url,
-                    use_container_width=True,
-                )
-            except Exception as e:
-                st.error(f"Stripe error: {e}")
-
-    st.button(
-        "Logout",
-        on_click=st.logout,
-        use_container_width=True,
-        key="locked_logout_button",
+    st.markdown(
+        """
+        <div class="locked-wrap">
+            <div class="locked-badge">Premium access required</div>
+            <div class="locked-title">Your free trial has ended</div>
+            <div class="locked-subtitle">
+                You can still log in, but access to the full app is now locked.
+                To continue using all features, activate the monthly plan.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
+
+    st.write("")
+    c1, c2, c3 = st.columns([1, 1.6, 1])
+    with c2:
+        st.markdown('<div class="app-card">', unsafe_allow_html=True)
+        st.subheader("Continue with Premium")
+        st.write("Unlock full access for **€10/month** and continue using the app without restrictions.")
+        if days_left > 0:
+            st.info(f"Your free trial is still active. Days left: {days_left}")
+        else:
+            st.warning("Your 2-day free trial has expired.")
+
+        if checkout_url:
+            st.link_button(
+                "💳 Subscribe for €10/month",
+                checkout_url,
+                use_container_width=True,
+            )
+            st.caption("Secure checkout powered by Stripe.")
+        else:
+            st.error("Unable to prepare checkout right now. Please try again.")
+
+        st.button(
+            "Logout",
+            on_click=st.logout,
+            use_container_width=True,
+            key="locked_logout_button",
+        )
+        st.markdown("</div>", unsafe_allow_html=True)
     st.stop()
 
 
@@ -961,42 +1174,42 @@ if (not is_admin_user()) and (not user_has_paid_access(user_email)):
 # SIDEBAR
 # -------------------------------------------------
 with st.sidebar:
+    st.markdown("### Account")
     st.success("Logged in")
     st.write(f"User: {get_current_user_email() or get_current_user_id()}")
 
+    idx, row, users = get_current_user_registry_row()
+    days_left = trial_days_left(row.get("trial_end")) if row else 0
     user_email = get_current_user_email()
-    billing_row = get_stripe_subscription_row(user_email) if user_email else None
 
     if is_admin_user():
         st.success("Admin: Full Access")
     else:
-        if billing_row:
-            if billing_row.get("billing_status") == "active":
-                st.success("Plan: Premium")
-            elif billing_row.get("billing_status") == "trialing":
-                days_left = trial_days_left_from_stripe(billing_row.get("trial_end"))
-                st.info(f"Trial: {days_left} day(s) left")
-            else:
-                st.warning("Plan: Free / Locked")
+        if row and row.get("billing_status") == "active":
+            st.success("Plan: Premium")
+        elif days_left > 0:
+            st.info(f"Trial: {days_left} day(s) left")
         else:
-            st.warning("Plan: Free / Locked")
+            st.warning("Plan: Locked")
 
     st.markdown("---")
     st.subheader("💳 Billing")
 
-    if (not is_admin_user()) and user_email and (
-        not billing_row or billing_row.get("billing_status") not in ["trialing", "active"]
-    ):
-        if st.button("🚀 Start 2-Day Free Trial", use_container_width=True):
-            try:
-                checkout_url = create_checkout_session(user_email)
+    if not is_admin_user():
+        if row and row.get("billing_status") == "active":
+            st.success("Your subscription is active.")
+        elif days_left > 0:
+            st.info("You are currently using the free 2-day trial.")
+        elif user_email:
+            checkout_url = get_checkout_url(user_email)
+            if checkout_url:
                 st.link_button(
-                    "👉 Continue to Stripe",
+                    "Subscribe €10/month",
                     checkout_url,
                     use_container_width=True,
                 )
-            except Exception as e:
-                st.error(f"Stripe error: {e}")
+            else:
+                st.error("Checkout unavailable.")
 
     st.markdown("---")
     st.button(
@@ -1010,7 +1223,22 @@ with st.sidebar:
 # -------------------------------------------------
 # MAIN UI
 # -------------------------------------------------
-st.title("Pricing App v13 - Full Version")
+st.markdown(
+    """
+    <div class="app-hero">
+        <div style="font-size:34px;font-weight:800;letter-spacing:-0.03em;">Pricing App</div>
+        <div style="font-size:16px;color:#d1d5db;margin-top:8px;">
+            Upload supplier sources, compare products and export polished Excel reports.
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+if st.query_params.get("payment") == "success":
+    st.success("Payment completed successfully. Your access will be available after the page refreshes.")
+elif st.query_params.get("payment") == "cancel":
+    st.info("Checkout was cancelled.")
 
 # 1. COMPANY MANAGER
 st.markdown("## 1. Company Manager")
@@ -1023,7 +1251,7 @@ with add_c2:
 with add_c3:
     st.write("")
     st.write("")
-    if st.button("Add Company", key="add_company_button"):
+    if st.button("Add Company", key="add_company_button", use_container_width=True):
         code = normalize_code(new_code)
         name = str(new_name).strip()
 
@@ -1061,7 +1289,7 @@ with del_c1:
 with del_c2:
     st.write("")
     st.write("")
-    if st.button("Delete Company", key="delete_company_button"):
+    if st.button("Delete Company", key="delete_company_button", use_container_width=True):
         if not delete_company_display:
             st.error("Please select a company.")
         else:
@@ -1105,7 +1333,7 @@ with s2:
 with s3:
     file = st.file_uploader("Upload Source", type=["xlsx", "xlsm"], key="save_file")
 
-if st.button("Save", key="save_source_button"):
+if st.button("Save", key="save_source_button", use_container_width=True):
     if file is None:
         st.error("Please upload a source file first.")
     else:
@@ -1126,6 +1354,7 @@ if TEMPLATE_FILE.exists():
             file_name="source_template.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key="download_source_template",
+            use_container_width=True,
         )
 else:
     st.warning("Template file not found.")
@@ -1159,7 +1388,7 @@ with src_d1:
 with src_d2:
     st.write("")
     st.write("")
-    if st.button("Delete Source", key="delete_source_button"):
+    if st.button("Delete Source", key="delete_source_button", use_container_width=True):
         if not delete_source_display:
             st.error("Please select a source.")
         else:
@@ -1240,7 +1469,7 @@ else:
     b1, b2 = st.columns([1, 3])
 
     with b1:
-        if st.button("Add Row", key="add_row_button"):
+        if st.button("Add Row", key="add_row_button", use_container_width=True):
             st.session_state.row_ids.append(st.session_state.next_row_id)
             st.session_state.next_row_id += 1
             st.rerun()
@@ -1256,7 +1485,7 @@ else:
 
         with top2:
             st.write("")
-            if st.button("Delete This Row", key=f"delete_row_{row_id}"):
+            if st.button("Delete This Row", key=f"delete_row_{row_id}", use_container_width=True):
                 st.session_state.row_ids = [
                     r for r in st.session_state.row_ids if r != row_id
                 ]
@@ -1348,6 +1577,7 @@ if not export_df.empty:
         file_name="comparison_report.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key="download_excel_report",
+        use_container_width=True,
     )
 else:
     st.info("No data available for export yet.")
@@ -1367,6 +1597,8 @@ if is_admin_user():
                     "Email": row.get("email", ""),
                     "Name": row.get("name", ""),
                     "Status": row.get("status", "pending"),
+                    "Billing": row.get("billing_status", "trialing"),
+                    "Premium": row.get("is_premium", False),
                     "First Seen": row.get("first_seen", ""),
                     "Last Login": row.get("last_login", ""),
                     "Last Seen": row.get("last_seen", ""),
@@ -1396,7 +1628,7 @@ if is_admin_user():
         c1, c2, c3 = st.columns(3)
 
         with c1:
-            if st.button("Approve User", key="approve_user_button"):
+            if st.button("Approve User", key="approve_user_button", use_container_width=True):
                 if not selected_user_label:
                     st.warning("Please select a user.")
                 else:
@@ -1406,7 +1638,7 @@ if is_admin_user():
                     st.rerun()
 
         with c2:
-            if st.button("Block User", key="block_user_button"):
+            if st.button("Block User", key="block_user_button", use_container_width=True):
                 if not selected_user_label:
                     st.warning("Please select a user.")
                 else:
@@ -1416,7 +1648,7 @@ if is_admin_user():
                     st.rerun()
 
         with c3:
-            if st.button("Set Pending", key="pending_user_button"):
+            if st.button("Set Pending", key="pending_user_button", use_container_width=True):
                 if not selected_user_label:
                     st.warning("Please select a user.")
                 else:
