@@ -655,6 +655,17 @@ def online_status_from_last_seen(last_seen_value):
     return "Offline"
 
 
+def set_user_premium(email, sub, is_premium=True):
+    users = load_users_registry()
+    idx = find_user_index(users, email, sub)
+    if idx is not None:
+        users[idx]["is_premium"] = bool(is_premium)
+        users[idx]["billing_status"] = "active" if is_premium else "expired"
+        if is_premium:
+            users[idx]["status"] = "approved"
+        save_users_registry(users)
+
+
 # -------------------------------------------------
 # SAFE COMPANIES LOADING
 # -------------------------------------------------
@@ -1625,36 +1636,56 @@ if is_admin_user():
             key="admin_selected_user_to_manage",
         )
 
-        c1, c2, c3 = st.columns(3)
+        c1, c2, c3, c4, c5 = st.columns(5)
 
-        with c1:
-            if st.button("Approve User", key="approve_user_button", use_container_width=True):
-                if not selected_user_label:
-                    st.warning("Please select a user.")
-                else:
-                    row = user_options[selected_user_label]
-                    set_user_status(row.get("email", ""), row.get("sub", ""), "approved")
-                    st.success(f"Approved: {row.get('email', '')}")
-                    st.rerun()
+with c1:
+    if st.button("Approve User", key="approve_user_button", use_container_width=True):
+        if not selected_user_label:
+            st.warning("Please select a user.")
+        else:
+            row = user_options[selected_user_label]
+            set_user_status(row.get("email", ""), row.get("sub", ""), "approved")
+            st.success(f"Approved: {row.get('email', '')}")
+            st.rerun()
 
-        with c2:
-            if st.button("Block User", key="block_user_button", use_container_width=True):
-                if not selected_user_label:
-                    st.warning("Please select a user.")
-                else:
-                    row = user_options[selected_user_label]
-                    set_user_status(row.get("email", ""), row.get("sub", ""), "blocked")
-                    st.success(f"Blocked: {row.get('email', '')}")
-                    st.rerun()
+with c2:
+    if st.button("Block User", key="block_user_button", use_container_width=True):
+        if not selected_user_label:
+            st.warning("Please select a user.")
+        else:
+            row = user_options[selected_user_label]
+            set_user_status(row.get("email", ""), row.get("sub", ""), "blocked")
+            st.success(f"Blocked: {row.get('email', '')}")
+            st.rerun()
 
-        with c3:
-            if st.button("Set Pending", key="pending_user_button", use_container_width=True):
-                if not selected_user_label:
-                    st.warning("Please select a user.")
-                else:
-                    row = user_options[selected_user_label]
-                    set_user_status(row.get("email", ""), row.get("sub", ""), "pending")
-                    st.success(f"Set to pending: {row.get('email', '')}")
-                    st.rerun()
+with c3:
+    if st.button("Set Pending", key="pending_user_button", use_container_width=True):
+        if not selected_user_label:
+            st.warning("Please select a user.")
+        else:
+            row = user_options[selected_user_label]
+            set_user_status(row.get("email", ""), row.get("sub", ""), "pending")
+            st.success(f"Set to pending: {row.get('email', '')}")
+            st.rerun()
+
+with c4:
+    if st.button("Give Premium", key="give_premium_button", use_container_width=True):
+        if not selected_user_label:
+            st.warning("Please select a user.")
+        else:
+            row = user_options[selected_user_label]
+            set_user_premium(row.get("email", ""), row.get("sub", ""), True)
+            st.success(f"Premium granted to: {row.get('email', '')}")
+            st.rerun()
+
+with c5:
+    if st.button("Remove Premium", key="remove_premium_button", use_container_width=True):
+        if not selected_user_label:
+            st.warning("Please select a user.")
+        else:
+            row = user_options[selected_user_label]
+            set_user_premium(row.get("email", ""), row.get("sub", ""), False)
+            st.success(f"Premium removed from: {row.get('email', '')}")
+            st.rerun()
     else:
         st.info("No users found yet.")
