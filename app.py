@@ -1,19 +1,13 @@
 import os
-import streamlit as st
-import pandas as pd
+import io
+import json
+import re
 from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
-import re
-import io
+
+import pandas as pd
+import streamlit as st
 import stripe
-
-def is_logged_in():
-    try:
-        return bool(st.user.is_logged_in)
-    except Exception:
-        return False
-
-
 from supabase import create_client, Client
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -41,7 +35,6 @@ def ensure_render_secrets_file():
     auth_client_id = os.getenv("AUTH_CLIENT_ID", "")
     auth_client_secret = os.getenv("AUTH_CLIENT_SECRET", "")
     auth_server_metadata_url = os.getenv("AUTH_SERVER_METADATA_URL", "")
-
     supabase_url = os.getenv("SUPABASE_URL", "")
     supabase_key = os.getenv("SUPABASE_KEY", "")
 
@@ -52,11 +45,10 @@ def ensure_render_secrets_file():
         auth_client_secret,
         auth_server_metadata_url,
     ]
-
     if not all(required):
         return
 
-    content = f"""SUPABASE_URL = "{_escape_toml(supabase_url)}"
+    content = f'''SUPABASE_URL = "{_escape_toml(supabase_url)}"
 SUPABASE_KEY = "{_escape_toml(supabase_key)}"
 
 [auth]
@@ -65,7 +57,7 @@ cookie_secret = "{_escape_toml(auth_cookie_secret)}"
 client_id = "{_escape_toml(auth_client_id)}"
 client_secret = "{_escape_toml(auth_client_secret)}"
 server_metadata_url = "{_escape_toml(auth_server_metadata_url)}"
-"""
+'''
 
     SECRETS_FILE.write_text(content, encoding="utf-8")
 
@@ -74,18 +66,20 @@ ensure_render_secrets_file()
 
 
 # -------------------------------------------------
-# APP CONFIG + AUTH + SUPABASE
+# APP CONFIG
 # -------------------------------------------------
 st.set_page_config(layout="wide")
-
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 
 
-@st.cache_resource
-def get_supabase() -> Client:
-    supabase_url = st.secrets["SUPABASE_URL"]
-    supabase_key = st.secrets["SUPABASE_KEY"]
-    return create_client(supabase_url, supabase_key)
+# -------------------------------------------------
+# AUTH / USER HELPERS
+# -------------------------------------------------
+def is_logged_in():
+    try:
+        return bool(st.user.is_logged_in)
+    except Exception:
+        return False
 
 
 def get_current_user_id():
@@ -103,7 +97,7 @@ def get_current_user_email():
 
 
 def auth_is_configured():
-            return True
+    return True
 
 
 def show_login_screen():
@@ -120,11 +114,20 @@ def show_login_screen():
         )
 
 
-import json
-from datetime import datetime, timedelta
+# -------------------------------------------------
+# SUPABASE
+# -------------------------------------------------
+@st.cache_resource
+def get_supabase() -> Client:
+    return create_client(
+        st.secrets["SUPABASE_URL"],
+        st.secrets["SUPABASE_KEY"],
+    )
 
-from pathlib import Path
 
+# -------------------------------------------------
+# BILLING / STRIPE
+# -------------------------------------------------
 def get_stripe_subscription_row(email: str):
     if not email:
         return None
@@ -135,8 +138,8 @@ def get_stripe_subscription_row(email: str):
             return None
 
         customer = customers.data[0]
-
         subs = stripe.Subscription.list(customer=customer.id, status="all", limit=10)
+
         if not subs.data:
             return {
                 "email": email.strip().lower(),
@@ -187,12 +190,15 @@ def user_has_paid_access(email: str) -> bool:
     row = get_stripe_subscription_row(email)
     if not row:
         return False
+    return row.get("billing_status") in ["active", "trialing"]
 
-    if row.get("billing_status") in ["active", "trialing"]:
-        return True
 
-    return False
+from billing import create_checkout_session
 
+
+# -------------------------------------------------
+# PERSISTENT STORAGE
+# -------------------------------------------------
 PERSIST_ROOT = Path(os.getenv("PERSIST_ROOT", "/var/data"))
 PERSIST_ROOT.mkdir(parents=True, exist_ok=True)
 
@@ -212,17 +218,19 @@ COMPANIES_FILE = USER_DIR / "companies.csv"
 
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
-PERSIST_ROOT.mkdir(parents=True, exist_ok=True)
-
 ROOT_STORAGE = PERSIST_ROOT
 ADMIN_DIR = ROOT_STORAGE / "_admin"
 ADMIN_DIR.mkdir(parents=True, exist_ok=True)
 
 USERS_REGISTRY_FILE = ADMIN_DIR / "users_registry.json"
-
 ADMIN_EMAILS = ["gmyl13@gmail.com"]
 
+TEMPLATE_FILE = BASE_DIR / "templates" / "source_template_english.xlsx"
 
+
+# -------------------------------------------------
+# JSON / TIME HELPERS
+# -------------------------------------------------
 def load_json_data(path: Path, default):
     if not path.exists():
         return default
@@ -247,6 +255,13 @@ def parse_iso(value):
         return None
 
 
+def now_utc():
+    return datetime.utcnow()
+
+
+# -------------------------------------------------
+# USERS / ADMIN
+# -------------------------------------------------
 def get_user_identity():
     try:
         return {
@@ -267,21 +282,18 @@ def load_users_registry():
         return []
     try:
         return json.loads(USERS_REGISTRY_FILE.read_text(encoding="utf-8"))
-    except:
+    except Exception:
         return []
 
 
 def save_users_registry(data):
     USERS_REGISTRY_FILE.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
     )
 
 
 TRIAL_DAYS = 2
-
-
-def now_utc():
-    return datetime.utcnow()
 
 
 def ensure_user_billing_fields(user_row):
@@ -298,6 +310,13 @@ def ensure_user_billing_fields(user_row):
         user_row["is_premium"] = False
 
     return user_row
+
+
+def find_user_index(users, email, sub):
+    for i, row in enumerate(users):
+        if row.get("email") == email and row.get("sub") == sub:
+            return i
+    return None
 
 
 def get_current_user_registry_row():
@@ -317,9 +336,11 @@ def trial_days_left(trial_end_value):
     dt = parse_iso(trial_end_value)
     if dt is None:
         return 0
+
     remaining = dt - now_utc()
     if remaining.total_seconds() <= 0:
         return 0
+
     return max(1, remaining.days + (1 if remaining.seconds > 0 else 0))
 
 
@@ -332,6 +353,7 @@ def current_user_has_access():
         return True
 
     billing_status = row.get("billing_status", "trialing")
+
     if billing_status == "active":
         return True
 
@@ -352,17 +374,9 @@ def is_admin_user():
     return user["email"] in ADMIN_EMAILS
 
 
-def find_user_index(users, email, sub):
-    for i, row in enumerate(users):
-        if row.get("email") == email and row.get("sub") == sub:
-            return i
-    return None
-
-
 def set_user_status(email, sub, new_status):
     users = load_users_registry()
     idx = find_user_index(users, email, sub)
-
     if idx is not None:
         users[idx]["status"] = new_status
         save_users_registry(users)
@@ -373,6 +387,7 @@ def ensure_current_user_in_registry():
     users = load_users_registry()
 
     idx = find_user_index(users, user["email"], user["sub"])
+
     if idx is None:
         status = "approved" if user["email"] in ADMIN_EMAILS else "pending"
         users.append(
@@ -390,12 +405,10 @@ def ensure_current_user_in_registry():
                 "is_premium": False,
             }
         )
-
     else:
         users[idx]["name"] = user["name"]
         users[idx]["last_login"] = now_iso()
         users[idx]["last_seen"] = now_iso()
-
         if user["email"] in ADMIN_EMAILS:
             users[idx]["status"] = "approved"
         users[idx] = ensure_user_billing_fields(users[idx])
@@ -406,7 +419,6 @@ def ensure_current_user_in_registry():
 def touch_current_user():
     user = get_user_identity()
     users = load_users_registry()
-
     idx = find_user_index(users, user["email"], user["sub"])
     if idx is not None:
         users[idx]["last_seen"] = now_iso()
@@ -415,9 +427,13 @@ def touch_current_user():
 
 def get_current_user_status():
     user = get_user_identity()
-    users = load_users_registry()
 
+    if user["email"] in ADMIN_EMAILS:
+        return "approved"
+
+    users = load_users_registry()
     idx = find_user_index(users, user["email"], user["sub"])
+
     if idx is None:
         return "pending"
 
@@ -432,21 +448,6 @@ def current_user_is_approved():
     return get_current_user_status() == "approved"
 
 
-def get_current_user_status():
-    user = get_user_identity()
-
-    if user["email"] in ADMIN_EMAILS:
-        return "approved"
-
-    users = load_users_registry()
-
-    idx = find_user_index(users, user["email"], user["sub"])
-    if idx is None:
-        return "pending"
-
-    return users[idx].get("status", "pending")
-
-
 def online_status_from_last_seen(last_seen_value):
     dt = parse_iso(last_seen_value)
     if dt is None:
@@ -456,170 +457,6 @@ def online_status_from_last_seen(last_seen_value):
         return "Online"
 
     return "Offline"
-
-
-if not is_logged_in():
-    show_login_screen()
-    st.stop()
-# Force current user into shared registry
-user = get_user_identity()
-users_registry = load_users_registry()
-
-idx = find_user_index(users_registry, user["email"], user["sub"])
-
-if idx is None:
-    users_registry.append(
-        {
-            "email": user["email"],
-            "sub": user["sub"],
-            "name": user["name"],
-            "status": "approved" if user["email"] in ADMIN_EMAILS else "pending",
-            "first_seen": now_iso(),
-            "last_login": now_iso(),
-            "last_seen": now_iso(),
-        }
-    )
-else:
-    users_registry[idx]["name"] = user["name"]
-    users_registry[idx]["last_login"] = now_iso()
-    users_registry[idx]["last_seen"] = now_iso()
-    if user["email"] in ADMIN_EMAILS:
-        users_registry[idx]["status"] = "approved"
-    users_registry[idx] = ensure_user_billing_fields(users_registry[idx])
-
-save_users_registry(users_registry)
-
-touch_current_user()
-
-if current_user_is_blocked():
-    st.error("Access denied. Your account has been blocked.")
-    st.button(
-        "Logout",
-        on_click=st.logout,
-        use_container_width=True,
-        key="blocked_logout_button",
-    )
-    st.stop()
-
-if not current_user_is_approved():
-    st.warning("Your account is pending admin approval.")
-    st.button(
-        "Logout",
-        on_click=st.logout,
-        use_container_width=True,
-        key="pending_logout_button"
-    )
-    st.stop()
-
-
-user_email = get_current_user_email()
-
-if not user_has_paid_access(user_email):
-    st.title("Pricing App v13 - Full Version")
-    st.warning("Your premium access is locked.")
-
-    billing_row = get_stripe_subscription_row(user_email) if user_email else None
-
-    if billing_row and billing_row.get("billing_status") == "trialing":
-        days_left = trial_days_left_from_stripe(billing_row.get("trial_end"))
-        st.info(f"Your trial is active. Days left: {days_left}")
-    else:
-        st.info("Start your trial or upgrade to Premium to continue.")
-
-    from billing import create_checkout_session
-
-    if user_email:
-        if st.button("🚀 Start 2-Day Free Trial", use_container_width=True):
-            try:
-                checkout_url = create_checkout_session(user_email)
-                st.link_button("👉 Continue to Stripe", checkout_url, use_container_width=True)
-            except Exception as e:
-                st.error(f"Stripe error: {e}")
-
-    st.button(
-        "Logout",
-        on_click=st.logout,
-        use_container_width=True,
-        key="locked_logout_button"
-    )
-    st.stop()
-
-
-from billing import create_checkout_session
-
-with st.sidebar:
-    ...
-
-
-from billing import create_checkout_session
-
-with st.sidebar:
-    st.success("Logged in")
-    st.write(f"User: {get_current_user_email() or get_current_user_id()}")
-    user_email = get_current_user_email()
-billing_row = get_stripe_subscription_row(user_email) if user_email else None
-
-if billing_row:
-    if billing_row.get("billing_status") == "active":
-        st.success("Plan: Premium")
-    elif billing_row.get("billing_status") == "trialing":
-        days_left = trial_days_left_from_stripe(billing_row.get("trial_end"))
-        st.info(f"Trial: {days_left} day(s) left")
-    else:
-        st.warning("Plan: Free / Locked")
-else:
-    st.warning("Plan: Free / Locked")
-
-    st.markdown("---")
-    st.subheader("💳 Billing")
-
-    user_email = get_current_user_email()
-
-    if user_email:
-        if st.button("🚀 Start 2-Day Free Trial", use_container_width=True):
-            try:
-                checkout_url = create_checkout_session(user_email)
-                st.link_button(
-                    "👉 Continue to Stripe", checkout_url, use_container_width=True
-                )
-            except Exception as e:
-                st.error(f"Stripe error: {e}")
-    else:
-        st.warning("No email found.")
-
-    st.markdown("---")
-    st.button(
-        "Logout", on_click=st.logout, use_container_width=True, key="logout_button"
-    )
-
-st.title("Pricing App v13 - Full Version")
-
-
-# -------------------------------------------------
-# APP CONFIG + AUTH + SUPABASE
-# -------------------------------------------------
-
-
-@st.cache_resource
-def get_supabase() -> Client:
-    return create_client(
-        st.secrets["SUPABASE_URL"],
-        st.secrets["SUPABASE_KEY"],
-    )
-
-
-def get_current_user_id():
-    try:
-        return st.user.get("sub") or st.user.get("email") or "anonymous"
-    except Exception:
-        return "anonymous"
-
-
-def get_current_user_email():
-    try:
-        return st.user.get("email", "")
-    except Exception:
-        return ""
 
 
 # -------------------------------------------------
@@ -672,13 +509,12 @@ def normalize_code(text):
 
 
 companies_df = load_companies_safe()
-
 for _, row in companies_df.iterrows():
     (UPLOADS_DIR / row["code"]).mkdir(parents=True, exist_ok=True)
 
 
 # -------------------------------------------------
-# HELPERS
+# FILE / CATALOG HELPERS
 # -------------------------------------------------
 def get_company_folder(code):
     folder = UPLOADS_DIR / code
@@ -688,7 +524,6 @@ def get_company_folder(code):
 
 def get_next_version_filename(company, dt, original_name):
     folder = get_company_folder(company)
-
     yyyy = dt.strftime("%Y")
     mm = dt.strftime("%m")
     dd = dt.strftime("%d")
@@ -698,8 +533,8 @@ def get_next_version_filename(company, dt, original_name):
         ext = ".xlsx"
 
     existing = list(folder.glob(f"{company}_{yyyy}_{mm}_{dd}_v*{ext}"))
-
     max_v = 0
+
     for f in existing:
         try:
             v = int(f.stem.split("_v")[-1])
@@ -721,6 +556,7 @@ def get_company_files(code):
 
 def list_saved_sources():
     rows = []
+
     for _, row in companies_df.iterrows():
         code = row["code"]
         name = row["name"]
@@ -809,9 +645,7 @@ def prepare_catalog(df):
     out = out.dropna(subset=["Price"])
     out = out[out["Price"] > 0]
     out = out.reset_index(drop=True)
-
     out["DISPLAY"] = out["Product"] + " | SAP " + out["SAP"]
-
     return out
 
 
@@ -823,13 +657,11 @@ def apply_discounts(price, discs):
     for d in discs:
         if d is not None and d != 0:
             p *= 1 - d / 100
-
     return round(p, 2)
 
 
 def best_price(d):
     valid = {k: round(v, 2) for k, v in d.items() if v is not None and v > 0}
-
     if not valid:
         return ""
 
@@ -852,8 +684,10 @@ def best_price(d):
 def compare_note(a_name, a_price, b_name, b_price):
     if a_price is None or b_price is None:
         return ""
+
     a = round(a_price, 2)
     b = round(b_price, 2)
+
     if a == b:
         return "Same Price"
     if a > b:
@@ -864,9 +698,11 @@ def compare_note(a_name, a_price, b_name, b_price):
 def get_catalog_row(df, display_value):
     if df is None or df.empty or not display_value:
         return None
+
     rows = df[df["DISPLAY"] == display_value]
     if rows.empty:
         return None
+
     return rows.iloc[0]
 
 
@@ -898,8 +734,10 @@ def row_result_dict(visible_index, row_id, catalogs, selected_codes):
             result[f"{label} MM"] = row["MM"]
             result[f"{label} Package"] = row["Package"]
             result[f"{label} Base Price"] = base_price
+
             for i, disc in enumerate(discs, start=1):
                 result[f"{label} Disc{i}"] = disc
+
             result[f"{label} Final Price"] = final_price
         else:
             final_prices[code] = None
@@ -908,10 +746,12 @@ def row_result_dict(visible_index, row_id, catalogs, selected_codes):
             result[f"{label} MM"] = ""
             result[f"{label} Package"] = ""
             result[f"{label} Base Price"] = ""
+
             for i in range(1, 6):
                 result[f"{label} Disc{i}"] = st.session_state.get(
                     f"row_{row_id}_{code}_disc_{i}", 0.0
                 )
+
             result[f"{label} Final Price"] = ""
 
     valid = {k: v for k, v in final_prices.items() if v is not None}
@@ -960,7 +800,6 @@ def style_excel_worksheet(ws):
             cell.alignment = left_align
 
     headers = [cell.value for cell in ws[1]]
-
     for col_idx, header in enumerate(headers, start=1):
         if header is None:
             continue
@@ -1003,6 +842,7 @@ def style_excel_worksheet(ws):
         "Saint-Gobain Base Price",
         "Saint-Gobain Final Price",
     ]
+
     disc_headers = [
         "Siniat Disc1",
         "Siniat Disc2",
@@ -1025,6 +865,7 @@ def style_excel_worksheet(ws):
         if header in numeric_headers:
             for row_idx in range(2, ws.max_row + 1):
                 ws.cell(row=row_idx, column=col_idx).number_format = "0.00"
+
         if header in disc_headers:
             for row_idx in range(2, ws.max_row + 1):
                 ws.cell(row=row_idx, column=col_idx).number_format = "0.0"
@@ -1036,6 +877,7 @@ def to_excel_bytes(df):
         df.to_excel(writer, index=False, sheet_name="Comparison Report")
         ws = writer.book["Comparison Report"]
         style_excel_worksheet(ws)
+
     output.seek(0)
     return output.getvalue()
 
@@ -1051,18 +893,133 @@ if "next_row_id" not in st.session_state:
 
 
 # -------------------------------------------------
-# 1. COMPANY MANAGER
+# APP FLOW
 # -------------------------------------------------
+if not is_logged_in():
+    show_login_screen()
+    st.stop()
+
+ensure_current_user_in_registry()
+touch_current_user()
+
+if current_user_is_blocked():
+    st.error("Access denied. Your account has been blocked.")
+    st.button(
+        "Logout",
+        on_click=st.logout,
+        use_container_width=True,
+        key="blocked_logout_button",
+    )
+    st.stop()
+
+if not current_user_is_approved():
+    st.warning("Your account is pending admin approval.")
+    st.button(
+        "Logout",
+        on_click=st.logout,
+        use_container_width=True,
+        key="pending_logout_button",
+    )
+    st.stop()
+
+user_email = get_current_user_email()
+
+if (not is_admin_user()) and (not user_has_paid_access(user_email)):
+    st.title("Pricing App v13 - Full Version")
+    st.warning("Your premium access is locked.")
+
+    billing_row = get_stripe_subscription_row(user_email) if user_email else None
+
+    if billing_row and billing_row.get("billing_status") == "trialing":
+        days_left = trial_days_left_from_stripe(billing_row.get("trial_end"))
+        st.info(f"Your trial is active. Days left: {days_left}")
+    else:
+        st.info("Start your trial or upgrade to Premium to continue.")
+
+    if user_email:
+        if st.button("🚀 Start 2-Day Free Trial", use_container_width=True):
+            try:
+                checkout_url = create_checkout_session(user_email)
+                st.link_button(
+                    "👉 Continue to Stripe",
+                    checkout_url,
+                    use_container_width=True,
+                )
+            except Exception as e:
+                st.error(f"Stripe error: {e}")
+
+    st.button(
+        "Logout",
+        on_click=st.logout,
+        use_container_width=True,
+        key="locked_logout_button",
+    )
+    st.stop()
+
+
+# -------------------------------------------------
+# SIDEBAR
+# -------------------------------------------------
+with st.sidebar:
+    st.success("Logged in")
+    st.write(f"User: {get_current_user_email() or get_current_user_id()}")
+
+    user_email = get_current_user_email()
+    billing_row = get_stripe_subscription_row(user_email) if user_email else None
+
+    if is_admin_user():
+        st.success("Admin: Full Access")
+    else:
+        if billing_row:
+            if billing_row.get("billing_status") == "active":
+                st.success("Plan: Premium")
+            elif billing_row.get("billing_status") == "trialing":
+                days_left = trial_days_left_from_stripe(billing_row.get("trial_end"))
+                st.info(f"Trial: {days_left} day(s) left")
+            else:
+                st.warning("Plan: Free / Locked")
+        else:
+            st.warning("Plan: Free / Locked")
+
+    st.markdown("---")
+    st.subheader("💳 Billing")
+
+    if (not is_admin_user()) and user_email and (
+        not billing_row or billing_row.get("billing_status") not in ["trialing", "active"]
+    ):
+        if st.button("🚀 Start 2-Day Free Trial", use_container_width=True):
+            try:
+                checkout_url = create_checkout_session(user_email)
+                st.link_button(
+                    "👉 Continue to Stripe",
+                    checkout_url,
+                    use_container_width=True,
+                )
+            except Exception as e:
+                st.error(f"Stripe error: {e}")
+
+    st.markdown("---")
+    st.button(
+        "Logout",
+        on_click=st.logout,
+        use_container_width=True,
+        key="logout_button",
+    )
+
+
+# -------------------------------------------------
+# MAIN UI
+# -------------------------------------------------
+st.title("Pricing App v13 - Full Version")
+
+# 1. COMPANY MANAGER
 st.markdown("## 1. Company Manager")
 
 add_c1, add_c2, add_c3 = st.columns(3)
-
 with add_c1:
     new_code = st.text_input("Code", key="new_company_code", placeholder="TECHNOGIPS")
-
 with add_c2:
     new_name = st.text_input("Name", key="new_company_name", placeholder="Technogips")
-
 with add_c3:
     st.write("")
     st.write("")
@@ -1081,7 +1038,6 @@ with add_c3:
                 [companies_df, pd.DataFrame([{"code": code, "name": name}])],
                 ignore_index=True,
             )
-
             save_companies(updated_df)
             get_company_folder(code)
             st.success(f"Company {name} was added successfully.")
@@ -1096,14 +1052,12 @@ company_delete_options = {
 }
 
 del_c1, del_c2 = st.columns([2, 1])
-
 with del_c1:
     delete_company_display = st.selectbox(
         "Select Company to Delete",
         [""] + list(company_delete_options.keys()),
         key="delete_company_display",
     )
-
 with del_c2:
     st.write("")
     st.write("")
@@ -1112,30 +1066,23 @@ with del_c2:
             st.error("Please select a company.")
         else:
             delete_code = company_delete_options[delete_company_display]
-
             if delete_code in MAIN_CODES:
                 st.warning("Core companies cannot be deleted at this stage.")
             elif company_has_files(delete_code):
-                st.error(
-                    "This company has source files. Delete the source files first."
-                )
+                st.error("This company has source files. Delete the source files first.")
             else:
                 updated_df = companies_df[companies_df["code"] != delete_code].copy()
                 save_companies(updated_df)
-
                 folder = get_company_folder(delete_code)
                 try:
                     folder.rmdir()
                 except Exception:
                     pass
-
                 st.success(f"Company {delete_code} was deleted.")
                 st.rerun()
 
 
-# -------------------------------------------------
 # 2. SAVE SOURCE
-# -------------------------------------------------
 st.markdown("---")
 st.markdown("## 2. Save Source")
 
@@ -1144,10 +1091,11 @@ company_display_map = {
 }
 
 s1, s2, s3 = st.columns(3)
-
 with s1:
     selected_company_display = st.selectbox(
-        "Company", list(company_display_map.keys()), key="save_company"
+        "Company",
+        list(company_display_map.keys()),
+        key="save_company",
     )
     company = company_display_map[selected_company_display]
 
@@ -1163,18 +1111,12 @@ if st.button("Save", key="save_source_button"):
     else:
         name = get_next_version_filename(company, date_val, file.name)
         path = get_company_folder(company) / name
-
         with open(path, "wb") as f:
             f.write(file.getbuffer())
-
         st.success(f"Saved as: {name}")
         st.rerun()
 
-TEMPLATE_FILE = BASE_DIR / "templates" / "source_template_english.xlsx"
-
-st.info(
-    "Download the source template, fill in your products, and upload it back to the platform."
-)
+st.info("Download the source template, fill in your products, and upload it back to the platform.")
 
 if TEMPLATE_FILE.exists():
     with open(TEMPLATE_FILE, "rb") as f:
@@ -1188,17 +1130,14 @@ if TEMPLATE_FILE.exists():
 else:
     st.warning("Template file not found.")
 
-# -------------------------------------------------
+
 # 3. SOURCE LIBRARY
-# -------------------------------------------------
 st.markdown("---")
 st.markdown("## 3. Source Library")
 
 saved_df = list_saved_sources()
 if not saved_df.empty:
-    st.dataframe(
-        saved_df.drop(columns=["Full Path"]), use_container_width=True, hide_index=True
-    )
+    st.dataframe(saved_df.drop(columns=["Full Path"]), use_container_width=True, hide_index=True)
 else:
     st.info("No saved source files yet.")
 
@@ -1211,14 +1150,12 @@ if not saved_df.empty:
         source_delete_options[label] = row["Full Path"]
 
 src_d1, src_d2 = st.columns([3, 1])
-
 with src_d1:
     delete_source_display = st.selectbox(
         "Select Source to Delete",
         [""] + list(source_delete_options.keys()),
         key="delete_source_display",
     )
-
 with src_d2:
     st.write("")
     st.write("")
@@ -1227,7 +1164,6 @@ with src_d2:
             st.error("Please select a source.")
         else:
             full_path = Path(source_delete_options[delete_source_display])
-
             if full_path.exists():
                 full_path.unlink()
                 st.success(f"Source deleted: {full_path.name}")
@@ -1236,9 +1172,7 @@ with src_d2:
                 st.error("File not found.")
 
 
-# -------------------------------------------------
 # 4. SELECT SAVED SOURCES
-# -------------------------------------------------
 st.markdown("---")
 st.markdown("## 4. Select Saved Sources for Comparison")
 
@@ -1264,12 +1198,13 @@ catalogs = {}
 
 if selected_codes:
     cols = st.columns(len(selected_codes))
-
     for i, code in enumerate(selected_codes):
         with cols[i]:
             files = get_company_files(code)
             selected[code] = st.selectbox(
-                f"{code} source file", [""] + files, key=f"select_{code}"
+                f"{code} source file",
+                [""] + files,
+                key=f"select_{code}",
             )
 
     for code in selected_codes:
@@ -1280,9 +1215,7 @@ if selected_codes:
             catalogs[code] = None
 
 
-# -------------------------------------------------
 # 5. DEBUG
-# -------------------------------------------------
 st.markdown("---")
 st.markdown("## 5. Debug")
 
@@ -1297,9 +1230,7 @@ else:
     st.info("No comparison companies selected yet.")
 
 
-# -------------------------------------------------
 # 6. MULTI-LINE COMPARISON
-# -------------------------------------------------
 st.markdown("---")
 st.markdown("## 6. Multi-Line Comparison")
 
@@ -1337,19 +1268,18 @@ else:
         for col_idx, code in enumerate(selected_codes):
             with row_cols[col_idx]:
                 company_name_row = companies_df[companies_df["code"] == code]
-                label = (
-                    code if company_name_row.empty else company_name_row.iloc[0]["name"]
-                )
+                label = code if company_name_row.empty else company_name_row.iloc[0]["name"]
 
                 st.write(f"#### {label}")
-                df = catalogs.get(code)
 
+                df = catalogs.get(code)
                 if df is not None and not df.empty:
                     options = [""] + df["DISPLAY"].tolist()
                     selected_product = st.selectbox(
-                        f"{label} product", options, key=f"row_{row_id}_{code}_product"
+                        f"{label} product",
+                        options,
+                        key=f"row_{row_id}_{code}_product",
                     )
-
                     row = get_catalog_row(df, selected_product)
 
                     if row is not None:
@@ -1394,9 +1324,7 @@ else:
             if valid:
                 best_code = min(valid, key=valid.get)
                 best_name_row = companies_df[companies_df["code"] == best_code]
-                best_label = (
-                    best_code if best_name_row.empty else best_name_row.iloc[0]["name"]
-                )
+                best_label = best_code if best_name_row.empty else best_name_row.iloc[0]["name"]
             else:
                 best_label = "-"
 
@@ -1405,9 +1333,7 @@ else:
         st.markdown("---")
 
 
-# -------------------------------------------------
 # 7. EXPORT
-# -------------------------------------------------
 st.markdown("## 7. Export Excel Report")
 
 export_df = build_export_dataframe(st.session_state.row_ids, catalogs, selected_codes)
@@ -1416,7 +1342,6 @@ if not export_df.empty:
     st.dataframe(export_df, use_container_width=True, hide_index=True)
 
     excel_bytes = to_excel_bytes(export_df)
-
     st.download_button(
         "Download Excel Report",
         data=excel_bytes,
@@ -1427,15 +1352,13 @@ if not export_df.empty:
 else:
     st.info("No data available for export yet.")
 
-# -------------------------------------------------
+
 # 8. ADMIN PANEL
-# -------------------------------------------------
 if is_admin_user():
     st.markdown("---")
     st.markdown("## 8. Admin Panel")
 
     users_registry = load_users_registry()
-
     if users_registry:
         users_for_view = []
         for row in users_registry:
@@ -1457,7 +1380,11 @@ if is_admin_user():
 
         user_options = {}
         for row in users_registry:
-            label = f"{row.get('email', '')} | {row.get('status', '')} | {online_status_from_last_seen(row.get('last_seen', ''))}"
+            label = (
+                f"{row.get('email', '')} | "
+                f"{row.get('status', '')} | "
+                f"{online_status_from_last_seen(row.get('last_seen', ''))}"
+            )
             user_options[label] = row
 
         selected_user_label = st.selectbox(
@@ -1474,9 +1401,7 @@ if is_admin_user():
                     st.warning("Please select a user.")
                 else:
                     row = user_options[selected_user_label]
-                    set_user_status(
-                        row.get("email", ""), row.get("sub", ""), "approved"
-                    )
+                    set_user_status(row.get("email", ""), row.get("sub", ""), "approved")
                     st.success(f"Approved: {row.get('email', '')}")
                     st.rerun()
 
@@ -1501,5 +1426,3 @@ if is_admin_user():
                     st.rerun()
     else:
         st.info("No users found yet.")
-
-# -------------------------------------------------
