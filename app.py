@@ -7,6 +7,12 @@ import re
 import io
 import stripe
 
+def is_logged_in():
+    try:
+        return bool(st.user.is_logged_in)
+    except Exception:
+        return False
+
 
 from supabase import create_client, Client
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
