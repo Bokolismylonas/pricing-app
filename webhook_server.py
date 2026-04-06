@@ -10,7 +10,7 @@ app = Flask(__name__)
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
 
-PERSIST_ROOT = Path(os.getenv("PERSIST_ROOT", "/tmp/pricing_app_webhook"))
+PERSIST_ROOT = Path("data")
 PERSIST_ROOT.mkdir(parents=True, exist_ok=True)
 
 ADMIN_DIR = PERSIST_ROOT / "_admin"
