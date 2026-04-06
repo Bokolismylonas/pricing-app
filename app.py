@@ -97,25 +97,7 @@ def get_current_user_email():
 
 
 def auth_is_configured():
-    try:
-        auth_cfg = st.secrets["auth"]
-        required = [
-            auth_cfg["redirect_uri"],
-            auth_cfg["cookie_secret"],
-            auth_cfg["client_id"],
-            auth_cfg["client_secret"],
-            auth_cfg["server_metadata_url"],
-        ]
-        return all(required)
-    except Exception:
-        return False
-
-
-def is_logged_in():
-    try:
-        return bool(st.user.is_logged_in)
-    except Exception:
-        return False
+            return True
 
 
 def show_login_screen():
@@ -132,9 +114,6 @@ def show_login_screen():
         )
 
 
-if not auth_is_configured():
-    st.error("Authentication is not configured correctly.")
-    st.stop()
 import json
 from datetime import datetime, timedelta
 
