@@ -2,6 +2,7 @@ import os
 import io
 import json
 import re
+import uuid
 from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
 
@@ -320,17 +321,6 @@ def get_stripe_subscription_row(email: str):
         return None
 
 
-def trial_days_left_from_stripe(trial_end_value):
-    if not trial_end_value:
-        return 0
-    try:
-        now_dt = datetime.now(timezone.utc)
-        delta = trial_end_value - now_dt
-        return max(0, delta.days + (1 if delta.seconds > 0 else 0))
-    except Exception:
-        return 0
-
-
 def user_has_paid_access(email: str) -> bool:
     row = get_stripe_subscription_row(email)
     if not row:
@@ -434,6 +424,10 @@ def now_utc():
 # -------------------------------------------------
 # USERS / ADMIN
 # -------------------------------------------------
+TRIAL_DAYS = 2
+MAX_ACTIVE_SESSIONS = 2
+
+
 def get_user_identity():
     try:
         return {
@@ -465,9 +459,6 @@ def save_users_registry(data):
     )
 
 
-TRIAL_DAYS = 2
-
-
 def ensure_user_billing_fields(user_row):
     if "trial_start" not in user_row:
         user_row["trial_start"] = now_iso()
@@ -480,6 +471,9 @@ def ensure_user_billing_fields(user_row):
 
     if "is_premium" not in user_row:
         user_row["is_premium"] = False
+
+    if "active_sessions" not in user_row:
+        user_row["active_sessions"] = []
 
     return user_row
 
@@ -516,6 +510,89 @@ def trial_days_left(trial_end_value):
     return max(1, remaining.days + (1 if remaining.seconds > 0 else 0))
 
 
+def get_current_session_id():
+    if "app_session_id" not in st.session_state:
+        st.session_state["app_session_id"] = str(uuid.uuid4())
+    return st.session_state["app_session_id"]
+
+
+def register_current_session():
+    user = get_user_identity()
+    users = load_users_registry()
+    idx = find_user_index(users, user["email"], user["sub"])
+
+    if idx is None:
+        return True, 0
+
+    current_session_id = get_current_session_id()
+    current_time = now_iso()
+
+    sessions = users[idx].get("active_sessions", [])
+
+    for s in sessions:
+        if s.get("session_id") == current_session_id:
+            s["last_seen"] = current_time
+            users[idx]["active_sessions"] = sessions
+            save_users_registry(users)
+            return True, len(sessions)
+
+    if len(sessions) >= MAX_ACTIVE_SESSIONS:
+        return False, len(sessions)
+
+    sessions.append(
+        {
+            "session_id": current_session_id,
+            "last_seen": current_time,
+        }
+    )
+    users[idx]["active_sessions"] = sessions
+    save_users_registry(users)
+    return True, len(sessions)
+
+
+def unregister_current_session():
+    user = get_user_identity()
+    users = load_users_registry()
+    idx = find_user_index(users, user["email"], user["sub"])
+
+    if idx is None:
+        return
+
+    current_session_id = get_current_session_id()
+    sessions = users[idx].get("active_sessions", [])
+    sessions = [s for s in sessions if s.get("session_id") != current_session_id]
+    users[idx]["active_sessions"] = sessions
+    save_users_registry(users)
+
+
+def touch_current_session():
+    user = get_user_identity()
+    users = load_users_registry()
+    idx = find_user_index(users, user["email"], user["sub"])
+
+    if idx is None:
+        return
+
+    current_session_id = get_current_session_id()
+    sessions = users[idx].get("active_sessions", [])
+
+    changed = False
+    for s in sessions:
+        if s.get("session_id") == current_session_id:
+            s["last_seen"] = now_iso()
+            changed = True
+            break
+
+    if changed:
+        users[idx]["active_sessions"] = sessions
+        save_users_registry(users)
+
+
+def logout_current_user():
+    unregister_current_session()
+    st.logout()
+
+
 def sync_paid_status_from_stripe(email: str):
     idx, row, users = get_current_user_registry_row()
     if row is None or not email:
@@ -546,18 +623,28 @@ def current_user_has_access():
     if row is None:
         return False
 
+    user_email = get_current_user_email()
+
     if row.get("billing_status") == "active" or row.get("is_premium") is True:
-        return True
+        if row.get("is_premium") is True and row.get("stripe_subscription_id") is None:
+            return True
+
+        if user_email and sync_paid_status_from_stripe(user_email):
+            return True
+
+        if idx is not None and not row.get("is_premium", False):
+            users[idx]["billing_status"] = "expired"
+            users[idx]["is_premium"] = False
+            save_users_registry(users)
 
     trial_end = parse_iso(row.get("trial_end", ""))
     if trial_end and now_utc() <= trial_end:
         return True
 
-    user_email = get_current_user_email()
     if user_email and sync_paid_status_from_stripe(user_email):
         return True
 
-    if idx is not None:
+    if idx is not None and not row.get("is_premium", False):
         users[idx]["billing_status"] = "expired"
         users[idx]["is_premium"] = False
         save_users_registry(users)
@@ -576,6 +663,43 @@ def set_user_status(email, sub, new_status):
     if idx is not None:
         users[idx]["status"] = new_status
         save_users_registry(users)
+
+
+def set_user_premium(email, sub, is_premium=True):
+    users = load_users_registry()
+    idx = find_user_index(users, email, sub)
+    if idx is not None:
+        users[idx]["is_premium"] = bool(is_premium)
+        users[idx]["billing_status"] = "active" if is_premium else "expired"
+        users[idx]["stripe_customer_id"] = None
+        users[idx]["stripe_subscription_id"] = None
+        if is_premium:
+            users[idx]["status"] = "approved"
+        save_users_registry(users)
+
+
+def reset_user_sessions(email, sub):
+    users = load_users_registry()
+    idx = find_user_index(users, email, sub)
+    if idx is not None:
+        users[idx]["active_sessions"] = []
+        save_users_registry(users)
+
+
+def format_sessions(count):
+    if count >= MAX_ACTIVE_SESSIONS:
+        return f"{count}/{MAX_ACTIVE_SESSIONS} 🔴"
+    if count == MAX_ACTIVE_SESSIONS - 1:
+        return f"{count}/{MAX_ACTIVE_SESSIONS} 🟠"
+    return f"{count}/{MAX_ACTIVE_SESSIONS} 🟢"
+
+
+def session_status_label(count):
+    if count >= MAX_ACTIVE_SESSIONS:
+        return "Full 🔴"
+    if count == MAX_ACTIVE_SESSIONS - 1:
+        return "Near Limit 🟠"
+    return "Available 🟢"
 
 
 def ensure_current_user_in_registry():
@@ -599,6 +723,7 @@ def ensure_current_user_in_registry():
                 "trial_end": (now_utc() + timedelta(days=TRIAL_DAYS)).isoformat(),
                 "billing_status": "trialing",
                 "is_premium": False,
+                "active_sessions": [],
             }
         )
     else:
@@ -653,17 +778,6 @@ def online_status_from_last_seen(last_seen_value):
         return "Online"
 
     return "Offline"
-
-
-def set_user_premium(email, sub, is_premium=True):
-    users = load_users_registry()
-    idx = find_user_index(users, email, sub)
-    if idx is not None:
-        users[idx]["is_premium"] = bool(is_premium)
-        users[idx]["billing_status"] = "active" if is_premium else "expired"
-        if is_premium:
-            users[idx]["status"] = "approved"
-        save_users_registry(users)
 
 
 # -------------------------------------------------
@@ -1113,7 +1227,7 @@ if current_user_is_blocked():
     st.error("Access denied. Your account has been blocked.")
     st.button(
         "Logout",
-        on_click=st.logout,
+        on_click=logout_current_user,
         use_container_width=True,
         key="blocked_logout_button",
     )
@@ -1123,11 +1237,52 @@ if not current_user_is_approved():
     st.warning("Your account is pending admin approval.")
     st.button(
         "Logout",
-        on_click=st.logout,
+        on_click=logout_current_user,
         use_container_width=True,
         key="pending_logout_button",
     )
     st.stop()
+
+if not is_admin_user():
+    session_allowed, active_count = register_current_session()
+    if not session_allowed:
+        st.markdown(
+            """
+            <div class="locked-wrap">
+                <div class="locked-badge">Device limit reached</div>
+                <div class="locked-title">Too many active devices</div>
+                <div class="locked-subtitle">
+                    Your account is already active on the maximum allowed number of devices/browsers.
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        st.write("")
+        c1, c2, c3 = st.columns([1, 1.7, 1])
+
+        with c2:
+            st.markdown('<div class="app-card">', unsafe_allow_html=True)
+            st.subheader("Maximum active devices reached")
+            st.warning(f"This account allows up to {MAX_ACTIVE_SESSIONS} active devices/browsers at the same time.")
+            st.info(
+                "Example: if you are already logged in on your phone and your computer, "
+                "you will need to logout from one of them before signing in on a third device."
+            )
+            st.warning("Please logout from another device/browser first, then try again.")
+
+            st.button(
+                "Logout",
+                on_click=logout_current_user,
+                use_container_width=True,
+                key="session_limit_logout_button",
+            )
+            st.markdown("</div>", unsafe_allow_html=True)
+
+        st.stop()
+    else:
+        touch_current_session()
 
 user_email = get_current_user_email()
 
@@ -1173,7 +1328,7 @@ if (not is_admin_user()) and (not current_user_has_access()):
 
         st.button(
             "Logout",
-            on_click=st.logout,
+            on_click=logout_current_user,
             use_container_width=True,
             key="locked_logout_button",
         )
@@ -1223,9 +1378,15 @@ with st.sidebar:
                 st.error("Checkout unavailable.")
 
     st.markdown("---")
+
+    if not is_admin_user():
+        st.warning("⚠️ Please logout before closing the app to free your session.")
+        active_sessions_count = len(row.get("active_sessions", [])) if row else 0
+        st.caption(f"Active sessions: {format_sessions(active_sessions_count)}")
+
     st.button(
         "Logout",
-        on_click=st.logout,
+        on_click=logout_current_user,
         use_container_width=True,
         key="logout_button",
     )
@@ -1603,6 +1764,7 @@ if is_admin_user():
     if users_registry:
         users_for_view = []
         for row in users_registry:
+            sessions_count = len(row.get("active_sessions", []))
             users_for_view.append(
                 {
                     "Email": row.get("email", ""),
@@ -1610,6 +1772,8 @@ if is_admin_user():
                     "Status": row.get("status", "pending"),
                     "Billing": row.get("billing_status", "trialing"),
                     "Premium": row.get("is_premium", False),
+                    "Active Sessions": format_sessions(sessions_count),
+                    "Session Status": session_status_label(sessions_count),
                     "First Seen": row.get("first_seen", ""),
                     "Last Login": row.get("last_login", ""),
                     "Last Seen": row.get("last_seen", ""),
@@ -1623,10 +1787,11 @@ if is_admin_user():
 
         user_options = {}
         for row in users_registry:
+            sessions_count = len(row.get("active_sessions", []))
             label = (
                 f"{row.get('email', '')} | "
                 f"{row.get('status', '')} | "
-                f"{online_status_from_last_seen(row.get('last_seen', ''))}"
+                f"{session_status_label(sessions_count)}"
             )
             user_options[label] = row
 
@@ -1636,7 +1801,7 @@ if is_admin_user():
             key="admin_selected_user_to_manage",
         )
 
-        c1, c2, c3, c4, c5 = st.columns(5)
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
 
         with c1:
             if st.button("Approve User", key="approve_user_button", use_container_width=True):
@@ -1651,7 +1816,7 @@ if is_admin_user():
         with c2:
             if st.button("Block User", key="block_user_button", use_container_width=True):
                 if not selected_user_label:
-                     st.warning("Please select a user.")
+                    st.warning("Please select a user.")
                 else:
                     row = user_options[selected_user_label]
                     set_user_status(row.get("email", ""), row.get("sub", ""), "blocked")
@@ -1661,7 +1826,7 @@ if is_admin_user():
         with c3:
             if st.button("Set Pending", key="pending_user_button", use_container_width=True):
                 if not selected_user_label:
-                     st.warning("Please select a user.")
+                    st.warning("Please select a user.")
                 else:
                     row = user_options[selected_user_label]
                     set_user_status(row.get("email", ""), row.get("sub", ""), "pending")
@@ -1671,7 +1836,7 @@ if is_admin_user():
         with c4:
             if st.button("Give Premium", key="give_premium_button", use_container_width=True):
                 if not selected_user_label:
-                     st.warning("Please select a user.")
+                    st.warning("Please select a user.")
                 else:
                     row = user_options[selected_user_label]
                     set_user_premium(row.get("email", ""), row.get("sub", ""), True)
@@ -1681,11 +1846,21 @@ if is_admin_user():
         with c5:
             if st.button("Remove Premium", key="remove_premium_button", use_container_width=True):
                 if not selected_user_label:
-                     st.warning("Please select a user.")
+                    st.warning("Please select a user.")
                 else:
                     row = user_options[selected_user_label]
                     set_user_premium(row.get("email", ""), row.get("sub", ""), False)
                     st.success(f"Premium removed from: {row.get('email', '')}")
+                    st.rerun()
+
+        with c6:
+            if st.button("Reset Sessions", key="reset_sessions_button", use_container_width=True):
+                if not selected_user_label:
+                    st.warning("Please select a user.")
+                else:
+                    row = user_options[selected_user_label]
+                    reset_user_sessions(row.get("email", ""), row.get("sub", ""))
+                    st.success(f"Sessions reset for: {row.get('email', '')}")
                     st.rerun()
     else:
         st.info("No users found yet.")
