@@ -8,10 +8,21 @@ from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 import stripe
 from supabase import create_client, Client
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+
+
+# -------------------------------------------------
+# QUERY PARAM LOGIN HANDLER
+# -------------------------------------------------
+login_provider = st.query_params.get("login")
+if login_provider == "google":
+    st.login("google")
+elif login_provider == "microsoft":
+    st.login("microsoft")
 
 
 # -------------------------------------------------
@@ -39,15 +50,8 @@ def ensure_render_secrets_file():
     supabase_url = os.getenv("SUPABASE_URL", "")
     supabase_key = os.getenv("SUPABASE_KEY", "")
 
-    required_shared = [
-        auth_redirect_uri,
-        auth_cookie_secret,
-    ]
-    required_google = [
-        google_client_id,
-        google_client_secret,
-        google_server_metadata_url,
-    ]
+    required_shared = [auth_redirect_uri, auth_cookie_secret]
+    required_google = [google_client_id, google_client_secret, google_server_metadata_url]
 
     if not all(required_shared) or not all(required_google):
         return
@@ -232,69 +236,110 @@ def get_current_user_email():
         return ""
 
 
-def auth_is_configured():
-    return True
-
-
 def show_login_screen():
+    login_html = """
+    <html>
+    <head>
+    <style>
+        body {
+            margin: 0;
+            background: transparent;
+            font-family: Arial, sans-serif;
+        }
+        .login-container {
+            max-width: 420px;
+            margin: 40px auto;
+            padding: 40px;
+            border-radius: 22px;
+            background: linear-gradient(180deg, #0f172a 0%, #111827 100%);
+            border: 1px solid rgba(255,255,255,0.08);
+            box-shadow: 0 20px 50px rgba(0,0,0,0.35);
+            text-align: center;
+            color: white;
+        }
+        .login-title {
+            font-size: 30px;
+            font-weight: 800;
+            margin-bottom: 10px;
+            letter-spacing: -0.03em;
+        }
+        .login-subtitle {
+            font-size: 15px;
+            color: #cbd5e1;
+            margin-bottom: 28px;
+        }
+        .login-btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 12px;
+            padding: 14px;
+            border-radius: 12px;
+            font-weight: 700;
+            cursor: pointer;
+            text-decoration: none;
+            transition: all 0.2s ease;
+            margin-bottom: 12px;
+            font-size: 15px;
+        }
+        .login-btn:hover {
+            transform: translateY(-1px);
+        }
+        .google-btn {
+            background: #ffffff;
+            color: #111827;
+            border: 1px solid #e5e7eb;
+        }
+        .google-btn:hover {
+            background: #f9fafb;
+        }
+        .ms-btn {
+            background: #2F2F2F;
+            color: white;
+            border: 1px solid rgba(255,255,255,0.12);
+        }
+        .ms-btn:hover {
+            background: #3a3a3a;
+        }
+        .icon {
+            width: 20px;
+            height: 20px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+        }
+        .login-footer {
+            margin-top: 18px;
+            font-size: 12px;
+            color: #94a3b8;
+        }
+    </style>
+    </head>
+    <body>
+        <div class="login-container">
+            <div class="login-title">Pricing App</div>
+            <div class="login-subtitle">Sign in to continue to your workspace</div>
 
-    html = """
-    <div style="
-        max-width:420px;
-        margin:60px auto;
-        padding:40px;
-        border-radius:20px;
-        background:#111827;
-        box-shadow:0 20px 50px rgba(0,0,0,0.4);
-        text-align:center;
-        color:white;
-    ">
+            <a href="?login=google" class="login-btn google-btn">
+                <span class="icon">🔵</span>
+                Continue with Google
+            </a>
 
-        <h1 style="margin-bottom:10px;">Pricing App</h1>
-        <p style="color:#9ca3af;">Sign in to continue to your workspace</p>
+            <a href="?login=microsoft" class="login-btn ms-btn">
+                <span class="icon">🟦</span>
+                Continue with Microsoft
+            </a>
 
-        <a href="?login=google" style="
-            display:flex;
-            align-items:center;
-            justify-content:center;
-            gap:10px;
-            padding:14px;
-            border-radius:10px;
-            background:white;
-            color:black;
-            text-decoration:none;
-            font-weight:600;
-            margin-top:20px;
-        ">
-            <span>🔵</span>
-            Continue with Google
-        </a>
-
-        <a href="?login=microsoft" style="
-            display:flex;
-            align-items:center;
-            justify-content:center;
-            gap:10px;
-            padding:14px;
-            border-radius:10px;
-            background:#2F2F2F;
-            color:white;
-            text-decoration:none;
-            font-weight:600;
-            margin-top:10px;
-        ">
-            <span>🟦</span>
-            Continue with Microsoft
-        </a>
-
-        <p style="margin-top:20px;font-size:12px;color:#6b7280;">
-            Secure login • No passwords stored
-        </p>
-
-    </div>
+            <div class="login-footer">
+                Secure login • No passwords stored
+            </div>
+        </div>
+    </body>
+    </html>
     """
+    components.html(login_html, height=420)
 
-    st.markdown(html, unsafe_allow_html=True)
 
 # -------------------------------------------------
 # SUPABASE
@@ -432,19 +477,6 @@ TEMPLATE_FILE = BASE_DIR / "templates" / "source_template_english.xlsx"
 # -------------------------------------------------
 # JSON / TIME HELPERS
 # -------------------------------------------------
-def load_json_data(path: Path, default):
-    if not path.exists():
-        return default
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return default
-
-
-def save_json_data(path: Path, data):
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-
-
 def now_iso():
     return datetime.utcnow().isoformat()
 
@@ -1190,41 +1222,6 @@ def apply_discounts(price, discs):
     return round(p, 2)
 
 
-def best_price(d):
-    valid = {k: round(v, 2) for k, v in d.items() if v is not None and v > 0}
-    if not valid:
-        return ""
-
-    min_val = min(valid.values())
-    winners = [k for k, v in valid.items() if v == min_val]
-
-    label_map = {
-        "SINIAT": "SINIAT",
-        "KNAUF": "KNAUF",
-        "SAINT_GOBAIN": "SAINT-GOBAIN",
-    }
-
-    if len(winners) == 3:
-        return "Same Price all"
-    if len(winners) == 2:
-        return " / ".join(label_map[w] for w in winners)
-    return label_map[winners[0]]
-
-
-def compare_note(a_name, a_price, b_name, b_price):
-    if a_price is None or b_price is None:
-        return ""
-
-    a = round(a_price, 2)
-    b = round(b_price, 2)
-
-    if a == b:
-        return "Same Price"
-    if a > b:
-        return f"{a_name} more expensive"
-    return f"{a_name} cheaper"
-
-
 def get_catalog_row(df, display_value):
     if df is None or df.empty or not display_value:
         return None
@@ -1340,12 +1337,7 @@ def style_excel_worksheet(ws):
             fill = knauf_fill
         elif str(header).startswith("Saint-Gobain "):
             fill = sg_fill
-        elif str(header) in [
-            "Best Price",
-            "Knauf vs Siniat",
-            "Saint-Gobain vs Siniat",
-            "Saint-Gobain vs Knauf",
-        ]:
+        elif str(header) == "Best Price":
             fill = result_fill
         else:
             fill = None
@@ -1363,42 +1355,6 @@ def style_excel_worksheet(ws):
 
         adjusted_width = min(max(max_len + 2, 12), 30)
         ws.column_dimensions[get_column_letter(col_idx)].width = adjusted_width
-
-    numeric_headers = [
-        "Siniat Base Price",
-        "Siniat Final Price",
-        "Knauf Base Price",
-        "Knauf Final Price",
-        "Saint-Gobain Base Price",
-        "Saint-Gobain Final Price",
-    ]
-
-    disc_headers = [
-        "Siniat Disc1",
-        "Siniat Disc2",
-        "Siniat Disc3",
-        "Siniat Disc4",
-        "Siniat Disc5",
-        "Knauf Disc1",
-        "Knauf Disc2",
-        "Knauf Disc3",
-        "Knauf Disc4",
-        "Knauf Disc5",
-        "Saint-Gobain Disc1",
-        "Saint-Gobain Disc2",
-        "Saint-Gobain Disc3",
-        "Saint-Gobain Disc4",
-        "Saint-Gobain Disc5",
-    ]
-
-    for col_idx, header in enumerate(headers, start=1):
-        if header in numeric_headers:
-            for row_idx in range(2, ws.max_row + 1):
-                ws.cell(row=row_idx, column=col_idx).number_format = "0.00"
-
-        if header in disc_headers:
-            for row_idx in range(2, ws.max_row + 1):
-                ws.cell(row=row_idx, column=col_idx).number_format = "0.0"
 
 
 def to_excel_bytes(df):
@@ -1452,9 +1408,7 @@ if company_result["status"] == "full":
         unsafe_allow_html=True,
     )
 
-    st.write("")
     c1, c2, c3 = st.columns([1, 1.7, 1])
-
     with c2:
         st.markdown('<div class="app-card">', unsafe_allow_html=True)
         st.subheader("No available seats")
@@ -1496,7 +1450,7 @@ if not current_user_is_approved():
     st.stop()
 
 if not is_admin_user():
-    session_allowed, active_count = register_current_session()
+    session_allowed, _ = register_current_session()
     if not session_allowed:
         st.markdown(
             """
@@ -1511,19 +1465,15 @@ if not is_admin_user():
             unsafe_allow_html=True,
         )
 
-        st.write("")
         c1, c2, c3 = st.columns([1, 1.7, 1])
-
         with c2:
             st.markdown('<div class="app-card">', unsafe_allow_html=True)
             st.subheader("Maximum active devices reached")
             st.warning(f"This account allows up to {MAX_ACTIVE_SESSIONS} active devices/browsers at the same time.")
             st.info(
-                "Example: if you are already logged in on your phone and your computer, "
-                "you will need to logout from one of them before signing in on a third device."
+                "If you are already logged in on your phone and your computer, "
+                "you need to logout from one of them before signing in on a third device."
             )
-            st.warning("Please logout from another device/browser first, then try again.")
-
             st.button(
                 "Logout",
                 on_click=logout_current_user,
@@ -1557,7 +1507,6 @@ if (not is_admin_user()) and (not current_user_has_access()):
         unsafe_allow_html=True,
     )
 
-    st.write("")
     c1, c2, c3 = st.columns([1, 1.6, 1])
     with c2:
         st.markdown('<div class="app-card">', unsafe_allow_html=True)
@@ -1598,7 +1547,6 @@ with st.sidebar:
 
     idx, row, users = get_current_user_registry_row()
     days_left = trial_days_left(row.get("trial_end")) if row else 0
-    user_email = get_current_user_email()
     company = get_current_user_company()
 
     if is_admin_user():
@@ -1671,6 +1619,7 @@ if st.query_params.get("payment") == "success":
     st.success("Payment completed successfully. Your access will be available after the page refreshes.")
 elif st.query_params.get("payment") == "cancel":
     st.info("Checkout was cancelled.")
+
 
 # 1. COMPANY MANAGER
 st.markdown("## 1. Company Manager")
