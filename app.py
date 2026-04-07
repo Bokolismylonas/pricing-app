@@ -14,7 +14,11 @@ from supabase import create_client, Client
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-
+login_provider = st.query_params.get("login")
+if login_provider == "google":
+    st.login("google")
+elif login_provider == "microsoft":
+    st.login("microsoft")
 # -------------------------------------------------
 # QUERY PARAM LOGIN HANDLER
 # -------------------------------------------------
@@ -321,12 +325,12 @@ def show_login_screen():
             <div class="login-title">Pricing App</div>
             <div class="login-subtitle">Sign in to continue to your workspace</div>
 
-            <a href="?login=google" class="login-btn google-btn">
+            <a href="?login=google" target="_top" class="login-btn google-btn">
                 <span class="icon">🔵</span>
                 Continue with Google
             </a>
 
-            <a href="?login=microsoft" class="login-btn ms-btn">
+            <a href="?login=microsoft" target="_top" class="login-btn ms-btn">
                 <span class="icon">🟦</span>
                 Continue with Microsoft
             </a>
@@ -338,7 +342,7 @@ def show_login_screen():
     </body>
     </html>
     """
-    components.html(login_html, height=420)
+    components.html(login_html, height=520)
 
 
 # -------------------------------------------------
