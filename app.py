@@ -15,10 +15,10 @@ from openpyxl.utils import get_column_letter
 
 
 if st.query_params.get("login") == "google":
-    st.login()
+    st.login("google")
 
 if st.query_params.get("login") == "microsoft":
-    st.login()
+    st.login("microsoft")
 
 
 # -------------------------------------------------
