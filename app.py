@@ -14,11 +14,6 @@ from supabase import create_client, Client
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-login_provider = st.query_params.get("login")
-if login_provider == "google":
-    st.login("google")
-elif login_provider == "microsoft":
-    st.login("microsoft")
 # -------------------------------------------------
 # QUERY PARAM LOGIN HANDLER
 # -------------------------------------------------
@@ -241,108 +236,83 @@ def get_current_user_email():
 
 
 def show_login_screen():
-    login_html = """
-    <html>
-    <head>
-    <style>
-        body {
-            margin: 0;
-            background: transparent;
-            font-family: Arial, sans-serif;
-        }
-        .login-container {
-            max-width: 420px;
-            margin: 40px auto;
-            padding: 40px;
-            border-radius: 22px;
+    st.markdown(
+        """
+        <style>
+        .login-shell {
+            max-width: 520px;
+            margin: 60px auto 0 auto;
+            padding: 38px 36px 30px 36px;
+            border-radius: 24px;
             background: linear-gradient(180deg, #0f172a 0%, #111827 100%);
             border: 1px solid rgba(255,255,255,0.08);
-            box-shadow: 0 20px 50px rgba(0,0,0,0.35);
+            box-shadow: 0 20px 50px rgba(0,0,0,0.28);
             text-align: center;
             color: white;
         }
-        .login-title {
-            font-size: 30px;
+
+        .login-shell h1 {
+            margin: 0 0 10px 0;
+            font-size: 42px;
             font-weight: 800;
-            margin-bottom: 10px;
             letter-spacing: -0.03em;
-        }
-        .login-subtitle {
-            font-size: 15px;
-            color: #cbd5e1;
-            margin-bottom: 28px;
-        }
-        .login-btn {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 12px;
-            padding: 14px;
-            border-radius: 12px;
-            font-weight: 700;
-            cursor: pointer;
-            text-decoration: none;
-            transition: all 0.2s ease;
-            margin-bottom: 12px;
-            font-size: 15px;
-        }
-        .login-btn:hover {
-            transform: translateY(-1px);
-        }
-        .google-btn {
-            background: #ffffff;
-            color: #111827;
-            border: 1px solid #e5e7eb;
-        }
-        .google-btn:hover {
-            background: #f9fafb;
-        }
-        .ms-btn {
-            background: #2F2F2F;
             color: white;
-            border: 1px solid rgba(255,255,255,0.12);
         }
-        .ms-btn:hover {
-            background: #3a3a3a;
-        }
-        .icon {
-            width: 20px;
-            height: 20px;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
+
+        .login-shell p {
+            margin: 0 0 26px 0;
             font-size: 18px;
+            color: #cbd5e1;
         }
-        .login-footer {
-            margin-top: 18px;
-            font-size: 12px;
+
+        .login-note {
+            margin-top: 16px;
+            font-size: 13px;
             color: #94a3b8;
         }
-    </style>
-    </head>
-    <body>
-        <div class="login-container">
-            <div class="login-title">Pricing App</div>
-            <div class="login-subtitle">Sign in to continue to your workspace</div>
 
-            <a href="?login=google" target="_top" class="login-btn google-btn">
-                <span class="icon">🔵</span>
-                Continue with Google
-            </a>
+        div[data-testid="stVerticalBlock"] div.login-buttons-wrap {
+            margin-top: 10px;
+        }
 
-            <a href="?login=microsoft" target="_top" class="login-btn ms-btn">
-                <span class="icon">🟦</span>
-                Continue with Microsoft
-            </a>
+        div[data-testid="stButton"] > button {
+            height: 56px;
+            border-radius: 14px;
+            font-size: 17px;
+            font-weight: 700;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
-            <div class="login-footer">
-                Secure login • No passwords stored
-            </div>
+    st.markdown(
+        """
+        <div class="login-shell">
+            <h1>Pricing App</h1>
+            <p>Sign in to continue to your workspace</p>
         </div>
-    </body>
-    </html>
-    """
-    components.html(login_html, height=520)
+        """,
+        unsafe_allow_html=True,
+    )
+
+    c1, c2, c3 = st.columns([1.2, 3.2, 1.2])
+
+    with c2:
+        st.markdown('<div class="login-buttons-wrap">', unsafe_allow_html=True)
+
+        if st.button("🔵 Continue with Google", use_container_width=True, key="login_google_button"):
+            st.login("google")
+
+        if st.button("🟦 Continue with Microsoft", use_container_width=True, key="login_microsoft_button"):
+            st.login("microsoft")
+
+        st.markdown(
+            '<div class="login-note">Secure login • No passwords stored</div>',
+            unsafe_allow_html=True,
+        )
+
+        st.markdown("</div>", unsafe_allow_html=True)
 
 
 # -------------------------------------------------
