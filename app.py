@@ -28,25 +28,28 @@ def _escape_toml(value: str) -> str:
 
 
 def ensure_render_secrets_file():
-    if SECRETS_FILE.exists():
-        return
-
     auth_redirect_uri = os.getenv("AUTH_REDIRECT_URI", "")
     auth_cookie_secret = os.getenv("AUTH_COOKIE_SECRET", "")
-    auth_client_id = os.getenv("AUTH_CLIENT_ID", "")
-    auth_client_secret = os.getenv("AUTH_CLIENT_SECRET", "")
-    auth_server_metadata_url = os.getenv("AUTH_SERVER_METADATA_URL", "")
+    google_client_id = os.getenv("AUTH_CLIENT_ID", "")
+    google_client_secret = os.getenv("AUTH_CLIENT_SECRET", "")
+    google_server_metadata_url = os.getenv("AUTH_SERVER_METADATA_URL", "")
+    ms_client_id = os.getenv("MS_CLIENT_ID", "")
+    ms_client_secret = os.getenv("MS_CLIENT_SECRET", "")
+    ms_server_metadata_url = os.getenv("MS_SERVER_METADATA_URL", "")
     supabase_url = os.getenv("SUPABASE_URL", "")
     supabase_key = os.getenv("SUPABASE_KEY", "")
 
-    required = [
+    required_shared = [
         auth_redirect_uri,
         auth_cookie_secret,
-        auth_client_id,
-        auth_client_secret,
-        auth_server_metadata_url,
     ]
-    if not all(required):
+    required_google = [
+        google_client_id,
+        google_client_secret,
+        google_server_metadata_url,
+    ]
+
+    if not all(required_shared) or not all(required_google):
         return
 
     content = f'''SUPABASE_URL = "{_escape_toml(supabase_url)}"
@@ -55,9 +58,19 @@ SUPABASE_KEY = "{_escape_toml(supabase_key)}"
 [auth]
 redirect_uri = "{_escape_toml(auth_redirect_uri)}"
 cookie_secret = "{_escape_toml(auth_cookie_secret)}"
-client_id = "{_escape_toml(auth_client_id)}"
-client_secret = "{_escape_toml(auth_client_secret)}"
-server_metadata_url = "{_escape_toml(auth_server_metadata_url)}"
+
+[auth.google]
+client_id = "{_escape_toml(google_client_id)}"
+client_secret = "{_escape_toml(google_client_secret)}"
+server_metadata_url = "{_escape_toml(google_server_metadata_url)}"
+'''
+
+    if ms_client_id and ms_client_secret and ms_server_metadata_url:
+        content += f'''
+[auth.microsoft]
+client_id = "{_escape_toml(ms_client_id)}"
+client_secret = "{_escape_toml(ms_client_secret)}"
+server_metadata_url = "{_escape_toml(ms_server_metadata_url)}"
 '''
 
     SECRETS_FILE.write_text(content, encoding="utf-8")
@@ -231,23 +244,36 @@ def show_login_screen():
             <div style="font-size:16px;color:#d1d5db;margin-top:8px;">
                 Smart price comparison, source management and Excel exports in one place.
             </div>
-            <div class="metric-pill">Secure access with Google login</div>
+            <div class="metric-pill">Secure access with Google or Microsoft login</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    c1, c2, c3 = st.columns([1, 1.3, 1])
+    c1, c2, c3 = st.columns([1, 1.4, 1])
     with c2:
         st.markdown('<div class="app-card">', unsafe_allow_html=True)
         st.subheader("Sign in to continue")
         st.write("Access your workspace and continue using the full app experience.")
-        st.button(
-            "Login with Google",
-            on_click=st.login,
-            use_container_width=True,
-            key="login_google_button",
-        )
+
+        login_col1, login_col2 = st.columns(2)
+
+        with login_col1:
+            st.button(
+                "Login with Google",
+                on_click=lambda: st.login("google"),
+                use_container_width=True,
+                key="login_google_button",
+            )
+
+        with login_col2:
+            st.button(
+                "Login with Microsoft",
+                on_click=lambda: st.login("microsoft"),
+                use_container_width=True,
+                key="login_microsoft_button",
+            )
+
         st.markdown("</div>", unsafe_allow_html=True)
 
 
@@ -2122,7 +2148,7 @@ if is_admin_user():
 
     cc1, cc2, cc3, cc4 = st.columns(4)
     with cc1:
-        company_key_input = st.text_input("Company Key", key="company_key_input", placeholder="knauf_team")
+        company_key_input = st.text_input("Company Key", key="company_key_input", placeholder="knaufteam")
     with cc2:
         company_name_input = st.text_input("Company Name", key="company_name_input", placeholder="Knauf")
     with cc3:
