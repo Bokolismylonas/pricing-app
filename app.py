@@ -321,13 +321,6 @@ def get_stripe_subscription_row(email: str):
         return None
 
 
-def user_has_paid_access(email: str) -> bool:
-    row = get_stripe_subscription_row(email)
-    if not row:
-        return False
-    return row.get("billing_status") == "active"
-
-
 from billing import create_checkout_session
 
 
@@ -385,6 +378,7 @@ ADMIN_DIR = ROOT_STORAGE / "_admin"
 ADMIN_DIR.mkdir(parents=True, exist_ok=True)
 
 USERS_REGISTRY_FILE = ADMIN_DIR / "users_registry.json"
+COMPANIES_REGISTRY_FILE = ADMIN_DIR / "companies_registry.json"
 ADMIN_EMAILS = ["gmyl13@gmail.com"]
 
 TEMPLATE_FILE = BASE_DIR / "templates" / "source_template_english.xlsx"
@@ -459,6 +453,68 @@ def save_users_registry(data):
     )
 
 
+def load_companies_registry():
+    if not COMPANIES_REGISTRY_FILE.exists():
+        return []
+    try:
+        return json.loads(COMPANIES_REGISTRY_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+
+def save_companies_registry(data):
+    COMPANIES_REGISTRY_FILE.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def normalize_domain(domain: str) -> str:
+    return str(domain).strip().lower().replace("@", "")
+
+
+def normalize_company_key(text: str) -> str:
+    text = str(text).strip().lower()
+    text = re.sub(r"[^a-z0-9]+", "_", text)
+    text = re.sub(r"_+", "_", text).strip("_")
+    return text
+
+
+def get_email_domain(email: str) -> str:
+    email = str(email).strip().lower()
+    if "@" not in email:
+        return ""
+    return email.split("@", 1)[1]
+
+
+def find_company_by_domain(companies, domain):
+    domain = normalize_domain(domain)
+    for company in companies:
+        if normalize_domain(company.get("domain", "")) == domain:
+            return company
+    return None
+
+
+def find_company_by_key(companies, company_key):
+    for company in companies:
+        if company.get("key") == company_key:
+            return company
+    return None
+
+
+def get_company_user_count(company_key):
+    users = load_users_registry()
+    count = 0
+    for row in users:
+        if row.get("company_key") == company_key and row.get("status") != "blocked":
+            count += 1
+    return count
+
+
+def format_company_seats(current_count, max_seats):
+    return f"{current_count}/{max_seats}"
+
+
 def ensure_user_billing_fields(user_row):
     if "trial_start" not in user_row:
         user_row["trial_start"] = now_iso()
@@ -474,6 +530,12 @@ def ensure_user_billing_fields(user_row):
 
     if "active_sessions" not in user_row:
         user_row["active_sessions"] = []
+
+    if "company_key" not in user_row:
+        user_row["company_key"] = None
+
+    if "company_name" not in user_row:
+        user_row["company_name"] = None
 
     return user_row
 
@@ -618,40 +680,6 @@ def sync_paid_status_from_stripe(email: str):
     return False
 
 
-def current_user_has_access():
-    idx, row, users = get_current_user_registry_row()
-    if row is None:
-        return False
-
-    user_email = get_current_user_email()
-
-    if row.get("billing_status") == "active" or row.get("is_premium") is True:
-        if row.get("is_premium") is True and row.get("stripe_subscription_id") is None:
-            return True
-
-        if user_email and sync_paid_status_from_stripe(user_email):
-            return True
-
-        if idx is not None and not row.get("is_premium", False):
-            users[idx]["billing_status"] = "expired"
-            users[idx]["is_premium"] = False
-            save_users_registry(users)
-
-    trial_end = parse_iso(row.get("trial_end", ""))
-    if trial_end and now_utc() <= trial_end:
-        return True
-
-    if user_email and sync_paid_status_from_stripe(user_email):
-        return True
-
-    if idx is not None and not row.get("is_premium", False):
-        users[idx]["billing_status"] = "expired"
-        users[idx]["is_premium"] = False
-        save_users_registry(users)
-
-    return False
-
-
 def is_admin_user():
     user = get_user_identity()
     return user["email"] in ADMIN_EMAILS
@@ -686,6 +714,15 @@ def reset_user_sessions(email, sub):
         save_users_registry(users)
 
 
+def remove_user_from_company(email, sub):
+    users = load_users_registry()
+    idx = find_user_index(users, email, sub)
+    if idx is not None:
+        users[idx]["company_key"] = None
+        users[idx]["company_name"] = None
+        save_users_registry(users)
+
+
 def format_sessions(count):
     if count >= MAX_ACTIVE_SESSIONS:
         return f"{count}/{MAX_ACTIVE_SESSIONS} 🔴"
@@ -700,6 +737,19 @@ def session_status_label(count):
     if count == MAX_ACTIVE_SESSIONS - 1:
         return "Near Limit 🟠"
     return "Available 🟢"
+
+
+def get_current_user_company():
+    idx, row, users = get_current_user_registry_row()
+    if row is None:
+        return None
+
+    company_key = row.get("company_key")
+    if not company_key:
+        return None
+
+    companies = load_companies_registry()
+    return find_company_by_key(companies, company_key)
 
 
 def ensure_current_user_in_registry():
@@ -724,6 +774,8 @@ def ensure_current_user_in_registry():
                 "billing_status": "trialing",
                 "is_premium": False,
                 "active_sessions": [],
+                "company_key": None,
+                "company_name": None,
             }
         )
     else:
@@ -735,6 +787,84 @@ def ensure_current_user_in_registry():
         users[idx] = ensure_user_billing_fields(users[idx])
 
     save_users_registry(users)
+
+
+def sync_current_user_company_assignment():
+    idx, row, users = get_current_user_registry_row()
+    if row is None:
+        return {"status": "none", "company": None}
+
+    email = row.get("email", "")
+    domain = get_email_domain(email)
+    if not domain:
+        return {"status": "none", "company": None}
+
+    companies = load_companies_registry()
+    company = find_company_by_domain(companies, domain)
+
+    if not company:
+        return {"status": "none", "company": None}
+
+    if not company.get("is_active", True):
+        return {"status": "inactive", "company": company}
+
+    existing_company_key = row.get("company_key")
+    if existing_company_key == company.get("key"):
+        return {"status": "assigned", "company": company}
+
+    current_count = get_company_user_count(company.get("key"))
+    max_seats = int(company.get("max_seats", 0) or 0)
+
+    if max_seats > 0 and current_count >= max_seats:
+        return {"status": "full", "company": company}
+
+    users[idx]["company_key"] = company.get("key")
+    users[idx]["company_name"] = company.get("name", company.get("key"))
+    users[idx]["status"] = "approved"
+    save_users_registry(users)
+
+    return {"status": "assigned", "company": company}
+
+
+def current_user_has_access():
+    idx, row, users = get_current_user_registry_row()
+    if row is None:
+        return False
+
+    company_key = row.get("company_key")
+    if company_key:
+        companies = load_companies_registry()
+        company = find_company_by_key(companies, company_key)
+        if company and company.get("is_active", True) and row.get("status") == "approved":
+            return True
+
+    user_email = get_current_user_email()
+
+    if row.get("billing_status") == "active" or row.get("is_premium") is True:
+        if row.get("is_premium") is True and row.get("stripe_subscription_id") is None:
+            return True
+
+        if user_email and sync_paid_status_from_stripe(user_email):
+            return True
+
+        if idx is not None and not row.get("is_premium", False):
+            users[idx]["billing_status"] = "expired"
+            users[idx]["is_premium"] = False
+            save_users_registry(users)
+
+    trial_end = parse_iso(row.get("trial_end", ""))
+    if trial_end and now_utc() <= trial_end:
+        return True
+
+    if user_email and sync_paid_status_from_stripe(user_email):
+        return True
+
+    if idx is not None and not row.get("is_premium", False):
+        users[idx]["billing_status"] = "expired"
+        users[idx]["is_premium"] = False
+        save_users_registry(users)
+
+    return False
 
 
 def touch_current_user():
@@ -778,6 +908,40 @@ def online_status_from_last_seen(last_seen_value):
         return "Online"
 
     return "Offline"
+
+
+def upsert_company(company_key, name, domain, max_seats, is_active=True):
+    companies = load_companies_registry()
+    normalized_key = normalize_company_key(company_key)
+    idx = None
+    for i, company in enumerate(companies):
+        if company.get("key") == normalized_key:
+            idx = i
+            break
+
+    payload = {
+        "key": normalized_key,
+        "name": str(name).strip(),
+        "domain": normalize_domain(domain),
+        "max_seats": int(max_seats),
+        "is_active": bool(is_active),
+        "updated_at": now_iso(),
+    }
+
+    if idx is None:
+        payload["created_at"] = now_iso()
+        companies.append(payload)
+    else:
+        payload["created_at"] = companies[idx].get("created_at", now_iso())
+        companies[idx] = payload
+
+    save_companies_registry(companies)
+
+
+def remove_company(company_key):
+    companies = load_companies_registry()
+    companies = [c for c in companies if c.get("key") != company_key]
+    save_companies_registry(companies)
 
 
 # -------------------------------------------------
@@ -1223,6 +1387,49 @@ if not is_logged_in():
 ensure_current_user_in_registry()
 touch_current_user()
 
+company_result = sync_current_user_company_assignment()
+
+if company_result["status"] == "full":
+    company = company_result["company"]
+    current_count = get_company_user_count(company.get("key"))
+    max_seats = int(company.get("max_seats", 0) or 0)
+
+    st.markdown(
+        """
+        <div class="locked-wrap">
+            <div class="locked-badge">Company seat limit reached</div>
+            <div class="locked-title">No available company seats</div>
+            <div class="locked-subtitle">
+                Your company account has reached the maximum number of active users allowed for this plan.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.write("")
+    c1, c2, c3 = st.columns([1, 1.7, 1])
+
+    with c2:
+        st.markdown('<div class="app-card">', unsafe_allow_html=True)
+        st.subheader("No available seats")
+        st.warning(
+            f"{company.get('name', 'This company')} is currently using all available seats ({current_count}/{max_seats})."
+        )
+        st.info(
+            "Please contact your company administrator if you need an additional seat "
+            "or if an inactive user should be removed."
+        )
+        st.button(
+            "Logout",
+            on_click=logout_current_user,
+            use_container_width=True,
+            key="company_seat_limit_logout_button",
+        )
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    st.stop()
+
 if current_user_is_blocked():
     st.error("Access denied. Your account has been blocked.")
     st.button(
@@ -1347,11 +1554,17 @@ with st.sidebar:
     idx, row, users = get_current_user_registry_row()
     days_left = trial_days_left(row.get("trial_end")) if row else 0
     user_email = get_current_user_email()
+    company = get_current_user_company()
 
     if is_admin_user():
         st.success("Admin: Full Access")
     else:
-        if row and row.get("billing_status") == "active":
+        if company:
+            current_count = get_company_user_count(company.get("key"))
+            max_seats = int(company.get("max_seats", 0) or 0)
+            st.success(f"Company: {company.get('name', 'Company Plan')}")
+            st.info(f"Seats: {format_company_seats(current_count, max_seats)}")
+        elif row and row.get("billing_status") == "active":
             st.success("Plan: Premium")
         elif days_left > 0:
             st.info(f"Trial: {days_left} day(s) left")
@@ -1362,7 +1575,9 @@ with st.sidebar:
     st.subheader("💳 Billing")
 
     if not is_admin_user():
-        if row and row.get("billing_status") == "active":
+        if company:
+            st.success("Your access is managed through your company plan.")
+        elif row and row.get("billing_status") == "active":
             st.success("Your subscription is active.")
         elif days_left > 0:
             st.info("You are currently using the free 2-day trial.")
@@ -1497,7 +1712,7 @@ with s1:
         list(company_display_map.keys()),
         key="save_company",
     )
-    company = company_display_map[selected_company_display]
+    company_code = company_display_map[selected_company_display]
 
 with s2:
     date_val = st.date_input("Date", value=date.today(), key="save_date")
@@ -1509,8 +1724,8 @@ if st.button("Save", key="save_source_button", use_container_width=True):
     if file is None:
         st.error("Please upload a source file first.")
     else:
-        name = get_next_version_filename(company, date_val, file.name)
-        path = get_company_folder(company) / name
+        name = get_next_version_filename(company_code, date_val, file.name)
+        path = get_company_folder(company_code) / name
         with open(path, "wb") as f:
             f.write(file.getbuffer())
         st.success(f"Saved as: {name}")
@@ -1772,6 +1987,7 @@ if is_admin_user():
                     "Status": row.get("status", "pending"),
                     "Billing": row.get("billing_status", "trialing"),
                     "Premium": row.get("is_premium", False),
+                    "Company": row.get("company_name", "") or "",
                     "Active Sessions": format_sessions(sessions_count),
                     "Session Status": session_status_label(sessions_count),
                     "First Seen": row.get("first_seen", ""),
@@ -1801,7 +2017,7 @@ if is_admin_user():
             key="admin_selected_user_to_manage",
         )
 
-        c1, c2, c3, c4, c5, c6 = st.columns(6)
+        c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
 
         with c1:
             if st.button("Approve User", key="approve_user_button", use_container_width=True):
@@ -1862,5 +2078,103 @@ if is_admin_user():
                     reset_user_sessions(row.get("email", ""), row.get("sub", ""))
                     st.success(f"Sessions reset for: {row.get('email', '')}")
                     st.rerun()
+
+        with c7:
+            if st.button("Remove From Company", key="remove_from_company_button", use_container_width=True):
+                if not selected_user_label:
+                    st.warning("Please select a user.")
+                else:
+                    row = user_options[selected_user_label]
+                    remove_user_from_company(row.get("email", ""), row.get("sub", ""))
+                    st.success(f"User removed from company: {row.get('email', '')}")
+                    st.rerun()
     else:
         st.info("No users found yet.")
+
+    st.markdown("---")
+    st.markdown("### Company Plans")
+
+    companies_registry = load_companies_registry()
+
+    companies_for_view = []
+    for company in companies_registry:
+        current_count = get_company_user_count(company.get("key"))
+        max_seats = int(company.get("max_seats", 0) or 0)
+        companies_for_view.append(
+            {
+                "Key": company.get("key", ""),
+                "Name": company.get("name", ""),
+                "Domain": company.get("domain", ""),
+                "Seats": format_company_seats(current_count, max_seats),
+                "Max Seats": max_seats,
+                "Active": company.get("is_active", True),
+                "Created At": company.get("created_at", ""),
+                "Updated At": company.get("updated_at", ""),
+            }
+        )
+
+    if companies_for_view:
+        st.dataframe(pd.DataFrame(companies_for_view), use_container_width=True, hide_index=True)
+    else:
+        st.info("No company plans found yet.")
+
+    st.markdown("#### Create / Update Company")
+
+    cc1, cc2, cc3, cc4 = st.columns(4)
+    with cc1:
+        company_key_input = st.text_input("Company Key", key="company_key_input", placeholder="knauf_team")
+    with cc2:
+        company_name_input = st.text_input("Company Name", key="company_name_input", placeholder="Knauf")
+    with cc3:
+        company_domain_input = st.text_input("Company Domain", key="company_domain_input", placeholder="knauf.com")
+    with cc4:
+        company_max_seats_input = st.number_input(
+            "Max Seats",
+            min_value=1,
+            max_value=1000,
+            value=5,
+            step=1,
+            key="company_max_seats_input",
+        )
+
+    company_active_input = st.checkbox("Company Plan Active", value=True, key="company_active_input")
+
+    ccu1, ccu2 = st.columns(2)
+
+    with ccu1:
+        if st.button("Save Company Plan", key="save_company_plan_button", use_container_width=True):
+            if not company_key_input.strip():
+                st.warning("Please enter a company key.")
+            elif not company_name_input.strip():
+                st.warning("Please enter a company name.")
+            elif not company_domain_input.strip():
+                st.warning("Please enter a company domain.")
+            else:
+                upsert_company(
+                    company_key_input,
+                    company_name_input,
+                    company_domain_input,
+                    company_max_seats_input,
+                    company_active_input,
+                )
+                st.success(f"Company plan saved: {company_name_input}")
+                st.rerun()
+
+    company_options_for_delete = {
+        f"{c.get('name', '')} ({c.get('domain', '')})": c.get("key")
+        for c in companies_registry
+    }
+
+    with ccu2:
+        selected_company_to_delete = st.selectbox(
+            "Delete Company Plan",
+            [""] + list(company_options_for_delete.keys()),
+            key="selected_company_to_delete",
+        )
+        if st.button("Delete Company Plan", key="delete_company_plan_button", use_container_width=True):
+            if not selected_company_to_delete:
+                st.warning("Please select a company.")
+            else:
+                remove_company(company_options_for_delete[selected_company_to_delete])
+                st.success(f"Company plan deleted: {selected_company_to_delete}")
+                st.rerun()
