@@ -238,113 +238,63 @@ def auth_is_configured():
 
 def show_login_screen():
 
-    st.markdown("""
-    <style>
-    .login-container {
-        max-width: 420px;
-        margin: 60px auto;
-        padding: 40px;
-        border-radius: 20px;
-        background: #111827;
-        border: 1px solid rgba(255,255,255,0.08);
-        box-shadow: 0 20px 50px rgba(0,0,0,0.4);
-        text-align: center;
-        color: white;
-    }
+    html = """
+    <div style="
+        max-width:420px;
+        margin:60px auto;
+        padding:40px;
+        border-radius:20px;
+        background:#111827;
+        box-shadow:0 20px 50px rgba(0,0,0,0.4);
+        text-align:center;
+        color:white;
+    ">
 
-    .login-title {
-        font-size: 30px;
-        font-weight: 800;
-        margin-bottom: 10px;
-    }
+        <h1 style="margin-bottom:10px;">Pricing App</h1>
+        <p style="color:#9ca3af;">Sign in to continue to your workspace</p>
 
-    .login-subtitle {
-        font-size: 14px;
-        color: #9ca3af;
-        margin-bottom: 30px;
-    }
-
-    .login-btn {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 12px;
-        padding: 14px;
-        border-radius: 12px;
-        font-weight: 600;
-        cursor: pointer;
-        text-decoration: none;
-        transition: all 0.2s ease;
-        margin-bottom: 12px;
-        font-size: 15px;
-    }
-
-    .google-btn {
-        background: white;
-        color: black;
-    }
-
-    .google-btn:hover {
-        background: #f3f4f6;
-    }
-
-    .ms-btn {
-        background: #2F2F2F;
-        color: white;
-        border: 1px solid rgba(255,255,255,0.1);
-    }
-
-    .ms-btn:hover {
-        background: #3a3a3a;
-    }
-
-    .login-btn svg {
-        width: 20px;
-        height: 20px;
-    }
-
-    .login-footer {
-        margin-top: 20px;
-        font-size: 12px;
-        color: #6b7280;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-
-    st.markdown("""
-    <div class="login-container">
-        <div class="login-title">Pricing App</div>
-        <div class="login-subtitle">
-            Sign in to continue to your workspace
-        </div>
-
-        <a href="?login=google" class="login-btn google-btn">
-            <!-- Google SVG -->
-            <svg viewBox="0 0 48 48">
-                <path fill="#EA4335" d="M24 9.5c3.3 0 6.2 1.1 8.5 3.2l6.3-6.3C34.8 2.7 29.7 0 24 0 14.6 0 6.5 5.4 2.7 13.3l7.7 6C12.1 13.1 17.6 9.5 24 9.5z"/>
-                <path fill="#4285F4" d="M46.1 24.5c0-1.7-.2-3.3-.5-4.9H24v9.3h12.4c-.5 2.7-2 5-4.2 6.6l6.5 5c3.8-3.5 6-8.7 6-16z"/>
-                <path fill="#FBBC05" d="M10.4 28.3c-.5-1.4-.8-2.9-.8-4.3s.3-2.9.8-4.3l-7.7-6C1 17.2 0 20.5 0 24s1 6.8 2.7 9.7l7.7-5.4z"/>
-                <path fill="#34A853" d="M24 48c6.5 0 11.9-2.1 15.9-5.7l-6.5-5c-2 1.3-4.6 2.1-9.4 2.1-6.4 0-11.9-3.6-13.8-8.8l-7.7 6C6.5 42.6 14.6 48 24 48z"/>
-            </svg>
+        <a href="?login=google" style="
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            gap:10px;
+            padding:14px;
+            border-radius:10px;
+            background:white;
+            color:black;
+            text-decoration:none;
+            font-weight:600;
+            margin-top:20px;
+        ">
+            <span>🔵</span>
             Continue with Google
         </a>
 
-        <a href="?login=microsoft" class="login-btn ms-btn">
-            <!-- Microsoft SVG -->
-            <svg viewBox="0 0 24 24">
-                <rect x="1" y="1" width="10" height="10" fill="#F25022"/>
-                <rect x="13" y="1" width="10" height="10" fill="#7FBA00"/>
-                <rect x="1" y="13" width="10" height="10" fill="#00A4EF"/>
-                <rect x="13" y="13" width="10" height="10" fill="#FFB900"/>
-            </svg>
+        <a href="?login=microsoft" style="
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            gap:10px;
+            padding:14px;
+            border-radius:10px;
+            background:#2F2F2F;
+            color:white;
+            text-decoration:none;
+            font-weight:600;
+            margin-top:10px;
+        ">
+            <span>🟦</span>
             Continue with Microsoft
         </a>
 
-        <div class="login-footer">
+        <p style="margin-top:20px;font-size:12px;color:#6b7280;">
             Secure login • No passwords stored
-        </div>
+        </p>
+
     </div>
-    """, unsafe_allow_html=True)
+    """
+
+    st.markdown(html, unsafe_allow_html=True)
 
 # -------------------------------------------------
 # SUPABASE
