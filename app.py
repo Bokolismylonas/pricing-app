@@ -96,28 +96,29 @@ st.markdown(
     """
     <style>
     .main .block-container {
-        padding-top: 1.5rem;
+        padding-top: 1.2rem;
         padding-bottom: 2rem;
-        max-width: 1400px;
+        max-width: 1420px;
     }
 
     .app-hero {
-        padding: 24px 28px;
-        border-radius: 18px;
-        background: linear-gradient(135deg, #111827 0%, #1f2937 100%);
+        padding: 28px 32px;
+        border-radius: 22px;
+        background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 45%, #1e3a8a 100%);
         color: white;
-        border: 1px solid rgba(255,255,255,0.08);
-        margin-bottom: 1rem;
-        box-shadow: 0 10px 30px rgba(0,0,0,0.18);
+        border: 1px solid rgba(255,255,255,0.14);
+        margin-bottom: 1.2rem;
+        box-shadow: 0 14px 34px rgba(0,0,0,0.20);
     }
 
     .app-card {
-        background: #111827;
-        border: 1px solid rgba(255,255,255,0.08);
+        background: linear-gradient(180deg, #0f172a 0%, #111827 100%);
+        border: 1px solid rgba(255,255,255,0.10);
         border-radius: 18px;
         padding: 22px 24px;
         color: white;
-        box-shadow: 0 8px 24px rgba(0,0,0,0.14);
+        box-shadow: 0 8px 22px rgba(0,0,0,0.14);
+        margin-bottom: 14px;
     }
 
     .locked-wrap {
@@ -126,8 +127,8 @@ st.markdown(
         padding: 32px;
         border-radius: 22px;
         background: linear-gradient(180deg, #0f172a 0%, #111827 100%);
-        border: 1px solid rgba(255,255,255,0.08);
-        box-shadow: 0 20px 50px rgba(0,0,0,0.22);
+        border: 1px solid rgba(255,255,255,0.10);
+        box-shadow: 0 20px 50px rgba(0,0,0,0.24);
         text-align: center;
         color: white;
     }
@@ -150,9 +151,9 @@ st.markdown(
         display: inline-block;
         padding: 6px 12px;
         border-radius: 999px;
-        background: rgba(96,165,250,0.12);
-        border: 1px solid rgba(96,165,250,0.25);
-        color: #bfdbfe;
+        background: rgba(96,165,250,0.16);
+        border: 1px solid rgba(96,165,250,0.28);
+        color: #dbeafe;
         font-size: 13px;
         margin-bottom: 18px;
     }
@@ -162,17 +163,17 @@ st.markdown(
         margin: 60px auto 20px auto;
         padding: 42px 40px 34px 40px;
         border-radius: 24px;
-        background: linear-gradient(180deg, #0f172a 0%, #111827 100%);
-        border: 1px solid rgba(255,255,255,0.08);
-        box-shadow: 0 20px 50px rgba(0,0,0,0.28);
+        background: linear-gradient(180deg, #020617 0%, #0f172a 100%);
+        border: 1px solid rgba(255,255,255,0.10);
+        box-shadow: 0 20px 60px rgba(0,0,0,0.35);
         text-align: center;
         color: white;
     }
 
     .login-shell h1 {
         margin: 0 0 10px 0;
-        font-size: 42px;
-        font-weight: 800;
+        font-size: 44px;
+        font-weight: 900;
         letter-spacing: -0.03em;
         color: white;
     }
@@ -180,7 +181,7 @@ st.markdown(
     .login-shell p {
         margin: 0;
         font-size: 18px;
-        color: #cbd5e1;
+        color: #94a3b8;
     }
 
     .login-note {
@@ -192,23 +193,118 @@ st.markdown(
 
     .provider-chip {
         display: inline-block;
-        padding: 6px 10px;
+        padding: 7px 12px;
         border-radius: 999px;
-        background: rgba(255,255,255,0.06);
-        border: 1px solid rgba(255,255,255,0.08);
+        background: rgba(255,255,255,0.07);
+        border: 1px solid rgba(255,255,255,0.10);
         color: #cbd5e1;
         font-size: 13px;
         margin-bottom: 18px;
     }
 
-    div[data-testid="stButton"] > button {
-        border-radius: 14px;
-        font-size: 16px;
-        font-weight: 700;
+    div[data-testid="stSidebar"] {
+        border-right: 1px solid rgba(255,255,255,0.08);
+        background: #020617;
     }
 
-    div[data-testid="stSidebar"] {
-        border-right: 1px solid rgba(255,255,255,0.06);
+    div[data-baseweb="input"] input {
+        border-radius: 12px !important;
+        border: 1px solid rgba(148,163,184,0.35) !important;
+        background-color: #0f172a !important;
+        color: white !important;
+    }
+
+    div[data-baseweb="select"] > div {
+        border-radius: 12px !important;
+        border: 1px solid rgba(148,163,184,0.35) !important;
+        background-color: #0f172a !important;
+        color: white !important;
+    }
+
+    textarea {
+        border-radius: 12px !important;
+        border: 1px solid rgba(148,163,184,0.35) !important;
+        background-color: #0f172a !important;
+        color: white !important;
+    }
+
+    div[data-testid="stNumberInput"] input {
+        border-radius: 12px !important;
+        border: 1px solid rgba(148,163,184,0.35) !important;
+        background-color: #0f172a !important;
+        color: white !important;
+    }
+
+    div[data-testid="stDateInput"] input {
+        border-radius: 12px !important;
+        border: 1px solid rgba(148,163,184,0.35) !important;
+        background-color: #0f172a !important;
+        color: white !important;
+    }
+
+    div[data-testid="stFileUploader"] section {
+        border-radius: 14px !important;
+        border: 1px dashed rgba(96,165,250,0.45) !important;
+        background: rgba(37,99,235,0.06) !important;
+    }
+
+    div[data-testid="stButton"] > button {
+        border-radius: 12px;
+        font-size: 15px;
+        font-weight: 700;
+        background: linear-gradient(135deg, #2563eb, #1d4ed8);
+        color: white;
+        border: 1px solid rgba(255,255,255,0.08);
+        transition: all 0.2s ease;
+        box-shadow: 0 6px 16px rgba(37,99,235,0.22);
+    }
+
+    div[data-testid="stButton"] > button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 10px 20px rgba(37,99,235,0.30);
+    }
+
+    div[data-testid="stDownloadButton"] > button {
+        border-radius: 12px;
+        font-size: 15px;
+        font-weight: 700;
+        background: linear-gradient(135deg, #059669, #047857);
+        color: white;
+        border: 1px solid rgba(255,255,255,0.08);
+        box-shadow: 0 6px 16px rgba(5,150,105,0.20);
+    }
+
+    div[data-testid="stDownloadButton"] > button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 10px 20px rgba(5,150,105,0.28);
+    }
+
+    div[data-testid="stMetric"] {
+        background: linear-gradient(180deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.02) 100%);
+        border: 1px solid rgba(255,255,255,0.08);
+        padding: 12px 14px;
+        border-radius: 16px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.10);
+    }
+
+    .stDataFrame {
+        border: 1px solid rgba(255,255,255,0.10);
+        border-radius: 14px;
+        overflow: hidden;
+        box-shadow: 0 6px 18px rgba(0,0,0,0.10);
+    }
+
+    .stAlert {
+        border-radius: 12px;
+        border: 1px solid rgba(255,255,255,0.08);
+    }
+
+    h2, h3 {
+        letter-spacing: -0.02em;
+    }
+
+    hr {
+        border-color: rgba(255,255,255,0.08);
     }
     </style>
     """,
@@ -1653,8 +1749,8 @@ with st.sidebar:
 st.markdown(
     """
     <div class="app-hero">
-        <div style="font-size:34px;font-weight:800;letter-spacing:-0.03em;">Pricing App</div>
-        <div style="font-size:16px;color:#d1d5db;margin-top:8px;">
+        <div style="font-size:38px;font-weight:900;letter-spacing:-0.03em;">Pricing App</div>
+        <div style="font-size:16px;color:#dbeafe;margin-top:8px;">
             Upload supplier sources, compare products and export polished Excel reports.
         </div>
     </div>
@@ -1669,6 +1765,7 @@ elif st.query_params.get("payment") == "cancel":
 
 
 # 1. COMPANY MANAGER
+st.markdown('<div class="app-card">', unsafe_allow_html=True)
 st.markdown("## 1. Company Manager")
 
 add_c1, add_c2, add_c3 = st.columns(3)
@@ -1742,10 +1839,11 @@ with del_c2:
                     pass
                 st.success(f"Company {delete_code} was deleted.")
                 st.rerun()
+st.markdown("</div>", unsafe_allow_html=True)
 
 
 # 2. SAVE SOURCE
-st.markdown("---")
+st.markdown('<div class="app-card">', unsafe_allow_html=True)
 st.markdown("## 2. Save Source")
 
 company_display_map = {
@@ -1794,10 +1892,11 @@ if TEMPLATE_FILE.exists():
         )
 else:
     st.warning("Template file not found.")
+st.markdown("</div>", unsafe_allow_html=True)
 
 
 # 3. SOURCE LIBRARY
-st.markdown("---")
+st.markdown('<div class="app-card">', unsafe_allow_html=True)
 st.markdown("## 3. Source Library")
 
 saved_df = list_saved_sources()
@@ -1841,10 +1940,11 @@ with src_d2:
                 st.rerun()
             else:
                 st.error("File not found.")
+st.markdown("</div>", unsafe_allow_html=True)
 
 
 # 4. SELECT SAVED SOURCES
-st.markdown("---")
+st.markdown('<div class="app-card">', unsafe_allow_html=True)
 st.markdown("## 4. Select Saved Sources for Comparison")
 
 company_options = {
@@ -1884,10 +1984,11 @@ if selected_codes:
             catalogs[code] = prepare_catalog(df)
         else:
             catalogs[code] = None
+st.markdown("</div>", unsafe_allow_html=True)
 
 
 # 5. DEBUG
-st.markdown("---")
+st.markdown('<div class="app-card">', unsafe_allow_html=True)
 st.markdown("## 5. Debug")
 
 if selected_codes:
@@ -1899,10 +2000,11 @@ if selected_codes:
                 st.write(f"{code} prepared rows:", len(catalogs[code]))
 else:
     st.info("No comparison companies selected yet.")
+st.markdown("</div>", unsafe_allow_html=True)
 
 
 # 6. MULTI-LINE COMPARISON
-st.markdown("---")
+st.markdown('<div class="app-card">', unsafe_allow_html=True)
 st.markdown("## 6. Multi-Line Comparison")
 
 if not selected_codes:
@@ -2017,9 +2119,11 @@ else:
                         st.write(f"**{label}:** {summary}")
 
         st.markdown("---")
+st.markdown("</div>", unsafe_allow_html=True)
 
 
 # 7. EXPORT
+st.markdown('<div class="app-card">', unsafe_allow_html=True)
 st.markdown("## 7. Export Excel Report")
 
 full_export_df = build_export_dataframe(
@@ -2057,11 +2161,12 @@ else:
         )
     else:
         st.info("No data available for export yet.")
+st.markdown("</div>", unsafe_allow_html=True)
 
 
 # 8. ADMIN PANEL
 if is_admin_user():
-    st.markdown("---")
+    st.markdown('<div class="app-card">', unsafe_allow_html=True)
     st.markdown("## 8. Admin Panel")
 
     users_registry = load_users_registry()
@@ -2320,3 +2425,4 @@ if is_admin_user():
                     f"Company workspace deleted: {selected_company_to_delete}"
                 )
                 st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
