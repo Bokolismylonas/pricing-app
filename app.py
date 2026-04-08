@@ -1228,6 +1228,77 @@ def build_export_dataframe(row_ids, catalogs, selected_codes):
         rows.append(row_result_dict(visible_index, row_id, catalogs, selected_codes))
     return pd.DataFrame(rows)
 
+def format_total_discounts(discs):
+    valid_discounts = []
+
+    for d in discs:
+        try:
+            d = float(d)
+        except Exception:
+            continue
+
+        if d > 0:
+            if d.is_integer():
+                valid_discounts.append(f"{int(d)}%")
+            else:
+                valid_discounts.append(f"{d:.1f}%")
+
+    return ", ".join(valid_discounts)
+
+
+def get_company_label(code):
+    company_name_row = companies_df[companies_df["code"] == code]
+    if company_name_row.empty:
+        return code
+    return company_name_row.iloc[0]["name"]
+
+
+def compare_percent_text(a_name, a_price, b_name, b_price):
+    if a_price is None or b_price is None:
+        return ""
+
+    try:
+        a = float(a_price)
+        b = float(b_price)
+    except Exception:
+        return ""
+
+    if b == 0:
+        return ""
+
+    if round(a, 2) == round(b, 2):
+        return f"Same price as {b_name}"
+
+    if a < b:
+        pct = ((b - a) / b) * 100
+        return f"{pct:.1f}% cheaper than {b_name}"
+
+    pct = ((a - b) / b) * 100
+    return f"{pct:.1f}% more expensive than {b_name}"
+
+
+def build_comparison_summary(final_prices, selected_codes):
+    summaries = {}
+
+    for code in selected_codes:
+        label = get_company_label(code)
+        a_price = final_prices.get(code)
+        notes = []
+
+        for other_code in selected_codes:
+            if other_code == code:
+                continue
+
+            other_label = get_company_label(other_code)
+            other_price = final_prices.get(other_code)
+
+            note = compare_percent_text(label, a_price, other_label, other_price)
+            if note:
+                notes.append(note)
+
+        summaries[code] = " | ".join(notes)
+
+    return summaries
 
 # -------------------------------------------------
 # EXPORT FIELD SELECTION
@@ -1238,7 +1309,9 @@ EXPORT_FIELD_OPTIONS = [
     "MM",
     "Package",
     "Base Price",
+    "Total Discounts",
     "Final Price",
+    "Comparison %",
     "Best Price",
 ]
 
@@ -1254,12 +1327,15 @@ def filter_export_dataframe(export_df, selected_codes, selected_fields, companie
         label = code if company_name_row.empty else company_name_row.iloc[0]["name"]
 
         for field in selected_fields:
-            if field == "Best Price":
+            if field in ["Best Price", "Comparison %"]:
                 continue
 
             col_name = f"{label} {field}"
             if col_name in export_df.columns:
                 columns_to_keep.append(col_name)
+
+    if "Comparison %" in selected_fields and "Comparisons" in export_df.columns:
+        columns_to_keep.append("Comparisons")
 
     if "Best Price" in selected_fields and "Best Price" in export_df.columns:
         columns_to_keep.append("Best Price")
@@ -1824,11 +1900,24 @@ else:
             valid = {k: v for k, v in row_final_prices.items() if v is not None}
             if valid:
                 best_code = min(valid, key=valid.get)
-                best_name_row = companies_df[companies_df["code"] == best_code]
-                best_label = best_code if best_name_row.empty else best_name_row.iloc[0]["name"]
+                best_label = get_company_label(best_code)
             else:
                 best_label = "-"
+
             st.metric(f"Row {visible_index + 1} Best Price", best_label)
+
+            comparison_summaries = build_comparison_summary(row_final_prices, selected_codes)
+
+              has_comparisons = any(v for v in comparison_summaries.values())
+              if has_comparisons:
+                 st.markdown("**Price Difference %**")
+                 for code in selected_codes:
+                 label = get_company_label(code)
+                 summary = comparison_summaries.get(code, "")
+                 if summary:
+                     st.write(f"**{label}:** {summary}")
+
+
 
         st.markdown("---")
 
@@ -1841,7 +1930,7 @@ full_export_df = build_export_dataframe(st.session_state.row_ids, catalogs, sele
 selected_export_fields = st.multiselect(
     "Choose columns for Excel export",
     options=EXPORT_FIELD_OPTIONS,
-    default=["Product", "Final Price", "Best Price"],
+    default=["Product", "Total Discounts", "Final Price", "Comparison %", "Best Price"],
     key="selected_export_fields",
 )
 
