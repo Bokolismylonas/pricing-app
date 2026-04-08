@@ -51,7 +51,15 @@ def ensure_render_secrets_file():
     supabase_url = os.getenv("SUPABASE_URL", "")
     supabase_key = os.getenv("SUPABASE_KEY", "")
 
-    if not all([auth_redirect_uri, auth_cookie_secret, google_client_id, google_client_secret, google_server_metadata_url]):
+    if not all(
+        [
+            auth_redirect_uri,
+            auth_cookie_secret,
+            google_client_id,
+            google_client_secret,
+            google_server_metadata_url,
+        ]
+    ):
         return
 
     content = f'''SUPABASE_URL = "{_escape_toml(supabase_url)}"
@@ -261,12 +269,20 @@ def show_login_screen():
             unsafe_allow_html=True,
         )
 
-        if st.button("Continue with Google", use_container_width=True, key="login_google_button"):
+        if st.button(
+            "Continue with Google",
+            use_container_width=True,
+            key="login_google_button",
+        ):
             st.login("google")
 
         st.write("")
 
-        if st.button("Continue with Microsoft", use_container_width=True, key="login_microsoft_button"):
+        if st.button(
+            "Continue with Microsoft",
+            use_container_width=True,
+            key="login_microsoft_button",
+        ):
             st.login("microsoft")
 
         st.markdown(
@@ -392,7 +408,14 @@ def get_stripe_subscription_row(email: str):
 
         if preferred is None:
             for sub in subs.data:
-                if sub.status in ["trialing", "past_due", "unpaid", "canceled", "incomplete", "incomplete_expired"]:
+                if sub.status in [
+                    "trialing",
+                    "past_due",
+                    "unpaid",
+                    "canceled",
+                    "incomplete",
+                    "incomplete_expired",
+                ]:
                     preferred = sub
                     break
 
@@ -880,7 +903,15 @@ def current_user_has_access():
     return False
 
 
-def upsert_company(company_key, name, domain, max_seats=0, is_active=True, billing_status="trialing", owner_email=""):
+def upsert_company(
+    company_key,
+    name,
+    domain,
+    max_seats=0,
+    is_active=True,
+    billing_status="trialing",
+    owner_email="",
+):
     companies = load_companies_registry()
     normalized_key = normalize_company_key(company_key)
     idx = find_company_index(companies, normalized_key)
@@ -1151,83 +1182,6 @@ def apply_discounts(price, discs):
     return round(p, 2)
 
 
-def get_catalog_row(df, display_value):
-    if df is None or df.empty or not display_value:
-        return None
-
-    rows = df[df["DISPLAY"] == display_value]
-    if rows.empty:
-        return None
-
-    return rows.iloc[0]
-
-
-def row_result_dict(visible_index, row_id, catalogs, selected_codes):
-    result = {"Row": visible_index + 1}
-    final_prices = {}
-
-    for code in selected_codes:
-        company_name_row = companies_df[companies_df["code"] == code]
-        label = code
-        if not company_name_row.empty:
-            label = company_name_row.iloc[0]["name"]
-
-        df = catalogs.get(code)
-        selected_product = st.session_state.get(f"row_{row_id}_{code}_product", "")
-        row = get_catalog_row(df, selected_product)
-
-        discs = []
-        for d in range(1, 6):
-            discs.append(st.session_state.get(f"row_{row_id}_{code}_disc_{d}", 0.0))
-
-        if row is not None:
-            base_price = round(float(row["Price"]), 2)
-            final_price = apply_discounts(row["Price"], discs)
-            final_prices[code] = final_price
-
-            result[f"{label} Product"] = row["Product"]
-            result[f"{label} SAP"] = row["SAP"]
-            result[f"{label} MM"] = row["MM"]
-            result[f"{label} Package"] = row["Package"]
-            result[f"{label} Base Price"] = base_price
-
-            for i, disc in enumerate(discs, start=1):
-                result[f"{label} Disc{i}"] = disc
-
-            result[f"{label} Final Price"] = final_price
-        else:
-            final_prices[code] = None
-            result[f"{label} Product"] = ""
-            result[f"{label} SAP"] = ""
-            result[f"{label} MM"] = ""
-            result[f"{label} Package"] = ""
-            result[f"{label} Base Price"] = ""
-
-            for i in range(1, 6):
-                result[f"{label} Disc{i}"] = st.session_state.get(
-                    f"row_{row_id}_{code}_disc_{i}", 0.0
-                )
-
-            result[f"{label} Final Price"] = ""
-
-    valid = {k: v for k, v in final_prices.items() if v is not None}
-    if valid:
-        best_code = min(valid, key=valid.get)
-        best_name_row = companies_df[companies_df["code"] == best_code]
-        best_label = best_code if best_name_row.empty else best_name_row.iloc[0]["name"]
-        result["Best Price"] = best_label
-    else:
-        result["Best Price"] = ""
-
-    return result
-
-
-def build_export_dataframe(row_ids, catalogs, selected_codes):
-    rows = []
-    for visible_index, row_id in enumerate(row_ids):
-        rows.append(row_result_dict(visible_index, row_id, catalogs, selected_codes))
-    return pd.DataFrame(rows)
-
 def format_total_discounts(discs):
     valid_discounts = []
 
@@ -1299,6 +1253,94 @@ def build_comparison_summary(final_prices, selected_codes):
         summaries[code] = " | ".join(notes)
 
     return summaries
+
+
+def get_catalog_row(df, display_value):
+    if df is None or df.empty or not display_value:
+        return None
+
+    rows = df[df["DISPLAY"] == display_value]
+    if rows.empty:
+        return None
+
+    return rows.iloc[0]
+
+
+def row_result_dict(visible_index, row_id, catalogs, selected_codes):
+    result = {"Row": visible_index + 1}
+    final_prices = {}
+
+    for code in selected_codes:
+        label = get_company_label(code)
+
+        df = catalogs.get(code)
+        selected_product = st.session_state.get(f"row_{row_id}_{code}_product", "")
+        row = get_catalog_row(df, selected_product)
+
+        discs = []
+        for d in range(1, 6):
+            discs.append(st.session_state.get(f"row_{row_id}_{code}_disc_{d}", 0.0))
+
+        if row is not None:
+            base_price = round(float(row["Price"]), 2)
+            final_price = apply_discounts(row["Price"], discs)
+            final_prices[code] = final_price
+            total_discounts_text = format_total_discounts(discs)
+
+            result[f"{label} Product"] = row["Product"]
+            result[f"{label} SAP"] = row["SAP"]
+            result[f"{label} MM"] = row["MM"]
+            result[f"{label} Package"] = row["Package"]
+            result[f"{label} Base Price"] = base_price
+            result[f"{label} Total Discounts"] = total_discounts_text
+
+            for i, disc in enumerate(discs, start=1):
+                result[f"{label} Disc{i}"] = disc
+
+            result[f"{label} Final Price"] = final_price
+        else:
+            final_prices[code] = None
+            result[f"{label} Product"] = ""
+            result[f"{label} SAP"] = ""
+            result[f"{label} MM"] = ""
+            result[f"{label} Package"] = ""
+            result[f"{label} Base Price"] = ""
+            result[f"{label} Total Discounts"] = format_total_discounts(discs)
+
+            for i in range(1, 6):
+                result[f"{label} Disc{i}"] = st.session_state.get(
+                    f"row_{row_id}_{code}_disc_{i}", 0.0
+                )
+
+            result[f"{label} Final Price"] = ""
+
+    comparison_summaries = build_comparison_summary(final_prices, selected_codes)
+
+    combined_comparisons = []
+    for code in selected_codes:
+        label = get_company_label(code)
+        summary = comparison_summaries.get(code, "")
+        if summary:
+            combined_comparisons.append(f"{label}: {summary}")
+
+    result["Comparisons"] = " || ".join(combined_comparisons)
+
+    valid = {k: v for k, v in final_prices.items() if v is not None}
+    if valid:
+        best_code = min(valid, key=valid.get)
+        result["Best Price"] = get_company_label(best_code)
+    else:
+        result["Best Price"] = ""
+
+    return result
+
+
+def build_export_dataframe(row_ids, catalogs, selected_codes):
+    rows = []
+    for visible_index, row_id in enumerate(row_ids):
+        rows.append(row_result_dict(visible_index, row_id, catalogs, selected_codes))
+    return pd.DataFrame(rows)
+
 
 # -------------------------------------------------
 # EXPORT FIELD SELECTION
@@ -1381,7 +1423,7 @@ def style_excel_worksheet(ws):
             fill = knauf_fill
         elif str(header).startswith("Saint-Gobain "):
             fill = sg_fill
-        elif str(header) == "Best Price":
+        elif str(header) in ["Best Price", "Comparisons"]:
             fill = result_fill
         else:
             fill = None
@@ -1397,7 +1439,7 @@ def style_excel_worksheet(ws):
             if len(val) > max_len:
                 max_len = len(val)
 
-        adjusted_width = min(max(max_len + 2, 12), 30)
+        adjusted_width = min(max(max_len + 2, 12), 45)
         ws.column_dimensions[get_column_letter(col_idx)].width = adjusted_width
 
 
@@ -1451,18 +1493,35 @@ if company_result["status"] == "full":
 
     c1, c2, c3 = st.columns([1, 1.6, 1])
     with c2:
-        st.warning(f"{company.get('name', 'This company')} is using all seats ({format_company_seats(company)}).")
-        st.button("Logout", on_click=logout_current_user, use_container_width=True, key="company_full_logout")
+        st.warning(
+            f"{company.get('name', 'This company')} is using all seats ({format_company_seats(company)})."
+        )
+        st.button(
+            "Logout",
+            on_click=logout_current_user,
+            use_container_width=True,
+            key="company_full_logout",
+        )
     st.stop()
 
 if current_user_is_blocked():
     st.error("Access denied. Your account has been blocked.")
-    st.button("Logout", on_click=logout_current_user, use_container_width=True, key="blocked_logout")
+    st.button(
+        "Logout",
+        on_click=logout_current_user,
+        use_container_width=True,
+        key="blocked_logout",
+    )
     st.stop()
 
 if not current_user_is_approved():
     st.warning("Your account is pending admin approval.")
-    st.button("Logout", on_click=logout_current_user, use_container_width=True, key="pending_logout")
+    st.button(
+        "Logout",
+        on_click=logout_current_user,
+        use_container_width=True,
+        key="pending_logout",
+    )
     st.stop()
 
 if not is_admin_user():
@@ -1480,7 +1539,12 @@ if not is_admin_user():
             """,
             unsafe_allow_html=True,
         )
-        st.button("Logout", on_click=logout_current_user, use_container_width=True, key="device_limit_logout")
+        st.button(
+            "Logout",
+            on_click=logout_current_user,
+            use_container_width=True,
+            key="device_limit_logout",
+        )
         st.stop()
     else:
         touch_current_session()
@@ -1514,7 +1578,12 @@ if (not is_admin_user()) and (not current_user_has_access()):
     if checkout_url:
         st.link_button("Subscribe €10/month", checkout_url, use_container_width=True)
 
-    st.button("Logout", on_click=logout_current_user, use_container_width=True, key="locked_logout")
+    st.button(
+        "Logout",
+        on_click=logout_current_user,
+        use_container_width=True,
+        key="locked_logout",
+    )
     st.stop()
 
 
@@ -1557,7 +1626,11 @@ with st.sidebar:
         else:
             checkout_url = get_checkout_url(user_email)
             if checkout_url:
-                st.link_button("Individual €10/month", checkout_url, use_container_width=True)
+                st.link_button(
+                    "Individual €10/month",
+                    checkout_url,
+                    use_container_width=True,
+                )
 
     st.markdown("---")
 
@@ -1566,7 +1639,12 @@ with st.sidebar:
         st.warning("⚠️ Please logout before closing the app to free your session.")
         st.caption(f"Active sessions: {active_sessions_count}/{MAX_ACTIVE_SESSIONS}")
 
-    st.button("Logout", on_click=logout_current_user, use_container_width=True, key="logout_button")
+    st.button(
+        "Logout",
+        on_click=logout_current_user,
+        use_container_width=True,
+        key="logout_button",
+    )
 
 
 # -------------------------------------------------
@@ -1595,9 +1673,13 @@ st.markdown("## 1. Company Manager")
 
 add_c1, add_c2, add_c3 = st.columns(3)
 with add_c1:
-    new_code = st.text_input("Code", key="new_company_code", placeholder="TECHNOGIPS")
+    new_code = st.text_input(
+        "Code", key="new_company_code", placeholder="TECHNOGIPS"
+    )
 with add_c2:
-    new_name = st.text_input("Name", key="new_company_name", placeholder="Technogips")
+    new_name = st.text_input(
+        "Name", key="new_company_name", placeholder="Technogips"
+    )
 with add_c3:
     st.write("")
     st.write("")
@@ -1639,7 +1721,9 @@ with del_c1:
 with del_c2:
     st.write("")
     st.write("")
-    if st.button("Delete Company", key="delete_company_button", use_container_width=True):
+    if st.button(
+        "Delete Company", key="delete_company_button", use_container_width=True
+    ):
         if not delete_company_display:
             st.error("Please select a company.")
         else:
@@ -1694,7 +1778,9 @@ if st.button("Save", key="save_source_button", use_container_width=True):
         st.success(f"Saved as: {name}")
         st.rerun()
 
-st.info("Download the source template, fill in your products, and upload it back to the platform.")
+st.info(
+    "Download the source template, fill in your products, and upload it back to the platform."
+)
 
 if TEMPLATE_FILE.exists():
     with open(TEMPLATE_FILE, "rb") as f:
@@ -1716,7 +1802,11 @@ st.markdown("## 3. Source Library")
 
 saved_df = list_saved_sources()
 if not saved_df.empty:
-    st.dataframe(saved_df.drop(columns=["Full Path"]), use_container_width=True, hide_index=True)
+    st.dataframe(
+        saved_df.drop(columns=["Full Path"]),
+        use_container_width=True,
+        hide_index=True,
+    )
 else:
     st.info("No saved source files yet.")
 
@@ -1738,7 +1828,9 @@ with src_d1:
 with src_d2:
     st.write("")
     st.write("")
-    if st.button("Delete Source", key="delete_source_button", use_container_width=True):
+    if st.button(
+        "Delete Source", key="delete_source_button", use_container_width=True
+    ):
         if not delete_source_display:
             st.error("Please select a source.")
         else:
@@ -1835,8 +1927,14 @@ else:
 
         with top2:
             st.write("")
-            if st.button("Delete This Row", key=f"delete_row_{row_id}", use_container_width=True):
-                st.session_state.row_ids = [r for r in st.session_state.row_ids if r != row_id]
+            if st.button(
+                "Delete This Row",
+                key=f"delete_row_{row_id}",
+                use_container_width=True,
+            ):
+                st.session_state.row_ids = [
+                    r for r in st.session_state.row_ids if r != row_id
+                ]
                 st.rerun()
 
         row_cols = st.columns(len(selected_codes))
@@ -1844,8 +1942,7 @@ else:
 
         for col_idx, code in enumerate(selected_codes):
             with row_cols[col_idx]:
-                company_name_row = companies_df[companies_df["code"] == code]
-                label = code if company_name_row.empty else company_name_row.iloc[0]["name"]
+                label = get_company_label(code)
 
                 st.write(f"#### {label}")
 
@@ -1906,18 +2003,18 @@ else:
 
             st.metric(f"Row {visible_index + 1} Best Price", best_label)
 
-            comparison_summaries = build_comparison_summary(row_final_prices, selected_codes)
+            comparison_summaries = build_comparison_summary(
+                row_final_prices, selected_codes
+            )
 
-              has_comparisons = any(v for v in comparison_summaries.values())
-              if has_comparisons:
-                 st.markdown("**Price Difference %**")
-                 for code in selected_codes:
-                 label = get_company_label(code)
-                 summary = comparison_summaries.get(code, "")
-                 if summary:
-                     st.write(f"**{label}:** {summary}")
-
-
+            has_comparisons = any(v for v in comparison_summaries.values())
+            if has_comparisons:
+                st.markdown("**Price Difference %**")
+                for code in selected_codes:
+                    label = get_company_label(code)
+                    summary = comparison_summaries.get(code, "")
+                    if summary:
+                        st.write(f"**{label}:** {summary}")
 
         st.markdown("---")
 
@@ -1925,7 +2022,9 @@ else:
 # 7. EXPORT
 st.markdown("## 7. Export Excel Report")
 
-full_export_df = build_export_dataframe(st.session_state.row_ids, catalogs, selected_codes)
+full_export_df = build_export_dataframe(
+    st.session_state.row_ids, catalogs, selected_codes
+)
 
 selected_export_fields = st.multiselect(
     "Choose columns for Excel export",
@@ -2005,47 +2104,83 @@ if is_admin_user():
         c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
 
         with c1:
-            if st.button("Approve User", key="approve_user_button", use_container_width=True):
+            if st.button(
+                "Approve User", key="approve_user_button", use_container_width=True
+            ):
                 if selected_user_label:
                     row = user_options[selected_user_label]
-                    set_user_status(row.get("email", ""), row.get("sub", ""), "approved")
+                    set_user_status(
+                        row.get("email", ""),
+                        row.get("sub", ""),
+                        "approved",
+                    )
                     st.success(f"Approved: {row.get('email', '')}")
                     st.rerun()
 
         with c2:
-            if st.button("Block User", key="block_user_button", use_container_width=True):
+            if st.button(
+                "Block User", key="block_user_button", use_container_width=True
+            ):
                 if selected_user_label:
                     row = user_options[selected_user_label]
-                    set_user_status(row.get("email", ""), row.get("sub", ""), "blocked")
+                    set_user_status(
+                        row.get("email", ""),
+                        row.get("sub", ""),
+                        "blocked",
+                    )
                     st.success(f"Blocked: {row.get('email', '')}")
                     st.rerun()
 
         with c3:
-            if st.button("Set Pending", key="pending_user_button", use_container_width=True):
+            if st.button(
+                "Set Pending", key="pending_user_button", use_container_width=True
+            ):
                 if selected_user_label:
                     row = user_options[selected_user_label]
-                    set_user_status(row.get("email", ""), row.get("sub", ""), "pending")
+                    set_user_status(
+                        row.get("email", ""),
+                        row.get("sub", ""),
+                        "pending",
+                    )
                     st.success(f"Set to pending: {row.get('email', '')}")
                     st.rerun()
 
         with c4:
-            if st.button("Give Premium", key="give_premium_button", use_container_width=True):
+            if st.button(
+                "Give Premium", key="give_premium_button", use_container_width=True
+            ):
                 if selected_user_label:
                     row = user_options[selected_user_label]
-                    set_user_premium(row.get("email", ""), row.get("sub", ""), True)
+                    set_user_premium(
+                        row.get("email", ""),
+                        row.get("sub", ""),
+                        True,
+                    )
                     st.success(f"Premium granted to: {row.get('email', '')}")
                     st.rerun()
 
         with c5:
-            if st.button("Remove Premium", key="remove_premium_button", use_container_width=True):
+            if st.button(
+                "Remove Premium",
+                key="remove_premium_button",
+                use_container_width=True,
+            ):
                 if selected_user_label:
                     row = user_options[selected_user_label]
-                    set_user_premium(row.get("email", ""), row.get("sub", ""), False)
+                    set_user_premium(
+                        row.get("email", ""),
+                        row.get("sub", ""),
+                        False,
+                    )
                     st.success(f"Premium removed from: {row.get('email', '')}")
                     st.rerun()
 
         with c6:
-            if st.button("Reset Sessions", key="reset_sessions_button", use_container_width=True):
+            if st.button(
+                "Reset Sessions",
+                key="reset_sessions_button",
+                use_container_width=True,
+            ):
                 if selected_user_label:
                     row = user_options[selected_user_label]
                     reset_user_sessions(row.get("email", ""), row.get("sub", ""))
@@ -2053,7 +2188,11 @@ if is_admin_user():
                     st.rerun()
 
         with c7:
-            if st.button("Remove From Company", key="remove_from_company_button", use_container_width=True):
+            if st.button(
+                "Remove From Company",
+                key="remove_from_company_button",
+                use_container_width=True,
+            ):
                 if selected_user_label:
                     row = user_options[selected_user_label]
                     remove_user_from_company(row.get("email", ""), row.get("sub", ""))
@@ -2082,7 +2221,11 @@ if is_admin_user():
         )
 
     if companies_for_view:
-        st.dataframe(pd.DataFrame(companies_for_view), use_container_width=True, hide_index=True)
+        st.dataframe(
+            pd.DataFrame(companies_for_view),
+            use_container_width=True,
+            hide_index=True,
+        )
     else:
         st.info("No company workspaces found yet.")
 
@@ -2090,11 +2233,23 @@ if is_admin_user():
 
     cc1, cc2, cc3, cc4 = st.columns(4)
     with cc1:
-        company_key_input = st.text_input("Company Key", key="company_key_input", placeholder="knauf_team")
+        company_key_input = st.text_input(
+            "Company Key",
+            key="company_key_input",
+            placeholder="knauf_team",
+        )
     with cc2:
-        company_name_input = st.text_input("Company Name", key="company_name_input", placeholder="Knauf")
+        company_name_input = st.text_input(
+            "Company Name",
+            key="company_name_input",
+            placeholder="Knauf",
+        )
     with cc3:
-        company_domain_input = st.text_input("Company Domain", key="company_domain_input", placeholder="knauf.com")
+        company_domain_input = st.text_input(
+            "Company Domain",
+            key="company_domain_input",
+            placeholder="knauf.com",
+        )
     with cc4:
         company_max_seats_input = st.number_input(
             "Max Seats",
@@ -2105,13 +2260,25 @@ if is_admin_user():
             key="company_max_seats_input",
         )
 
-    company_owner_email = st.text_input("Owner Email", key="company_owner_email", placeholder="owner@company.com")
-    company_active_input = st.checkbox("Company Workspace Active", value=True, key="company_active_input")
+    company_owner_email = st.text_input(
+        "Owner Email",
+        key="company_owner_email",
+        placeholder="owner@company.com",
+    )
+    company_active_input = st.checkbox(
+        "Company Workspace Active",
+        value=True,
+        key="company_active_input",
+    )
 
     ccu1, ccu2 = st.columns(2)
 
     with ccu1:
-        if st.button("Save Company Workspace", key="save_company_plan_button", use_container_width=True):
+        if st.button(
+            "Save Company Workspace",
+            key="save_company_plan_button",
+            use_container_width=True,
+        ):
             if not company_key_input.strip():
                 st.warning("Please enter a company key.")
             elif not company_name_input.strip():
@@ -2142,8 +2309,14 @@ if is_admin_user():
             [""] + list(company_options_for_delete.keys()),
             key="selected_company_to_delete",
         )
-        if st.button("Delete Company Workspace", key="delete_company_plan_button", use_container_width=True):
+        if st.button(
+            "Delete Company Workspace",
+            key="delete_company_plan_button",
+            use_container_width=True,
+        ):
             if selected_company_to_delete:
                 remove_company(company_options_for_delete[selected_company_to_delete])
-                st.success(f"Company workspace deleted: {selected_company_to_delete}")
+                st.success(
+                    f"Company workspace deleted: {selected_company_to_delete}"
+                )
                 st.rerun()
