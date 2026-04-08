@@ -98,7 +98,7 @@ ensure_render_secrets_file()
 
 
 # -------------------------------------------------
-# UI STYLE (SAFE PREMIUM VERSION)
+# UI STYLE
 # -------------------------------------------------
 st.markdown(
     """
@@ -1744,6 +1744,18 @@ if (not is_admin_user()) and (not current_user_has_access()):
 
 
 # -------------------------------------------------
+# APPLY PENDING COMPARISON LOAD BEFORE WIDGETS
+# -------------------------------------------------
+if st.session_state.get("pending_load_payload") is not None:
+    restore_comparison_state_payload(st.session_state["pending_load_payload"])
+    st.session_state["current_comparison_id"] = st.session_state.get("pending_loaded_comparison_id")
+    st.session_state["comparison_name_input"] = st.session_state.get("pending_loaded_comparison_name", "")
+    st.session_state["pending_load_payload"] = None
+    st.session_state["pending_loaded_comparison_id"] = None
+    st.session_state["pending_loaded_comparison_name"] = ""
+
+
+# -------------------------------------------------
 # SIDEBAR
 # -------------------------------------------------
 with st.sidebar:
@@ -1769,6 +1781,25 @@ with st.sidebar:
                 st.warning("Plan: Locked")
 
     st.markdown("---")
+    st.subheader("🧭 Navigation")
+
+    nav_options = [
+        "Company Manager",
+        "Sources",
+        "Comparisons",
+        "Export",
+    ]
+    if is_admin_user():
+        nav_options.append("Admin Panel")
+
+    current_view = st.radio(
+        "Go to",
+        nav_options,
+        key="sidebar_navigation",
+        label_visibility="collapsed",
+    )
+
+    st.markdown("---")
     st.subheader("💳 Billing")
 
     if not is_admin_user():
@@ -1790,17 +1821,20 @@ with st.sidebar:
 
     st.markdown("---")
 
-    if not is_admin_user():
-        active_sessions_count = len(user_row.get("active_sessions", [])) if user_row else 0
-        st.warning("⚠️ Please logout before closing the app to free your session.")
-        st.caption(f"Active sessions: {active_sessions_count}/{MAX_ACTIVE_SESSIONS}")
-
     st.button(
         "Logout",
         on_click=logout_current_user,
         use_container_width=True,
         key="logout_button",
     )
+
+    if not is_admin_user():
+        active_sessions_count = len(user_row.get("active_sessions", [])) if user_row else 0
+        remaining_sessions = max(0, MAX_ACTIVE_SESSIONS - active_sessions_count)
+        st.warning("⚠️ Please logout before closing the app to free your session.")
+        st.caption(
+            f"Active sessions: {active_sessions_count}/{MAX_ACTIVE_SESSIONS} • Remaining available: {remaining_sessions}"
+        )
 
 
 # -------------------------------------------------
@@ -1824,576 +1858,593 @@ elif st.query_params.get("payment") == "cancel":
     st.info("Checkout was cancelled.")
 
 
-# 1. COMPANY MANAGER
-st.markdown('<div class="app-card">', unsafe_allow_html=True)
-st.markdown("## 1. Company Manager")
+# -------------------------------------------------
+# SECTION RENDERERS
+# -------------------------------------------------
+def render_company_manager():
+    st.markdown('<div class="app-card">', unsafe_allow_html=True)
+    st.markdown("## 1. Company Manager")
 
-add_c1, add_c2, add_c3 = st.columns(3)
-with add_c1:
-    new_code = st.text_input(
-        "Code", key="new_company_code", placeholder="TECHNOGIPS"
-    )
-with add_c2:
-    new_name = st.text_input(
-        "Name", key="new_company_name", placeholder="Technogips"
-    )
-with add_c3:
-    st.write("")
-    st.write("")
-    if st.button("Add Company", key="add_company_button", use_container_width=True):
-        code = normalize_code(new_code)
-        name = str(new_name).strip()
+    add_c1, add_c2, add_c3 = st.columns(3)
+    with add_c1:
+        new_code = st.text_input(
+            "Code", key="new_company_code", placeholder="TECHNOGIPS"
+        )
+    with add_c2:
+        new_name = st.text_input(
+            "Name", key="new_company_name", placeholder="Technogips"
+        )
+    with add_c3:
+        st.write("")
+        st.write("")
+        if st.button("Add Company", key="add_company_button", use_container_width=True):
+            code = normalize_code(new_code)
+            name = str(new_name).strip()
 
-        if not code:
-            st.error("Please enter a company code.")
-        elif not name:
-            st.error("Please enter a company name.")
-        elif code in companies_df["code"].astype(str).str.upper().tolist():
-            st.warning(f"Company {code} already exists.")
+            if not code:
+                st.error("Please enter a company code.")
+            elif not name:
+                st.error("Please enter a company name.")
+            elif code in companies_df["code"].astype(str).str.upper().tolist():
+                st.warning(f"Company {code} already exists.")
+            else:
+                updated_df = pd.concat(
+                    [companies_df, pd.DataFrame([{"code": code, "name": name}])],
+                    ignore_index=True,
+                )
+                save_companies(updated_df)
+                get_company_folder(code)
+                st.success(f"Company {name} was added successfully.")
+                st.rerun()
+
+    st.dataframe(companies_df, use_container_width=True, hide_index=True)
+
+    st.markdown("### Delete Company")
+
+    company_delete_options = {
+        f"{row['name']} ({row['code']})": row["code"] for _, row in companies_df.iterrows()
+    }
+
+    del_c1, del_c2 = st.columns([2, 1])
+    with del_c1:
+        delete_company_display = st.selectbox(
+            "Select Company to Delete",
+            [""] + list(company_delete_options.keys()),
+            key="delete_company_display",
+        )
+    with del_c2:
+        st.write("")
+        st.write("")
+        if st.button(
+            "Delete Company", key="delete_company_button", use_container_width=True
+        ):
+            if not delete_company_display:
+                st.error("Please select a company.")
+            else:
+                delete_code = company_delete_options[delete_company_display]
+                if delete_code in MAIN_CODES:
+                    st.warning("Core companies cannot be deleted at this stage.")
+                elif company_has_files(delete_code):
+                    st.error("This company has source files. Delete the source files first.")
+                else:
+                    updated_df = companies_df[companies_df["code"] != delete_code].copy()
+                    save_companies(updated_df)
+                    folder = get_company_folder(delete_code)
+                    try:
+                        folder.rmdir()
+                    except Exception:
+                        pass
+                    st.success(f"Company {delete_code} was deleted.")
+                    st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def render_source_library(show_title=True):
+    if show_title:
+        st.markdown("### 3. Source Library")
+
+    saved_df = list_saved_sources()
+    if not saved_df.empty:
+        st.dataframe(
+            saved_df.drop(columns=["Full Path"]),
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.info("No saved source files yet.")
+
+    st.markdown("### Delete Source")
+
+    source_delete_options = {}
+    if not saved_df.empty:
+        for _, row in saved_df.iterrows():
+            label = f"{row['Company Name']} | {row['Filename']}"
+            source_delete_options[label] = row["Full Path"]
+
+    src_d1, src_d2 = st.columns([3, 1])
+    with src_d1:
+        delete_source_display = st.selectbox(
+            "Select Source to Delete",
+            [""] + list(source_delete_options.keys()),
+            key="delete_source_display",
+        )
+    with src_d2:
+        st.write("")
+        st.write("")
+        if st.button(
+            "Delete Source", key="delete_source_button", use_container_width=True
+        ):
+            if not delete_source_display:
+                st.error("Please select a source.")
+            else:
+                full_path = Path(source_delete_options[delete_source_display])
+                if full_path.exists():
+                    full_path.unlink()
+                    st.success(f"Source deleted: {full_path.name}")
+                    st.rerun()
+                else:
+                    st.error("File not found.")
+
+
+def render_sources():
+    st.markdown('<div class="app-card">', unsafe_allow_html=True)
+    st.markdown("## Sources")
+
+    st.markdown("### 2. Save Source")
+
+    company_display_map = {
+        f"{row['name']} ({row['code']})": row["code"] for _, row in companies_df.iterrows()
+    }
+
+    s1, s2, s3 = st.columns(3)
+    with s1:
+        selected_company_display = st.selectbox(
+            "Company",
+            list(company_display_map.keys()),
+            key="save_company",
+        )
+        company_code = company_display_map[selected_company_display]
+
+    with s2:
+        date_val = st.date_input("Date", value=date.today(), key="save_date")
+
+    with s3:
+        file = st.file_uploader("Upload Source", type=["xlsx", "xlsm"], key="save_file")
+
+    if st.button("Save", key="save_source_button", use_container_width=True):
+        if file is None:
+            st.error("Please upload a source file first.")
         else:
-            updated_df = pd.concat(
-                [companies_df, pd.DataFrame([{"code": code, "name": name}])],
-                ignore_index=True,
-            )
-            save_companies(updated_df)
-            get_company_folder(code)
-            st.success(f"Company {name} was added successfully.")
+            name = get_next_version_filename(company_code, date_val, file.name)
+            path = get_company_folder(company_code) / name
+            with open(path, "wb") as f:
+                f.write(file.getbuffer())
+            st.success(f"Saved as: {name}")
             st.rerun()
 
-st.dataframe(companies_df, use_container_width=True, hide_index=True)
-
-st.markdown("### Delete Company")
-
-company_delete_options = {
-    f"{row['name']} ({row['code']})": row["code"] for _, row in companies_df.iterrows()
-}
-
-del_c1, del_c2 = st.columns([2, 1])
-with del_c1:
-    delete_company_display = st.selectbox(
-        "Select Company to Delete",
-        [""] + list(company_delete_options.keys()),
-        key="delete_company_display",
+    st.info(
+        "Download the source template, fill in your products, and upload it back to the platform."
     )
-with del_c2:
-    st.write("")
-    st.write("")
-    if st.button(
-        "Delete Company", key="delete_company_button", use_container_width=True
-    ):
-        if not delete_company_display:
-            st.error("Please select a company.")
-        else:
-            delete_code = company_delete_options[delete_company_display]
-            if delete_code in MAIN_CODES:
-                st.warning("Core companies cannot be deleted at this stage.")
-            elif company_has_files(delete_code):
-                st.error("This company has source files. Delete the source files first.")
-            else:
-                updated_df = companies_df[companies_df["code"] != delete_code].copy()
-                save_companies(updated_df)
-                folder = get_company_folder(delete_code)
-                try:
-                    folder.rmdir()
-                except Exception:
-                    pass
-                st.success(f"Company {delete_code} was deleted.")
-                st.rerun()
-st.markdown("</div>", unsafe_allow_html=True)
 
-
-# 2. SAVE SOURCE
-st.markdown('<div class="app-card">', unsafe_allow_html=True)
-st.markdown("## 2. Save Source")
-
-company_display_map = {
-    f"{row['name']} ({row['code']})": row["code"] for _, row in companies_df.iterrows()
-}
-
-s1, s2, s3 = st.columns(3)
-with s1:
-    selected_company_display = st.selectbox(
-        "Company",
-        list(company_display_map.keys()),
-        key="save_company",
-    )
-    company_code = company_display_map[selected_company_display]
-
-with s2:
-    date_val = st.date_input("Date", value=date.today(), key="save_date")
-
-with s3:
-    file = st.file_uploader("Upload Source", type=["xlsx", "xlsm"], key="save_file")
-
-if st.button("Save", key="save_source_button", use_container_width=True):
-    if file is None:
-        st.error("Please upload a source file first.")
+    if TEMPLATE_FILE.exists():
+        with open(TEMPLATE_FILE, "rb") as f:
+            st.download_button(
+                "Download Source Template",
+                data=f.read(),
+                file_name="source_template.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="download_source_template",
+                use_container_width=True,
+            )
     else:
-        name = get_next_version_filename(company_code, date_val, file.name)
-        path = get_company_folder(company_code) / name
-        with open(path, "wb") as f:
-            f.write(file.getbuffer())
-        st.success(f"Saved as: {name}")
-        st.rerun()
+        st.warning("Template file not found.")
 
-st.info(
-    "Download the source template, fill in your products, and upload it back to the platform."
-)
-
-if TEMPLATE_FILE.exists():
-    with open(TEMPLATE_FILE, "rb") as f:
-        st.download_button(
-            "Download Source Template",
-            data=f.read(),
-            file_name="source_template.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="download_source_template",
-            use_container_width=True,
-        )
-else:
-    st.warning("Template file not found.")
-st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("---")
+    render_source_library(show_title=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
-# 3. SOURCE LIBRARY
-st.markdown('<div class="app-card">', unsafe_allow_html=True)
-st.markdown("## 3. Source Library")
+def render_comparisons():
+    st.markdown('<div class="app-card">', unsafe_allow_html=True)
+    st.markdown("## Comparisons")
 
-saved_df = list_saved_sources()
-if not saved_df.empty:
-    st.dataframe(
-        saved_df.drop(columns=["Full Path"]),
-        use_container_width=True,
-        hide_index=True,
+    render_source_library(show_title=True)
+    st.markdown("---")
+
+    st.markdown("### 4. Select Saved Sources for Comparison")
+
+    company_options = {
+        f"{row['name']} ({row['code']})": row["code"] for _, row in companies_df.iterrows()
+    }
+
+    selected_company_displays = st.multiselect(
+        "Select up to 3 companies to compare",
+        options=list(company_options.keys()),
+        default=[],
+        max_selections=3,
+        key="comparison_company_selection",
     )
-else:
-    st.info("No saved source files yet.")
 
-st.markdown("### Delete Source")
+    selected_codes = [company_options[x] for x in selected_company_displays]
 
-source_delete_options = {}
-if not saved_df.empty:
-    for _, row in saved_df.iterrows():
-        label = f"{row['Company Name']} | {row['Filename']}"
-        source_delete_options[label] = row["Full Path"]
+    if not selected_codes:
+        st.info("Please select at least 1 company for comparison.")
 
-src_d1, src_d2 = st.columns([3, 1])
-with src_d1:
-    delete_source_display = st.selectbox(
-        "Select Source to Delete",
-        [""] + list(source_delete_options.keys()),
-        key="delete_source_display",
-    )
-with src_d2:
-    st.write("")
-    st.write("")
-    if st.button(
-        "Delete Source", key="delete_source_button", use_container_width=True
-    ):
-        if not delete_source_display:
-            st.error("Please select a source.")
-        else:
-            full_path = Path(source_delete_options[delete_source_display])
-            if full_path.exists():
-                full_path.unlink()
-                st.success(f"Source deleted: {full_path.name}")
-                st.rerun()
+    selected = {}
+    catalogs = {}
+
+    if selected_codes:
+        cols = st.columns(len(selected_codes))
+        for i, code in enumerate(selected_codes):
+            with cols[i]:
+                files = get_company_files(code)
+                selected[code] = st.selectbox(
+                    f"{code} source file",
+                    [""] + files,
+                    key=f"select_{code}",
+                )
+
+        for code in selected_codes:
+            if selected.get(code):
+                df = load_data(get_company_folder(code) / selected[code])
+                catalogs[code] = prepare_catalog(df)
             else:
-                st.error("File not found.")
-st.markdown("</div>", unsafe_allow_html=True)
+                catalogs[code] = None
 
+    st.markdown("---")
+    st.markdown("### 4B. Saved Comparisons")
 
-# APPLY PENDING COMPARISON LOAD BEFORE WIDGETS ARE CREATED
-if st.session_state.get("pending_load_payload") is not None:
-    restore_comparison_state_payload(st.session_state["pending_load_payload"])
-    st.session_state["current_comparison_id"] = st.session_state.get("pending_loaded_comparison_id")
-    st.session_state["comparison_name_input"] = st.session_state.get("pending_loaded_comparison_name", "")
-    st.session_state["pending_load_payload"] = None
-    st.session_state["pending_loaded_comparison_id"] = None
-    st.session_state["pending_loaded_comparison_name"] = ""
+    default_name = st.session_state.get("comparison_name_input", "").strip()
+    if not default_name and selected_codes:
+        st.session_state["comparison_name_input"] = auto_comparison_name(selected_codes)
 
+    st.text_input(
+        "Comparison Name",
+        key="comparison_name_input",
+        placeholder="e.g. Siniat vs Knauf - April",
+    )
 
-# 4. SELECT SAVED SOURCES
-st.markdown('<div class="app-card">', unsafe_allow_html=True)
-st.markdown("## 4. Select Saved Sources for Comparison")
+    save_c1, save_c2, save_c3, save_c4 = st.columns(4)
 
-company_options = {
-    f"{row['name']} ({row['code']})": row["code"] for _, row in companies_df.iterrows()
-}
+    with save_c1:
+        if st.button("💾 Save Comparison", use_container_width=True, key="save_comparison_btn"):
+            if not selected_codes:
+                st.warning("Please select companies first.")
+            else:
+                comparison_name = st.session_state.get("comparison_name_input", "").strip()
+                if not comparison_name:
+                    comparison_name = auto_comparison_name(selected_codes)
+                    st.session_state["comparison_name_input"] = comparison_name
 
-selected_company_displays = st.multiselect(
-    "Select up to 3 companies to compare",
-    options=list(company_options.keys()),
-    default=[],
-    max_selections=3,
-    key="comparison_company_selection",
-)
+                comparison_file = get_current_user_comparisons_file()
+                comparison_id = save_new_comparison(
+                    comparison_file,
+                    owner_sub=get_current_user_id(),
+                    owner_email=get_current_user_email(),
+                    name=comparison_name,
+                    companies=[get_company_label(code) for code in selected_codes],
+                    source_files=build_source_files_map(selected_codes),
+                    state=collect_comparison_state_payload(selected_codes),
+                )
 
-selected_codes = [company_options[x] for x in selected_company_displays]
+                st.session_state["current_comparison_id"] = comparison_id
+                st.success("Comparison saved successfully.")
 
-if not selected_codes:
-    st.info("Please select at least 1 company for comparison.")
+    with save_c2:
+        if st.button("🔄 Save Changes", use_container_width=True, key="save_changes_btn"):
+            comparison_id = st.session_state.get("current_comparison_id")
 
-selected = {}
-catalogs = {}
+            if not comparison_id:
+                st.warning("Save a comparison first.")
+            elif not selected_codes:
+                st.warning("Please select companies first.")
+            else:
+                comparison_name = st.session_state.get("comparison_name_input", "").strip()
+                if not comparison_name:
+                    comparison_name = auto_comparison_name(selected_codes)
+                    st.session_state["comparison_name_input"] = comparison_name
 
-if selected_codes:
-    cols = st.columns(len(selected_codes))
-    for i, code in enumerate(selected_codes):
-        with cols[i]:
-            files = get_company_files(code)
-            selected[code] = st.selectbox(
-                f"{code} source file",
-                [""] + files,
-                key=f"select_{code}",
+                comparison_file = get_current_user_comparisons_file()
+                ok = update_comparison(
+                    comparison_file,
+                    comparison_id=comparison_id,
+                    owner_sub=get_current_user_id(),
+                    owner_email=get_current_user_email(),
+                    name=comparison_name,
+                    companies=[get_company_label(code) for code in selected_codes],
+                    source_files=build_source_files_map(selected_codes),
+                    state=collect_comparison_state_payload(selected_codes),
+                )
+
+                if ok:
+                    st.success("Comparison updated successfully.")
+                else:
+                    st.warning("This comparison no longer exists. Save it again as new.")
+
+    with save_c3:
+        if st.button("🆕 Save As New", use_container_width=True, key="save_as_new_btn"):
+            if not selected_codes:
+                st.warning("Please select companies first.")
+            else:
+                comparison_name = st.session_state.get("comparison_name_input", "").strip()
+                if not comparison_name:
+                    comparison_name = auto_comparison_name(selected_codes)
+                    st.session_state["comparison_name_input"] = comparison_name
+
+                comparison_file = get_current_user_comparisons_file()
+                comparison_id = save_new_comparison(
+                    comparison_file,
+                    owner_sub=get_current_user_id(),
+                    owner_email=get_current_user_email(),
+                    name=comparison_name,
+                    companies=[get_company_label(code) for code in selected_codes],
+                    source_files=build_source_files_map(selected_codes),
+                    state=collect_comparison_state_payload(selected_codes),
+                )
+
+                st.session_state["current_comparison_id"] = comparison_id
+                st.success("Saved as new comparison.")
+
+    with save_c4:
+        if st.button("📂 Load Comparison", use_container_width=True, key="toggle_load_comparison_btn"):
+            st.session_state["show_saved_comparisons"] = not st.session_state.get("show_saved_comparisons", False)
+
+    if st.session_state.get("show_saved_comparisons"):
+        comparison_file = get_current_user_comparisons_file()
+        saved_records = list_comparisons(comparison_file)
+
+        if not saved_records:
+            st.info("You have no saved comparisons yet.")
+        else:
+            saved_options = {
+                build_display_label(record): record["id"]
+                for record in saved_records
+            }
+
+            selected_saved_label = st.selectbox(
+                "Your saved comparisons",
+                [""] + list(saved_options.keys()),
+                key="selected_saved_comparison_label",
             )
 
+            if selected_saved_label:
+                selected_saved_id = saved_options[selected_saved_label]
+                selected_record = get_comparison(comparison_file, selected_saved_id)
+
+                if selected_record:
+                    source_line = ", ".join(
+                        [
+                            f"{k}: {v}"
+                            for k, v in selected_record.get("source_files", {}).items()
+                            if v
+                        ]
+                    )
+                    if source_line:
+                        st.caption("Source files: " + source_line)
+
+                    load_c1, load_c2, load_c3 = st.columns([1, 2, 1])
+
+                    with load_c1:
+                        if st.button("Load Selected", use_container_width=True, key="load_selected_comparison_btn"):
+                            st.session_state["pending_load_payload"] = selected_record.get("state", {})
+                            st.session_state["pending_loaded_comparison_id"] = selected_record.get("id")
+                            st.session_state["pending_loaded_comparison_name"] = selected_record.get("name", "")
+                            st.rerun()
+
+                    with load_c2:
+                        st.info("Select a saved comparison and use Load or Delete.")
+
+                    with load_c3:
+                        if st.button("🗑️ Delete", use_container_width=True, key="delete_selected_comparison_btn"):
+                            ok = delete_comparison(comparison_file, selected_record.get("id"))
+                            if ok:
+                                if st.session_state.get("current_comparison_id") == selected_record.get("id"):
+                                    st.session_state["current_comparison_id"] = None
+                                st.success("Comparison deleted successfully.")
+                                st.rerun()
+                            else:
+                                st.warning("Could not delete comparison.")
+
+    st.markdown("---")
+    st.markdown("### 5. Debug")
+
+    if selected_codes:
+        dbg_cols = st.columns(len(selected_codes))
+        for i, code in enumerate(selected_codes):
+            with dbg_cols[i]:
+                st.write(f"Selected {code} file:", selected.get(code, ""))
+                if catalogs.get(code) is not None:
+                    st.write(f"{code} prepared rows:", len(catalogs[code]))
+    else:
+        st.info("No comparison companies selected yet.")
+
+    st.markdown("---")
+    st.markdown("### 6. Multi-Line Comparison")
+
+    if not selected_codes:
+        st.info("Select companies first to start comparison.")
+    else:
+        b1, b2 = st.columns([1, 3])
+
+        with b1:
+            if st.button("Add Row", key="add_row_button", use_container_width=True):
+                st.session_state.row_ids.append(st.session_state.next_row_id)
+                st.session_state.next_row_id += 1
+                st.rerun()
+
+        with b2:
+            st.info(f"Current rows: {len(st.session_state.row_ids)}")
+
+        for visible_index, row_id in enumerate(st.session_state.row_ids):
+            top1, top2 = st.columns([4, 1])
+
+            with top1:
+                st.markdown(f"#### Row {visible_index + 1}")
+
+            with top2:
+                st.write("")
+                if st.button(
+                    "Delete This Row",
+                    key=f"delete_row_{row_id}",
+                    use_container_width=True,
+                ):
+                    st.session_state.row_ids = [
+                        r for r in st.session_state.row_ids if r != row_id
+                    ]
+                    st.rerun()
+
+            row_cols = st.columns(len(selected_codes))
+            row_final_prices = {}
+
+            for col_idx, code in enumerate(selected_codes):
+                with row_cols[col_idx]:
+                    label = get_company_label(code)
+
+                    st.write(f"**{label}**")
+
+                    df = catalogs.get(code)
+                    if df is not None and not df.empty:
+                        options = [""] + df["DISPLAY"].tolist()
+                        selected_product = st.selectbox(
+                            f"{label} product",
+                            options,
+                            key=f"row_{row_id}_{code}_product",
+                        )
+                        row = get_catalog_row(df, selected_product)
+
+                        if row is not None:
+                            st.write("SAP:", row["SAP"])
+                            st.write("MM:", row["MM"])
+                            st.write("Package:", row["Package"])
+                            st.write("Base Price:", round(float(row["Price"]), 2))
+
+                            discs = []
+                            for j in range(1, 6):
+                                disc_val = st.number_input(
+                                    f"{label} Disc {j}",
+                                    min_value=0.0,
+                                    max_value=100.0,
+                                    value=0.0,
+                                    step=0.1,
+                                    key=f"row_{row_id}_{code}_disc_{j}",
+                                )
+                                discs.append(disc_val)
+
+                            final = apply_discounts(row["Price"], discs)
+                            row_final_prices[code] = final
+                            st.success(f"Final Price: {final}")
+                        else:
+                            for j in range(1, 6):
+                                st.number_input(
+                                    f"{label} Disc {j}",
+                                    min_value=0.0,
+                                    max_value=100.0,
+                                    value=0.0,
+                                    step=0.1,
+                                    key=f"row_{row_id}_{code}_disc_{j}",
+                                )
+                            row_final_prices[code] = None
+                            st.info("No product selected")
+                    else:
+                        row_final_prices[code] = None
+                        st.info("No data")
+
+            if row_final_prices:
+                valid = {k: v for k, v in row_final_prices.items() if v is not None}
+                if valid:
+                    best_code = min(valid, key=valid.get)
+                    best_label = get_company_label(best_code)
+                else:
+                    best_label = "-"
+
+                st.metric(f"Row {visible_index + 1} Best Price", best_label)
+
+                comparison_summaries = build_comparison_summary(
+                    row_final_prices, selected_codes
+                )
+
+                has_comparisons = any(v for v in comparison_summaries.values())
+                if has_comparisons:
+                    st.markdown("**Price Difference %**")
+                    for code in selected_codes:
+                        label = get_company_label(code)
+                        summary = comparison_summaries.get(code, "")
+                        if summary:
+                            st.write(f"**{label}:** {summary}")
+
+            st.markdown("---")
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def render_export():
+    st.markdown('<div class="app-card">', unsafe_allow_html=True)
+    st.markdown("## 7. Export Excel Report")
+
+    company_options = {
+        f"{row['name']} ({row['code']})": row["code"] for _, row in companies_df.iterrows()
+    }
+
+    selected_company_displays = st.session_state.get("comparison_company_selection", [])
+    selected_codes = [company_options[x] for x in selected_company_displays if x in company_options]
+
+    selected = {}
+    catalogs = {}
     for code in selected_codes:
-        if selected.get(code):
-            df = load_data(get_company_folder(code) / selected[code])
+        current_file = st.session_state.get(f"select_{code}", "")
+        selected[code] = current_file
+        if current_file:
+            df = load_data(get_company_folder(code) / current_file)
             catalogs[code] = prepare_catalog(df)
         else:
             catalogs[code] = None
-st.markdown("</div>", unsafe_allow_html=True)
 
-
-# 4B. SAVED COMPARISONS
-st.markdown('<div class="app-card">', unsafe_allow_html=True)
-st.markdown("## 4B. Saved Comparisons")
-
-default_name = st.session_state.get("comparison_name_input", "").strip()
-if not default_name and selected_codes:
-    st.session_state["comparison_name_input"] = auto_comparison_name(selected_codes)
-
-st.text_input(
-    "Comparison Name",
-    key="comparison_name_input",
-    placeholder="e.g. Siniat vs Knauf - April",
-)
-
-save_c1, save_c2, save_c3, save_c4 = st.columns(4)
-
-with save_c1:
-    if st.button("💾 Save Comparison", use_container_width=True, key="save_comparison_btn"):
-        if not selected_codes:
-            st.warning("Please select companies first.")
-        else:
-            comparison_name = st.session_state.get("comparison_name_input", "").strip()
-            if not comparison_name:
-                comparison_name = auto_comparison_name(selected_codes)
-                st.session_state["comparison_name_input"] = comparison_name
-
-            comparison_file = get_current_user_comparisons_file()
-            comparison_id = save_new_comparison(
-                comparison_file,
-                owner_sub=get_current_user_id(),
-                owner_email=get_current_user_email(),
-                name=comparison_name,
-                companies=[get_company_label(code) for code in selected_codes],
-                source_files=build_source_files_map(selected_codes),
-                state=collect_comparison_state_payload(selected_codes),
-            )
-
-            st.session_state["current_comparison_id"] = comparison_id
-            st.success("Comparison saved successfully.")
-
-with save_c2:
-    if st.button("🔄 Save Changes", use_container_width=True, key="save_changes_btn"):
-        comparison_id = st.session_state.get("current_comparison_id")
-
-        if not comparison_id:
-            st.warning("Save a comparison first.")
-        elif not selected_codes:
-            st.warning("Please select companies first.")
-        else:
-            comparison_name = st.session_state.get("comparison_name_input", "").strip()
-            if not comparison_name:
-                comparison_name = auto_comparison_name(selected_codes)
-                st.session_state["comparison_name_input"] = comparison_name
-
-            comparison_file = get_current_user_comparisons_file()
-            ok = update_comparison(
-                comparison_file,
-                comparison_id=comparison_id,
-                owner_sub=get_current_user_id(),
-                owner_email=get_current_user_email(),
-                name=comparison_name,
-                companies=[get_company_label(code) for code in selected_codes],
-                source_files=build_source_files_map(selected_codes),
-                state=collect_comparison_state_payload(selected_codes),
-            )
-
-            if ok:
-                st.success("Comparison updated successfully.")
-            else:
-                st.warning("This comparison no longer exists. Save it again as new.")
-
-with save_c3:
-    if st.button("🆕 Save As New", use_container_width=True, key="save_as_new_btn"):
-        if not selected_codes:
-            st.warning("Please select companies first.")
-        else:
-            comparison_name = st.session_state.get("comparison_name_input", "").strip()
-            if not comparison_name:
-                comparison_name = auto_comparison_name(selected_codes)
-                st.session_state["comparison_name_input"] = comparison_name
-
-            comparison_file = get_current_user_comparisons_file()
-            comparison_id = save_new_comparison(
-                comparison_file,
-                owner_sub=get_current_user_id(),
-                owner_email=get_current_user_email(),
-                name=comparison_name,
-                companies=[get_company_label(code) for code in selected_codes],
-                source_files=build_source_files_map(selected_codes),
-                state=collect_comparison_state_payload(selected_codes),
-            )
-
-            st.session_state["current_comparison_id"] = comparison_id
-            st.success("Saved as new comparison.")
-
-with save_c4:
-    if st.button("📂 Load Comparison", use_container_width=True, key="toggle_load_comparison_btn"):
-        st.session_state["show_saved_comparisons"] = not st.session_state.get("show_saved_comparisons", False)
-
-if st.session_state.get("show_saved_comparisons"):
-    comparison_file = get_current_user_comparisons_file()
-    saved_records = list_comparisons(comparison_file)
-
-    if not saved_records:
-        st.info("You have no saved comparisons yet.")
-    else:
-        saved_options = {
-            build_display_label(record): record["id"]
-            for record in saved_records
-        }
-
-        selected_saved_label = st.selectbox(
-            "Your saved comparisons",
-            [""] + list(saved_options.keys()),
-            key="selected_saved_comparison_label",
-        )
-
-        if selected_saved_label:
-            selected_saved_id = saved_options[selected_saved_label]
-            selected_record = get_comparison(comparison_file, selected_saved_id)
-
-            if selected_record:
-                source_line = ", ".join(
-                    [
-                        f"{k}: {v}"
-                        for k, v in selected_record.get("source_files", {}).items()
-                        if v
-                    ]
-                )
-                if source_line:
-                    st.caption("Source files: " + source_line)
-
-                load_c1, load_c2, load_c3 = st.columns([1, 2, 1])
-
-                with load_c1:
-                    if st.button("Load Selected", use_container_width=True, key="load_selected_comparison_btn"):
-                        st.session_state["pending_load_payload"] = selected_record.get("state", {})
-                        st.session_state["pending_loaded_comparison_id"] = selected_record.get("id")
-                        st.session_state["pending_loaded_comparison_name"] = selected_record.get("name", "")
-                        st.rerun()
-
-                with load_c2:
-                    st.info("Select a saved comparison and use Load or Delete.")
-
-                with load_c3:
-                    if st.button("🗑️ Delete", use_container_width=True, key="delete_selected_comparison_btn"):
-                        ok = delete_comparison(comparison_file, selected_record.get("id"))
-                        if ok:
-                            if st.session_state.get("current_comparison_id") == selected_record.get("id"):
-                                st.session_state["current_comparison_id"] = None
-                            st.success("Comparison deleted successfully.")
-                            st.rerun()
-                        else:
-                            st.warning("Could not delete comparison.")
-
-st.markdown("</div>", unsafe_allow_html=True)
-
-
-# 5. DEBUG
-st.markdown('<div class="app-card">', unsafe_allow_html=True)
-st.markdown("## 5. Debug")
-
-if selected_codes:
-    dbg_cols = st.columns(len(selected_codes))
-    for i, code in enumerate(selected_codes):
-        with dbg_cols[i]:
-            st.write(f"Selected {code} file:", selected.get(code, ""))
-            if catalogs.get(code) is not None:
-                st.write(f"{code} prepared rows:", len(catalogs[code]))
-else:
-    st.info("No comparison companies selected yet.")
-st.markdown("</div>", unsafe_allow_html=True)
-
-
-# 6. MULTI-LINE COMPARISON
-st.markdown('<div class="app-card">', unsafe_allow_html=True)
-st.markdown("## 6. Multi-Line Comparison")
-
-if not selected_codes:
-    st.info("Select companies first to start comparison.")
-else:
-    b1, b2 = st.columns([1, 3])
-
-    with b1:
-        if st.button("Add Row", key="add_row_button", use_container_width=True):
-            st.session_state.row_ids.append(st.session_state.next_row_id)
-            st.session_state.next_row_id += 1
-            st.rerun()
-
-    with b2:
-        st.info(f"Current rows: {len(st.session_state.row_ids)}")
-
-    for visible_index, row_id in enumerate(st.session_state.row_ids):
-        top1, top2 = st.columns([4, 1])
-
-        with top1:
-            st.markdown(f"### Row {visible_index + 1}")
-
-        with top2:
-            st.write("")
-            if st.button(
-                "Delete This Row",
-                key=f"delete_row_{row_id}",
-                use_container_width=True,
-            ):
-                st.session_state.row_ids = [
-                    r for r in st.session_state.row_ids if r != row_id
-                ]
-                st.rerun()
-
-        row_cols = st.columns(len(selected_codes))
-        row_final_prices = {}
-
-        for col_idx, code in enumerate(selected_codes):
-            with row_cols[col_idx]:
-                label = get_company_label(code)
-
-                st.write(f"#### {label}")
-
-                df = catalogs.get(code)
-                if df is not None and not df.empty:
-                    options = [""] + df["DISPLAY"].tolist()
-                    selected_product = st.selectbox(
-                        f"{label} product",
-                        options,
-                        key=f"row_{row_id}_{code}_product",
-                    )
-                    row = get_catalog_row(df, selected_product)
-
-                    if row is not None:
-                        st.write("SAP:", row["SAP"])
-                        st.write("MM:", row["MM"])
-                        st.write("Package:", row["Package"])
-                        st.write("Base Price:", round(float(row["Price"]), 2))
-
-                        discs = []
-                        for j in range(1, 6):
-                            disc_val = st.number_input(
-                                f"{label} Disc {j}",
-                                min_value=0.0,
-                                max_value=100.0,
-                                value=0.0,
-                                step=0.1,
-                                key=f"row_{row_id}_{code}_disc_{j}",
-                            )
-                            discs.append(disc_val)
-
-                        final = apply_discounts(row["Price"], discs)
-                        row_final_prices[code] = final
-                        st.success(f"Final Price: {final}")
-                    else:
-                        for j in range(1, 6):
-                            st.number_input(
-                                f"{label} Disc {j}",
-                                min_value=0.0,
-                                max_value=100.0,
-                                value=0.0,
-                                step=0.1,
-                                key=f"row_{row_id}_{code}_disc_{j}",
-                            )
-                        row_final_prices[code] = None
-                        st.info("No product selected")
-                else:
-                    row_final_prices[code] = None
-                    st.info("No data")
-
-        if row_final_prices:
-            valid = {k: v for k, v in row_final_prices.items() if v is not None}
-            if valid:
-                best_code = min(valid, key=valid.get)
-                best_label = get_company_label(best_code)
-            else:
-                best_label = "-"
-
-            st.metric(f"Row {visible_index + 1} Best Price", best_label)
-
-            comparison_summaries = build_comparison_summary(
-                row_final_prices, selected_codes
-            )
-
-            has_comparisons = any(v for v in comparison_summaries.values())
-            if has_comparisons:
-                st.markdown("**Price Difference %**")
-                for code in selected_codes:
-                    label = get_company_label(code)
-                    summary = comparison_summaries.get(code, "")
-                    if summary:
-                        st.write(f"**{label}:** {summary}")
-
-        st.markdown("---")
-st.markdown("</div>", unsafe_allow_html=True)
-
-
-# 7. EXPORT
-st.markdown('<div class="app-card">', unsafe_allow_html=True)
-st.markdown("## 7. Export Excel Report")
-
-full_export_df = build_export_dataframe(
-    st.session_state.row_ids, catalogs, selected_codes
-)
-
-selected_export_fields = st.multiselect(
-    "Choose columns for Excel export",
-    options=EXPORT_FIELD_OPTIONS,
-    default=["Product", "Total Discounts", "Final Price", "Comparison %", "Best Price"],
-    key="selected_export_fields",
-)
-
-if not selected_export_fields:
-    st.warning("Please select at least one export field.")
-else:
-    export_df = filter_export_dataframe(
-        full_export_df,
-        selected_codes,
-        selected_export_fields,
-        companies_df,
+    full_export_df = build_export_dataframe(
+        st.session_state.row_ids, catalogs, selected_codes
     )
 
-    if not export_df.empty:
-        st.dataframe(export_df, use_container_width=True, hide_index=True)
+    selected_export_fields = st.multiselect(
+        "Choose columns for Excel export",
+        options=EXPORT_FIELD_OPTIONS,
+        default=st.session_state.get(
+            "selected_export_fields",
+            ["Product", "Total Discounts", "Final Price", "Comparison %", "Best Price"],
+        ),
+        key="selected_export_fields",
+    )
 
-        excel_bytes = to_excel_bytes(export_df)
-        st.download_button(
-            "Download Excel Report",
-            data=excel_bytes,
-            file_name="comparison_report.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            key="download_excel_report",
-            use_container_width=True,
-        )
+    if not selected_export_fields:
+        st.warning("Please select at least one export field.")
     else:
-        st.info("No data available for export yet.")
-st.markdown("</div>", unsafe_allow_html=True)
+        export_df = filter_export_dataframe(
+            full_export_df,
+            selected_codes,
+            selected_export_fields,
+            companies_df,
+        )
+
+        if not export_df.empty:
+            st.dataframe(export_df, use_container_width=True, hide_index=True)
+
+            excel_bytes = to_excel_bytes(export_df)
+            st.download_button(
+                "Download Excel Report",
+                data=excel_bytes,
+                file_name="comparison_report.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="download_excel_report",
+                use_container_width=True,
+            )
+        else:
+            st.info("No data available for export yet. Go to Comparisons first.")
+
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
-# 8. ADMIN PANEL
-if is_admin_user():
+def render_admin_panel():
+    if not is_admin_user():
+        return
+
     st.markdown('<div class="app-card">', unsafe_allow_html=True)
     st.markdown("## 8. Admin Panel")
 
@@ -2654,3 +2705,18 @@ if is_admin_user():
                 )
                 st.rerun()
     st.markdown("</div>", unsafe_allow_html=True)
+
+
+# -------------------------------------------------
+# RENDER CURRENT VIEW
+# -------------------------------------------------
+if current_view == "Company Manager":
+    render_company_manager()
+elif current_view == "Sources":
+    render_sources()
+elif current_view == "Comparisons":
+    render_comparisons()
+elif current_view == "Export":
+    render_export()
+elif current_view == "Admin Panel":
+    render_admin_panel()
