@@ -12,6 +12,14 @@ import stripe
 from supabase import create_client, Client
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+from storage import (
+    list_comparisons,
+    save_new_comparison,
+    update_comparison,
+    get_comparison,
+    delete_comparison,
+    build_display_label,
+)
 
 
 # -------------------------------------------------
@@ -1023,9 +1031,17 @@ WORKSPACE_SLUG = get_storage_slug_for_current_user()
 WORKSPACE_DIR = PERSIST_ROOT / WORKSPACE_SLUG
 UPLOADS_DIR = WORKSPACE_DIR / "uploads"
 COMPANIES_FILE = WORKSPACE_DIR / "companies.csv"
+COMPARISONS_DIR = WORKSPACE_DIR / "_saved_comparisons"
 
 WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+COMPARISONS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def get_current_user_comparisons_file():
+    raw_user = get_current_user_id() or get_current_user_email() or "anonymous"
+    safe_user = normalize_company_key(raw_user)
+    return COMPARISONS_DIR / f"{safe_user}.json"
 
 
 # -------------------------------------------------
@@ -1502,6 +1518,70 @@ def to_excel_bytes(df):
 
 
 # -------------------------------------------------
+# COMPARISON STORAGE HELPERS
+# -------------------------------------------------
+def auto_comparison_name(selected_codes):
+    if not selected_codes:
+        return f"Comparison {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}"
+    labels = [get_company_label(code) for code in selected_codes]
+    return " vs ".join(labels)
+
+
+def build_source_files_map(selected_codes):
+    source_files = {}
+    for code in selected_codes:
+        label = get_company_label(code)
+        source_files[label] = st.session_state.get(f"select_{code}", "")
+    return source_files
+
+
+def collect_comparison_state_payload(selected_codes):
+    payload = {}
+
+    static_keys = [
+        "row_ids",
+        "next_row_id",
+        "comparison_company_selection",
+        "selected_export_fields",
+    ]
+
+    for key in static_keys:
+        if key in st.session_state:
+            payload[key] = st.session_state[key]
+
+    for code in selected_codes:
+        select_key = f"select_{code}"
+        if select_key in st.session_state:
+            payload[select_key] = st.session_state[select_key]
+
+    for row_id in st.session_state.get("row_ids", []):
+        for code in selected_codes:
+            product_key = f"row_{row_id}_{code}_product"
+            if product_key in st.session_state:
+                payload[product_key] = st.session_state[product_key]
+
+            for j in range(1, 6):
+                disc_key = f"row_{row_id}_{code}_disc_{j}"
+                if disc_key in st.session_state:
+                    payload[disc_key] = st.session_state[disc_key]
+
+    return payload
+
+
+def restore_comparison_state_payload(payload: dict):
+    keys_to_clear = [
+        key for key in list(st.session_state.keys())
+        if key.startswith("row_") or key.startswith("select_")
+    ]
+
+    for key in keys_to_clear:
+        del st.session_state[key]
+
+    for key, value in payload.items():
+        st.session_state[key] = value
+
+
+# -------------------------------------------------
 # SESSION STATE
 # -------------------------------------------------
 if "row_ids" not in st.session_state:
@@ -1509,6 +1589,15 @@ if "row_ids" not in st.session_state:
 
 if "next_row_id" not in st.session_state:
     st.session_state.next_row_id = 2
+
+if "current_comparison_id" not in st.session_state:
+    st.session_state.current_comparison_id = None
+
+if "comparison_name_input" not in st.session_state:
+    st.session_state.comparison_name_input = ""
+
+if "show_saved_comparisons" not in st.session_state:
+    st.session_state.show_saved_comparisons = False
 
 
 # -------------------------------------------------
@@ -1935,6 +2024,165 @@ if selected_codes:
             catalogs[code] = prepare_catalog(df)
         else:
             catalogs[code] = None
+st.markdown("</div>", unsafe_allow_html=True)
+
+
+# 4B. SAVED COMPARISONS
+st.markdown('<div class="app-card">', unsafe_allow_html=True)
+st.markdown("## 4B. Saved Comparisons")
+
+default_name = st.session_state.get("comparison_name_input", "").strip()
+if not default_name and selected_codes:
+    st.session_state["comparison_name_input"] = auto_comparison_name(selected_codes)
+
+st.text_input(
+    "Comparison Name",
+    key="comparison_name_input",
+    placeholder="e.g. Siniat vs Knauf - April",
+)
+
+save_c1, save_c2, save_c3, save_c4 = st.columns(4)
+
+with save_c1:
+    if st.button("💾 Save Comparison", use_container_width=True, key="save_comparison_btn"):
+        if not selected_codes:
+            st.warning("Please select companies first.")
+        else:
+            comparison_name = st.session_state.get("comparison_name_input", "").strip()
+            if not comparison_name:
+                comparison_name = auto_comparison_name(selected_codes)
+                st.session_state["comparison_name_input"] = comparison_name
+
+            comparison_file = get_current_user_comparisons_file()
+            comparison_id = save_new_comparison(
+                comparison_file,
+                owner_sub=get_current_user_id(),
+                owner_email=get_current_user_email(),
+                name=comparison_name,
+                companies=[get_company_label(code) for code in selected_codes],
+                source_files=build_source_files_map(selected_codes),
+                state=collect_comparison_state_payload(selected_codes),
+            )
+
+            st.session_state["current_comparison_id"] = comparison_id
+            st.success("Comparison saved successfully.")
+
+with save_c2:
+    if st.button("🔄 Save Changes", use_container_width=True, key="save_changes_btn"):
+        comparison_id = st.session_state.get("current_comparison_id")
+
+        if not comparison_id:
+            st.warning("Save a comparison first.")
+        elif not selected_codes:
+            st.warning("Please select companies first.")
+        else:
+            comparison_name = st.session_state.get("comparison_name_input", "").strip()
+            if not comparison_name:
+                comparison_name = auto_comparison_name(selected_codes)
+                st.session_state["comparison_name_input"] = comparison_name
+
+            comparison_file = get_current_user_comparisons_file()
+            ok = update_comparison(
+                comparison_file,
+                comparison_id=comparison_id,
+                owner_sub=get_current_user_id(),
+                owner_email=get_current_user_email(),
+                name=comparison_name,
+                companies=[get_company_label(code) for code in selected_codes],
+                source_files=build_source_files_map(selected_codes),
+                state=collect_comparison_state_payload(selected_codes),
+            )
+
+            if ok:
+                st.success("Comparison updated successfully.")
+            else:
+                st.warning("This comparison no longer exists. Save it again as new.")
+
+with save_c3:
+    if st.button("🆕 Save As New", use_container_width=True, key="save_as_new_btn"):
+        if not selected_codes:
+            st.warning("Please select companies first.")
+        else:
+            comparison_name = st.session_state.get("comparison_name_input", "").strip()
+            if not comparison_name:
+                comparison_name = auto_comparison_name(selected_codes)
+                st.session_state["comparison_name_input"] = comparison_name
+
+            comparison_file = get_current_user_comparisons_file()
+            comparison_id = save_new_comparison(
+                comparison_file,
+                owner_sub=get_current_user_id(),
+                owner_email=get_current_user_email(),
+                name=comparison_name,
+                companies=[get_company_label(code) for code in selected_codes],
+                source_files=build_source_files_map(selected_codes),
+                state=collect_comparison_state_payload(selected_codes),
+            )
+
+            st.session_state["current_comparison_id"] = comparison_id
+            st.success("Saved as new comparison.")
+
+with save_c4:
+    if st.button("📂 Load Comparison", use_container_width=True, key="toggle_load_comparison_btn"):
+        st.session_state["show_saved_comparisons"] = not st.session_state.get("show_saved_comparisons", False)
+
+if st.session_state.get("show_saved_comparisons"):
+    comparison_file = get_current_user_comparisons_file()
+    saved_records = list_comparisons(comparison_file)
+
+    if not saved_records:
+        st.info("You have no saved comparisons yet.")
+    else:
+        saved_options = {
+            build_display_label(record): record["id"]
+            for record in saved_records
+        }
+
+        selected_saved_label = st.selectbox(
+            "Your saved comparisons",
+            [""] + list(saved_options.keys()),
+            key="selected_saved_comparison_label",
+        )
+
+        if selected_saved_label:
+            selected_saved_id = saved_options[selected_saved_label]
+            selected_record = get_comparison(comparison_file, selected_saved_id)
+
+            if selected_record:
+                source_line = ", ".join(
+                    [
+                        f"{k}: {v}"
+                        for k, v in selected_record.get("source_files", {}).items()
+                        if v
+                    ]
+                )
+                if source_line:
+                    st.caption("Source files: " + source_line)
+
+                load_c1, load_c2, load_c3 = st.columns([1, 2, 1])
+
+                with load_c1:
+                    if st.button("Load Selected", use_container_width=True, key="load_selected_comparison_btn"):
+                        restore_comparison_state_payload(selected_record.get("state", {}))
+                        st.session_state["current_comparison_id"] = selected_record.get("id")
+                        st.session_state["comparison_name_input"] = selected_record.get("name", "")
+                        st.success("Comparison loaded successfully.")
+                        st.rerun()
+
+                with load_c2:
+                    st.info("Select a saved comparison and use Load or Delete.")
+
+                with load_c3:
+                    if st.button("🗑️ Delete", use_container_width=True, key="delete_selected_comparison_btn"):
+                        ok = delete_comparison(comparison_file, selected_record.get("id"))
+                        if ok:
+                            if st.session_state.get("current_comparison_id") == selected_record.get("id"):
+                                st.session_state["current_comparison_id"] = None
+                            st.success("Comparison deleted successfully.")
+                            st.rerun()
+                        else:
+                            st.warning("Could not delete comparison.")
+
 st.markdown("</div>", unsafe_allow_html=True)
 
 
