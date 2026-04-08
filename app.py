@@ -8,20 +8,22 @@ from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 import stripe
 from supabase import create_client, Client
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
+
 # -------------------------------------------------
-# QUERY PARAM LOGIN HANDLER
+# APP CONFIG
 # -------------------------------------------------
-login_provider = st.query_params.get("login")
-if login_provider == "google":
-    st.login("google")
-elif login_provider == "microsoft":
-    st.login("microsoft")
+st.set_page_config(
+    page_title="Pricing App",
+    page_icon="💎",
+    layout="wide",
+)
+
+stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 
 
 # -------------------------------------------------
@@ -49,10 +51,7 @@ def ensure_render_secrets_file():
     supabase_url = os.getenv("SUPABASE_URL", "")
     supabase_key = os.getenv("SUPABASE_KEY", "")
 
-    required_shared = [auth_redirect_uri, auth_cookie_secret]
-    required_google = [google_client_id, google_client_secret, google_server_metadata_url]
-
-    if not all(required_shared) or not all(required_google):
+    if not all([auth_redirect_uri, auth_cookie_secret, google_client_id, google_client_secret, google_server_metadata_url]):
         return
 
     content = f'''SUPABASE_URL = "{_escape_toml(supabase_url)}"
@@ -80,17 +79,6 @@ server_metadata_url = "{_escape_toml(ms_server_metadata_url)}"
 
 
 ensure_render_secrets_file()
-
-
-# -------------------------------------------------
-# APP CONFIG
-# -------------------------------------------------
-st.set_page_config(
-    page_title="Pricing App",
-    page_icon="💎",
-    layout="wide",
-)
-stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 
 
 # -------------------------------------------------
@@ -122,34 +110,6 @@ st.markdown(
         padding: 22px 24px;
         color: white;
         box-shadow: 0 8px 24px rgba(0,0,0,0.14);
-    }
-
-    .soft-card {
-        background: rgba(255,255,255,0.03);
-        border: 1px solid rgba(255,255,255,0.06);
-        border-radius: 16px;
-        padding: 16px 18px;
-    }
-
-    .muted {
-        color: #9ca3af;
-    }
-
-    .metric-pill {
-        display: inline-block;
-        padding: 8px 12px;
-        border-radius: 999px;
-        background: rgba(255,255,255,0.07);
-        border: 1px solid rgba(255,255,255,0.08);
-        font-size: 14px;
-        margin-top: 8px;
-    }
-
-    .section-title {
-        margin-top: 8px;
-        margin-bottom: 8px;
-        font-weight: 700;
-        letter-spacing: -0.02em;
     }
 
     .locked-wrap {
@@ -189,21 +149,58 @@ st.markdown(
         margin-bottom: 18px;
     }
 
-    .mini-note {
+    .login-shell {
+        max-width: 560px;
+        margin: 60px auto 20px auto;
+        padding: 42px 40px 34px 40px;
+        border-radius: 24px;
+        background: linear-gradient(180deg, #0f172a 0%, #111827 100%);
+        border: 1px solid rgba(255,255,255,0.08);
+        box-shadow: 0 20px 50px rgba(0,0,0,0.28);
+        text-align: center;
+        color: white;
+    }
+
+    .login-shell h1 {
+        margin: 0 0 10px 0;
+        font-size: 42px;
+        font-weight: 800;
+        letter-spacing: -0.03em;
+        color: white;
+    }
+
+    .login-shell p {
+        margin: 0;
+        font-size: 18px;
+        color: #cbd5e1;
+    }
+
+    .login-note {
+        text-align: center;
+        margin-top: 16px;
         font-size: 13px;
-        color: #9ca3af;
-        margin-top: 8px;
+        color: #94a3b8;
+    }
+
+    .provider-chip {
+        display: inline-block;
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: rgba(255,255,255,0.06);
+        border: 1px solid rgba(255,255,255,0.08);
+        color: #cbd5e1;
+        font-size: 13px;
+        margin-bottom: 18px;
+    }
+
+    div[data-testid="stButton"] > button {
+        border-radius: 14px;
+        font-size: 16px;
+        font-weight: 700;
     }
 
     div[data-testid="stSidebar"] {
         border-right: 1px solid rgba(255,255,255,0.06);
-    }
-
-    div[data-testid="stMetric"] {
-        background: rgba(255,255,255,0.02);
-        border: 1px solid rgba(255,255,255,0.06);
-        padding: 10px 12px;
-        border-radius: 16px;
     }
     </style>
     """,
@@ -230,89 +227,52 @@ def get_current_user_id():
 
 def get_current_user_email():
     try:
-        return st.user.get("email", "")
+        return st.user.get("email", "").strip().lower()
+    except Exception:
+        return ""
+
+
+def get_current_user_name():
+    try:
+        return st.user.get("name", "").strip()
     except Exception:
         return ""
 
 
 def show_login_screen():
-    st.markdown(
-        """
-        <style>
-        .login-shell {
-            max-width: 520px;
-            margin: 60px auto 0 auto;
-            padding: 38px 36px 30px 36px;
-            border-radius: 24px;
-            background: linear-gradient(180deg, #0f172a 0%, #111827 100%);
-            border: 1px solid rgba(255,255,255,0.08);
-            box-shadow: 0 20px 50px rgba(0,0,0,0.28);
-            text-align: center;
-            color: white;
-        }
+    top_left, top_mid, top_right = st.columns([1.1, 2.2, 1.1])
 
-        .login-shell h1 {
-            margin: 0 0 10px 0;
-            font-size: 42px;
-            font-weight: 800;
-            letter-spacing: -0.03em;
-            color: white;
-        }
+    with top_mid:
+        st.markdown(
+            """
+            <div class="login-shell">
+                <h1>Pricing App</h1>
+                <p>Sign in to continue to your workspace</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-        .login-shell p {
-            margin: 0 0 26px 0;
-            font-size: 18px;
-            color: #cbd5e1;
-        }
+    btn_left, btn_mid, btn_right = st.columns([1.25, 2.0, 1.25])
 
-        .login-note {
-            margin-top: 16px;
-            font-size: 13px;
-            color: #94a3b8;
-        }
+    with btn_mid:
+        st.markdown(
+            '<div class="provider-chip">Secure sign-in with Google or Microsoft</div>',
+            unsafe_allow_html=True,
+        )
 
-        div[data-testid="stVerticalBlock"] div.login-buttons-wrap {
-            margin-top: 10px;
-        }
-
-        div[data-testid="stButton"] > button {
-            height: 56px;
-            border-radius: 14px;
-            font-size: 17px;
-            font-weight: 700;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.markdown(
-        """
-        <div class="login-shell">
-            <h1>Pricing App</h1>
-            <p>Sign in to continue to your workspace</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    c1, c2, c3 = st.columns([1.2, 3.2, 1.2])
-
-    with c2:
-        st.markdown('<div class="login-buttons-wrap">', unsafe_allow_html=True)
-
-        if st.button("🔵 Continue with Google", use_container_width=True, key="login_google_button"):
+        if st.button("Continue with Google", use_container_width=True, key="login_google_button"):
             st.login("google")
 
-        if st.button("🟦 Continue with Microsoft", use_container_width=True, key="login_microsoft_button"):
+        st.write("")
+
+        if st.button("Continue with Microsoft", use_container_width=True, key="login_microsoft_button"):
             st.login("microsoft")
 
         st.markdown(
             '<div class="login-note">Secure login • No passwords stored</div>',
             unsafe_allow_html=True,
         )
-
-        st.markdown("</div>", unsafe_allow_html=True)
 
 
 # -------------------------------------------------
@@ -327,8 +287,81 @@ def get_supabase() -> Client:
 
 
 # -------------------------------------------------
-# BILLING / STRIPE
+# FILE STORAGE
 # -------------------------------------------------
+PERSIST_ROOT = Path(os.getenv("PERSIST_ROOT", "/var/data"))
+PERSIST_ROOT.mkdir(parents=True, exist_ok=True)
+
+ROOT_STORAGE = PERSIST_ROOT
+ADMIN_DIR = ROOT_STORAGE / "_admin"
+ADMIN_DIR.mkdir(parents=True, exist_ok=True)
+
+USERS_REGISTRY_FILE = ADMIN_DIR / "users_registry.json"
+COMPANIES_REGISTRY_FILE = ADMIN_DIR / "companies_registry.json"
+
+MAIN_CODES = ["SINIAT", "KNAUF", "SAINT_GOBAIN"]
+ADMIN_EMAILS = ["gmyl13@gmail.com"]
+
+TEMPLATE_FILE = BASE_DIR / "templates" / "source_template_english.xlsx"
+
+
+# -------------------------------------------------
+# JSON HELPERS
+# -------------------------------------------------
+def now_iso():
+    return datetime.utcnow().isoformat()
+
+
+def now_utc():
+    return datetime.utcnow()
+
+
+def parse_iso(value):
+    try:
+        return datetime.fromisoformat(value)
+    except Exception:
+        return None
+
+
+def load_users_registry():
+    if not USERS_REGISTRY_FILE.exists():
+        return []
+    try:
+        return json.loads(USERS_REGISTRY_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+
+def save_users_registry(data):
+    USERS_REGISTRY_FILE.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def load_companies_registry():
+    if not COMPANIES_REGISTRY_FILE.exists():
+        return []
+    try:
+        return json.loads(COMPANIES_REGISTRY_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+
+def save_companies_registry(data):
+    COMPANIES_REGISTRY_FILE.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+# -------------------------------------------------
+# BILLING / PLANS
+# -------------------------------------------------
+TRIAL_DAYS = 2
+MAX_ACTIVE_SESSIONS = 2
+
+
 def get_stripe_subscription_row(email: str):
     if not email:
         return None
@@ -344,9 +377,8 @@ def get_stripe_subscription_row(email: str):
         if not subs.data:
             return {
                 "email": email.strip().lower(),
-                "is_premium": False,
+                "is_active": False,
                 "billing_status": "free",
-                "trial_end": None,
                 "stripe_customer_id": customer.id,
                 "stripe_subscription_id": None,
             }
@@ -360,22 +392,17 @@ def get_stripe_subscription_row(email: str):
 
         if preferred is None:
             for sub in subs.data:
-                if sub.status in ["past_due", "unpaid", "canceled", "incomplete", "incomplete_expired"]:
+                if sub.status in ["trialing", "past_due", "unpaid", "canceled", "incomplete", "incomplete_expired"]:
                     preferred = sub
                     break
 
         if preferred is None:
             preferred = subs.data[0]
 
-        trial_end = None
-        if getattr(preferred, "trial_end", None):
-            trial_end = datetime.fromtimestamp(preferred.trial_end, tz=timezone.utc)
-
         return {
             "email": email.strip().lower(),
-            "is_premium": preferred.status == "active",
+            "is_active": preferred.status == "active",
             "billing_status": preferred.status,
-            "trial_end": trial_end,
             "stripe_customer_id": customer.id,
             "stripe_subscription_id": preferred.id,
         }
@@ -416,110 +443,8 @@ def get_checkout_url(user_email: str):
 
 
 # -------------------------------------------------
-# PERSISTENT STORAGE
+# USER / COMPANY HELPERS
 # -------------------------------------------------
-PERSIST_ROOT = Path(os.getenv("PERSIST_ROOT", "/var/data"))
-PERSIST_ROOT.mkdir(parents=True, exist_ok=True)
-
-MAIN_CODES = ["SINIAT", "KNAUF", "SAINT_GOBAIN"]
-
-user_id = (
-    get_current_user_id()
-    .replace("@", "_")
-    .replace(".", "_")
-    .replace("/", "_")
-    .replace("\\", "_")
-)
-
-USER_DIR = PERSIST_ROOT / user_id
-UPLOADS_DIR = USER_DIR / "uploads"
-COMPANIES_FILE = USER_DIR / "companies.csv"
-
-UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
-
-ROOT_STORAGE = PERSIST_ROOT
-ADMIN_DIR = ROOT_STORAGE / "_admin"
-ADMIN_DIR.mkdir(parents=True, exist_ok=True)
-
-USERS_REGISTRY_FILE = ADMIN_DIR / "users_registry.json"
-COMPANIES_REGISTRY_FILE = ADMIN_DIR / "companies_registry.json"
-ADMIN_EMAILS = ["gmyl13@gmail.com"]
-
-TEMPLATE_FILE = BASE_DIR / "templates" / "source_template_english.xlsx"
-
-
-# -------------------------------------------------
-# JSON / TIME HELPERS
-# -------------------------------------------------
-def now_iso():
-    return datetime.utcnow().isoformat()
-
-
-def parse_iso(value):
-    try:
-        return datetime.fromisoformat(value)
-    except Exception:
-        return None
-
-
-def now_utc():
-    return datetime.utcnow()
-
-
-# -------------------------------------------------
-# USERS / ADMIN
-# -------------------------------------------------
-TRIAL_DAYS = 2
-MAX_ACTIVE_SESSIONS = 2
-
-
-def get_user_identity():
-    try:
-        return {
-            "email": st.user.get("email", "").strip(),
-            "sub": st.user.get("sub", "").strip(),
-            "name": st.user.get("name", "").strip(),
-        }
-    except Exception:
-        return {
-            "email": "",
-            "sub": "",
-            "name": "",
-        }
-
-
-def load_users_registry():
-    if not USERS_REGISTRY_FILE.exists():
-        return []
-    try:
-        return json.loads(USERS_REGISTRY_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-
-
-def save_users_registry(data):
-    USERS_REGISTRY_FILE.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
-
-def load_companies_registry():
-    if not COMPANIES_REGISTRY_FILE.exists():
-        return []
-    try:
-        return json.loads(COMPANIES_REGISTRY_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-
-
-def save_companies_registry(data):
-    COMPANIES_REGISTRY_FILE.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
-
 def normalize_domain(domain: str) -> str:
     return str(domain).strip().lower().replace("@", "")
 
@@ -538,22 +463,116 @@ def get_email_domain(email: str) -> str:
     return email.split("@", 1)[1]
 
 
-def find_company_by_domain(companies, domain):
-    domain = normalize_domain(domain)
-    for company in companies:
-        if normalize_domain(company.get("domain", "")) == domain:
-            return company
+def find_user_index(users, email, sub):
+    for i, row in enumerate(users):
+        if row.get("email") == email and row.get("sub") == sub:
+            return i
+    return None
+
+
+def find_company_index(companies, company_key):
+    for i, row in enumerate(companies):
+        if row.get("key") == company_key:
+            return i
     return None
 
 
 def find_company_by_key(companies, company_key):
-    for company in companies:
-        if company.get("key") == company_key:
-            return company
+    for row in companies:
+        if row.get("key") == company_key:
+            return row
     return None
 
 
-def get_company_user_count(company_key):
+def find_company_by_domain(companies, domain):
+    domain = normalize_domain(domain)
+    for row in companies:
+        if normalize_domain(row.get("domain", "")) == domain:
+            return row
+    return None
+
+
+def ensure_user_fields(user_row):
+    if "trial_start" not in user_row:
+        user_row["trial_start"] = now_iso()
+    if "trial_end" not in user_row:
+        user_row["trial_end"] = (now_utc() + timedelta(days=TRIAL_DAYS)).isoformat()
+    if "billing_status" not in user_row:
+        user_row["billing_status"] = "trialing"
+    if "is_premium" not in user_row:
+        user_row["is_premium"] = False
+    if "active_sessions" not in user_row:
+        user_row["active_sessions"] = []
+    if "company_key" not in user_row:
+        user_row["company_key"] = None
+    if "company_name" not in user_row:
+        user_row["company_name"] = None
+    if "role" not in user_row:
+        user_row["role"] = "member"
+    return user_row
+
+
+def ensure_company_fields(company_row):
+    if "billing_status" not in company_row:
+        company_row["billing_status"] = "trialing"
+    if "max_seats" not in company_row:
+        company_row["max_seats"] = 0
+    if "is_active" not in company_row:
+        company_row["is_active"] = True
+    if "trial_start" not in company_row:
+        company_row["trial_start"] = now_iso()
+    if "trial_end" not in company_row:
+        company_row["trial_end"] = (now_utc() + timedelta(days=7)).isoformat()
+    if "stripe_customer_id" not in company_row:
+        company_row["stripe_customer_id"] = None
+    if "stripe_subscription_id" not in company_row:
+        company_row["stripe_subscription_id"] = None
+    if "owner_email" not in company_row:
+        company_row["owner_email"] = ""
+    return company_row
+
+
+def get_current_user_registry_row():
+    user = {
+        "email": get_current_user_email(),
+        "sub": get_current_user_id() if get_current_user_id() != "anonymous" else "",
+    }
+    users = load_users_registry()
+    idx = find_user_index(users, user["email"], user["sub"])
+
+    if idx is None:
+        return None, None, users
+
+    users[idx] = ensure_user_fields(users[idx])
+    save_users_registry(users)
+    return idx, users[idx], users
+
+
+def get_current_user_company():
+    idx, row, users = get_current_user_registry_row()
+    if row is None:
+        return None
+    company_key = row.get("company_key")
+    if not company_key:
+        return None
+    companies = load_companies_registry()
+    company = find_company_by_key(companies, company_key)
+    if company:
+        company = ensure_company_fields(company)
+    return company
+
+
+def trial_days_left(trial_end_value):
+    dt = parse_iso(trial_end_value)
+    if dt is None:
+        return 0
+    remaining = dt - now_utc()
+    if remaining.total_seconds() <= 0:
+        return 0
+    return max(1, remaining.days + (1 if remaining.seconds > 0 else 0))
+
+
+def company_user_count(company_key):
     users = load_users_registry()
     count = 0
     for row in users:
@@ -562,178 +581,52 @@ def get_company_user_count(company_key):
     return count
 
 
-def format_company_seats(current_count, max_seats):
-    return f"{current_count}/{max_seats}"
-
-
-def ensure_user_billing_fields(user_row):
-    if "trial_start" not in user_row:
-        user_row["trial_start"] = now_iso()
-
-    if "trial_end" not in user_row:
-        user_row["trial_end"] = (now_utc() + timedelta(days=TRIAL_DAYS)).isoformat()
-
-    if "billing_status" not in user_row:
-        user_row["billing_status"] = "trialing"
-
-    if "is_premium" not in user_row:
-        user_row["is_premium"] = False
-
-    if "active_sessions" not in user_row:
-        user_row["active_sessions"] = []
-
-    if "company_key" not in user_row:
-        user_row["company_key"] = None
-
-    if "company_name" not in user_row:
-        user_row["company_name"] = None
-
-    return user_row
-
-
-def find_user_index(users, email, sub):
-    for i, row in enumerate(users):
-        if row.get("email") == email and row.get("sub") == sub:
-            return i
-    return None
-
-
-def get_current_user_registry_row():
-    user = get_user_identity()
-    users = load_users_registry()
-    idx = find_user_index(users, user["email"], user["sub"])
-
-    if idx is None:
-        return None, None, users
-
-    users[idx] = ensure_user_billing_fields(users[idx])
-    save_users_registry(users)
-    return idx, users[idx], users
-
-
-def trial_days_left(trial_end_value):
-    dt = parse_iso(trial_end_value)
-    if dt is None:
-        return 0
-
-    remaining = dt - now_utc()
-    if remaining.total_seconds() <= 0:
-        return 0
-
-    return max(1, remaining.days + (1 if remaining.seconds > 0 else 0))
-
-
-def get_current_session_id():
-    if "app_session_id" not in st.session_state:
-        st.session_state["app_session_id"] = str(uuid.uuid4())
-    return st.session_state["app_session_id"]
-
-
-def register_current_session():
-    user = get_user_identity()
-    users = load_users_registry()
-    idx = find_user_index(users, user["email"], user["sub"])
-
-    if idx is None:
-        return True, 0
-
-    current_session_id = get_current_session_id()
-    current_time = now_iso()
-
-    sessions = users[idx].get("active_sessions", [])
-
-    for s in sessions:
-        if s.get("session_id") == current_session_id:
-            s["last_seen"] = current_time
-            users[idx]["active_sessions"] = sessions
-            save_users_registry(users)
-            return True, len(sessions)
-
-    if len(sessions) >= MAX_ACTIVE_SESSIONS:
-        return False, len(sessions)
-
-    sessions.append(
-        {
-            "session_id": current_session_id,
-            "last_seen": current_time,
-        }
-    )
-    users[idx]["active_sessions"] = sessions
-    save_users_registry(users)
-    return True, len(sessions)
-
-
-def unregister_current_session():
-    user = get_user_identity()
-    users = load_users_registry()
-    idx = find_user_index(users, user["email"], user["sub"])
-
-    if idx is None:
-        return
-
-    current_session_id = get_current_session_id()
-    sessions = users[idx].get("active_sessions", [])
-    sessions = [s for s in sessions if s.get("session_id") != current_session_id]
-    users[idx]["active_sessions"] = sessions
-    save_users_registry(users)
-
-
-def touch_current_session():
-    user = get_user_identity()
-    users = load_users_registry()
-    idx = find_user_index(users, user["email"], user["sub"])
-
-    if idx is None:
-        return
-
-    current_session_id = get_current_session_id()
-    sessions = users[idx].get("active_sessions", [])
-
-    changed = False
-    for s in sessions:
-        if s.get("session_id") == current_session_id:
-            s["last_seen"] = now_iso()
-            changed = True
-            break
-
-    if changed:
-        users[idx]["active_sessions"] = sessions
-        save_users_registry(users)
-
-
-def logout_current_user():
-    unregister_current_session()
-    st.logout()
-
-
-def sync_paid_status_from_stripe(email: str):
-    idx, row, users = get_current_user_registry_row()
-    if row is None or not email:
-        return False
-
-    stripe_row = get_stripe_subscription_row(email)
-    if not stripe_row:
-        return False
-
-    if stripe_row.get("billing_status") == "active":
-        users[idx]["billing_status"] = "active"
-        users[idx]["is_premium"] = True
-        users[idx]["stripe_customer_id"] = stripe_row.get("stripe_customer_id")
-        users[idx]["stripe_subscription_id"] = stripe_row.get("stripe_subscription_id")
-        save_users_registry(users)
+def company_has_available_seat(company):
+    if not company:
         return True
+    max_seats = int(company.get("max_seats", 0) or 0)
+    if max_seats <= 0:
+        return True
+    used = company_user_count(company["key"])
+    return used < max_seats
 
-    if row.get("billing_status") == "active" and stripe_row.get("billing_status") != "active":
-        users[idx]["billing_status"] = "expired"
-        users[idx]["is_premium"] = False
-        save_users_registry(users)
 
-    return False
+def format_company_seats(company):
+    if not company:
+        return "-"
+    used = company_user_count(company["key"])
+    max_seats = int(company.get("max_seats", 0) or 0)
+    return f"{used}/{max_seats}"
 
 
 def is_admin_user():
-    user = get_user_identity()
-    return user["email"] in ADMIN_EMAILS
+    return get_current_user_email() in ADMIN_EMAILS
+
+
+def current_user_status():
+    if is_admin_user():
+        return "approved"
+    idx, row, users = get_current_user_registry_row()
+    if row is None:
+        return "pending"
+    return row.get("status", "pending")
+
+
+def current_user_is_blocked():
+    return current_user_status() == "blocked"
+
+
+def current_user_is_approved():
+    return current_user_status() == "approved"
+
+
+def online_status_from_last_seen(last_seen_value):
+    dt = parse_iso(last_seen_value)
+    if dt is None:
+        return "Offline"
+    if datetime.utcnow() - dt <= timedelta(minutes=2):
+        return "Online"
+    return "Offline"
 
 
 def set_user_status(email, sub, new_status):
@@ -750,8 +643,6 @@ def set_user_premium(email, sub, is_premium=True):
     if idx is not None:
         users[idx]["is_premium"] = bool(is_premium)
         users[idx]["billing_status"] = "active" if is_premium else "expired"
-        users[idx]["stripe_customer_id"] = None
-        users[idx]["stripe_subscription_id"] = None
         if is_premium:
             users[idx]["status"] = "approved"
         save_users_registry(users)
@@ -771,52 +662,95 @@ def remove_user_from_company(email, sub):
     if idx is not None:
         users[idx]["company_key"] = None
         users[idx]["company_name"] = None
+        users[idx]["role"] = "member"
         save_users_registry(users)
 
 
-def format_sessions(count):
-    if count >= MAX_ACTIVE_SESSIONS:
-        return f"{count}/{MAX_ACTIVE_SESSIONS} 🔴"
-    if count == MAX_ACTIVE_SESSIONS - 1:
-        return f"{count}/{MAX_ACTIVE_SESSIONS} 🟠"
-    return f"{count}/{MAX_ACTIVE_SESSIONS} 🟢"
+def get_current_session_id():
+    if "app_session_id" not in st.session_state:
+        st.session_state["app_session_id"] = str(uuid.uuid4())
+    return st.session_state["app_session_id"]
 
 
-def session_status_label(count):
-    if count >= MAX_ACTIVE_SESSIONS:
-        return "Full 🔴"
-    if count == MAX_ACTIVE_SESSIONS - 1:
-        return "Near Limit 🟠"
-    return "Available 🟢"
-
-
-def get_current_user_company():
+def register_current_session():
     idx, row, users = get_current_user_registry_row()
     if row is None:
-        return None
+        return True, 0
 
-    company_key = row.get("company_key")
-    if not company_key:
-        return None
+    current_session_id = get_current_session_id()
+    sessions = row.get("active_sessions", [])
 
-    companies = load_companies_registry()
-    return find_company_by_key(companies, company_key)
+    for s in sessions:
+        if s.get("session_id") == current_session_id:
+            s["last_seen"] = now_iso()
+            users[idx]["active_sessions"] = sessions
+            save_users_registry(users)
+            return True, len(sessions)
+
+    if len(sessions) >= MAX_ACTIVE_SESSIONS:
+        return False, len(sessions)
+
+    sessions.append({"session_id": current_session_id, "last_seen": now_iso()})
+    users[idx]["active_sessions"] = sessions
+    save_users_registry(users)
+    return True, len(sessions)
+
+
+def unregister_current_session():
+    idx, row, users = get_current_user_registry_row()
+    if row is None:
+        return
+    current_session_id = get_current_session_id()
+    sessions = row.get("active_sessions", [])
+    sessions = [s for s in sessions if s.get("session_id") != current_session_id]
+    users[idx]["active_sessions"] = sessions
+    save_users_registry(users)
+
+
+def touch_current_user():
+    idx, row, users = get_current_user_registry_row()
+    if row is not None:
+        users[idx]["last_seen"] = now_iso()
+        save_users_registry(users)
+
+
+def touch_current_session():
+    idx, row, users = get_current_user_registry_row()
+    if row is None:
+        return
+    current_session_id = get_current_session_id()
+    sessions = row.get("active_sessions", [])
+    changed = False
+    for s in sessions:
+        if s.get("session_id") == current_session_id:
+            s["last_seen"] = now_iso()
+            changed = True
+            break
+    if changed:
+        users[idx]["active_sessions"] = sessions
+        save_users_registry(users)
+
+
+def logout_current_user():
+    unregister_current_session()
+    st.logout()
 
 
 def ensure_current_user_in_registry():
-    user = get_user_identity()
-    users = load_users_registry()
+    email = get_current_user_email()
+    sub = get_current_user_id()
+    name = get_current_user_name()
 
-    idx = find_user_index(users, user["email"], user["sub"])
+    users = load_users_registry()
+    idx = find_user_index(users, email, sub)
 
     if idx is None:
-        status = "approved" if user["email"] in ADMIN_EMAILS else "pending"
         users.append(
             {
-                "email": user["email"],
-                "sub": user["sub"],
-                "name": user["name"],
-                "status": status,
+                "email": email,
+                "sub": sub,
+                "name": name,
+                "status": "approved" if email in ADMIN_EMAILS else "pending",
                 "first_seen": now_iso(),
                 "last_login": now_iso(),
                 "last_seen": now_iso(),
@@ -827,20 +761,21 @@ def ensure_current_user_in_registry():
                 "active_sessions": [],
                 "company_key": None,
                 "company_name": None,
+                "role": "member",
             }
         )
     else:
-        users[idx]["name"] = user["name"]
+        users[idx]["name"] = name
         users[idx]["last_login"] = now_iso()
         users[idx]["last_seen"] = now_iso()
-        if user["email"] in ADMIN_EMAILS:
+        if email in ADMIN_EMAILS:
             users[idx]["status"] = "approved"
-        users[idx] = ensure_user_billing_fields(users[idx])
+        users[idx] = ensure_user_fields(users[idx])
 
     save_users_registry(users)
 
 
-def sync_current_user_company_assignment():
+def sync_company_assignment_from_domain():
     idx, row, users = get_current_user_registry_row()
     if row is None:
         return {"status": "none", "company": None}
@@ -852,10 +787,10 @@ def sync_current_user_company_assignment():
 
     companies = load_companies_registry()
     company = find_company_by_domain(companies, domain)
-
     if not company:
         return {"status": "none", "company": None}
 
+    company = ensure_company_fields(company)
     if not company.get("is_active", True):
         return {"status": "inactive", "company": company}
 
@@ -863,54 +798,36 @@ def sync_current_user_company_assignment():
     if existing_company_key == company.get("key"):
         return {"status": "assigned", "company": company}
 
-    current_count = get_company_user_count(company.get("key"))
-    max_seats = int(company.get("max_seats", 0) or 0)
-
-    if max_seats > 0 and current_count >= max_seats:
+    if not company_has_available_seat(company):
         return {"status": "full", "company": company}
 
     users[idx]["company_key"] = company.get("key")
     users[idx]["company_name"] = company.get("name", company.get("key"))
     users[idx]["status"] = "approved"
-    save_users_registry(users)
 
+    if company.get("owner_email") == email:
+        users[idx]["role"] = "company_admin"
+
+    save_users_registry(users)
     return {"status": "assigned", "company": company}
 
 
-def current_user_has_access():
+def sync_individual_status_from_stripe(email: str):
     idx, row, users = get_current_user_registry_row()
-    if row is None:
+    if row is None or not email:
         return False
 
-    company_key = row.get("company_key")
-    if company_key:
-        companies = load_companies_registry()
-        company = find_company_by_key(companies, company_key)
-        if company and company.get("is_active", True) and row.get("status") == "approved":
-            return True
+    stripe_row = get_stripe_subscription_row(email)
+    if not stripe_row:
+        return False
 
-    user_email = get_current_user_email()
-
-    if row.get("billing_status") == "active" or row.get("is_premium") is True:
-        if row.get("is_premium") is True and row.get("stripe_subscription_id") is None:
-            return True
-
-        if user_email and sync_paid_status_from_stripe(user_email):
-            return True
-
-        if idx is not None and not row.get("is_premium", False):
-            users[idx]["billing_status"] = "expired"
-            users[idx]["is_premium"] = False
-            save_users_registry(users)
-
-    trial_end = parse_iso(row.get("trial_end", ""))
-    if trial_end and now_utc() <= trial_end:
+    if stripe_row.get("billing_status") == "active":
+        users[idx]["billing_status"] = "active"
+        users[idx]["is_premium"] = True
+        save_users_registry(users)
         return True
 
-    if user_email and sync_paid_status_from_stripe(user_email):
-        return True
-
-    if idx is not None and not row.get("is_premium", False):
+    if row.get("billing_status") == "active":
         users[idx]["billing_status"] = "expired"
         users[idx]["is_premium"] = False
         save_users_registry(users)
@@ -918,57 +835,55 @@ def current_user_has_access():
     return False
 
 
-def touch_current_user():
-    user = get_user_identity()
-    users = load_users_registry()
-    idx = find_user_index(users, user["email"], user["sub"])
+def company_has_access(company):
+    if not company:
+        return False
+
+    if not company.get("is_active", True):
+        return False
+
+    if company.get("billing_status") == "active":
+        return True
+
+    trial_end = parse_iso(company.get("trial_end", ""))
+    if trial_end and now_utc() <= trial_end:
+        return True
+
+    return False
+
+
+def current_user_has_access():
+    idx, row, users = get_current_user_registry_row()
+    if row is None:
+        return False
+
+    company = get_current_user_company()
+    if company and company_has_access(company):
+        return True
+
+    if row.get("billing_status") == "active" or row.get("is_premium") is True:
+        return True
+
+    trial_end = parse_iso(row.get("trial_end", ""))
+    if trial_end and now_utc() <= trial_end:
+        return True
+
+    user_email = get_current_user_email()
+    if user_email and sync_individual_status_from_stripe(user_email):
+        return True
+
     if idx is not None:
-        users[idx]["last_seen"] = now_iso()
+        users[idx]["billing_status"] = "expired"
+        users[idx]["is_premium"] = False
         save_users_registry(users)
 
-
-def get_current_user_status():
-    user = get_user_identity()
-
-    if user["email"] in ADMIN_EMAILS:
-        return "approved"
-
-    users = load_users_registry()
-    idx = find_user_index(users, user["email"], user["sub"])
-
-    if idx is None:
-        return "pending"
-
-    return users[idx].get("status", "pending")
+    return False
 
 
-def current_user_is_blocked():
-    return get_current_user_status() == "blocked"
-
-
-def current_user_is_approved():
-    return get_current_user_status() == "approved"
-
-
-def online_status_from_last_seen(last_seen_value):
-    dt = parse_iso(last_seen_value)
-    if dt is None:
-        return "Offline"
-
-    if datetime.utcnow() - dt <= timedelta(minutes=2):
-        return "Online"
-
-    return "Offline"
-
-
-def upsert_company(company_key, name, domain, max_seats, is_active=True):
+def upsert_company(company_key, name, domain, max_seats=0, is_active=True, billing_status="trialing", owner_email=""):
     companies = load_companies_registry()
     normalized_key = normalize_company_key(company_key)
-    idx = None
-    for i, company in enumerate(companies):
-        if company.get("key") == normalized_key:
-            idx = i
-            break
+    idx = find_company_index(companies, normalized_key)
 
     payload = {
         "key": normalized_key,
@@ -976,6 +891,12 @@ def upsert_company(company_key, name, domain, max_seats, is_active=True):
         "domain": normalize_domain(domain),
         "max_seats": int(max_seats),
         "is_active": bool(is_active),
+        "billing_status": billing_status,
+        "trial_start": now_iso(),
+        "trial_end": (now_utc() + timedelta(days=7)).isoformat(),
+        "stripe_customer_id": None,
+        "stripe_subscription_id": None,
+        "owner_email": owner_email.strip().lower(),
         "updated_at": now_iso(),
     }
 
@@ -983,7 +904,14 @@ def upsert_company(company_key, name, domain, max_seats, is_active=True):
         payload["created_at"] = now_iso()
         companies.append(payload)
     else:
-        payload["created_at"] = companies[idx].get("created_at", now_iso())
+        existing = companies[idx]
+        payload["created_at"] = existing.get("created_at", now_iso())
+        payload["stripe_customer_id"] = existing.get("stripe_customer_id")
+        payload["stripe_subscription_id"] = existing.get("stripe_subscription_id")
+        payload["trial_start"] = existing.get("trial_start", payload["trial_start"])
+        payload["trial_end"] = existing.get("trial_end", payload["trial_end"])
+        if not owner_email:
+            payload["owner_email"] = existing.get("owner_email", "")
         companies[idx] = payload
 
     save_companies_registry(companies)
@@ -993,6 +921,33 @@ def remove_company(company_key):
     companies = load_companies_registry()
     companies = [c for c in companies if c.get("key") != company_key]
     save_companies_registry(companies)
+
+
+# -------------------------------------------------
+# COMPANY / USER FILES
+# -------------------------------------------------
+def get_storage_slug_for_current_user():
+    company = get_current_user_company()
+    if company:
+        slug = normalize_company_key(company.get("key", "workspace"))
+    else:
+        slug = (
+            get_current_user_id()
+            .replace("@", "_")
+            .replace(".", "_")
+            .replace("/", "_")
+            .replace("\\", "_")
+        )
+    return slug
+
+
+WORKSPACE_SLUG = get_storage_slug_for_current_user()
+WORKSPACE_DIR = PERSIST_ROOT / WORKSPACE_SLUG
+UPLOADS_DIR = WORKSPACE_DIR / "uploads"
+COMPANIES_FILE = WORKSPACE_DIR / "companies.csv"
+
+WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
+UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # -------------------------------------------------
@@ -1274,6 +1229,45 @@ def build_export_dataframe(row_ids, catalogs, selected_codes):
     return pd.DataFrame(rows)
 
 
+# -------------------------------------------------
+# EXPORT FIELD SELECTION
+# -------------------------------------------------
+EXPORT_FIELD_OPTIONS = [
+    "Product",
+    "SAP",
+    "MM",
+    "Package",
+    "Base Price",
+    "Final Price",
+    "Best Price",
+]
+
+
+def filter_export_dataframe(export_df, selected_codes, selected_fields, companies_df):
+    if export_df.empty:
+        return export_df
+
+    columns_to_keep = ["Row"]
+
+    for code in selected_codes:
+        company_name_row = companies_df[companies_df["code"] == code]
+        label = code if company_name_row.empty else company_name_row.iloc[0]["name"]
+
+        for field in selected_fields:
+            if field == "Best Price":
+                continue
+
+            col_name = f"{label} {field}"
+            if col_name in export_df.columns:
+                columns_to_keep.append(col_name)
+
+    if "Best Price" in selected_fields and "Best Price" in export_df.columns:
+        columns_to_keep.append("Best Price")
+
+    columns_to_keep = [c for c in columns_to_keep if c in export_df.columns]
+    return export_df[columns_to_keep]
+
+
 def style_excel_worksheet(ws):
     header_fill = PatternFill(fill_type="solid", fgColor="1F4E78")
     header_font = Font(color="FFFFFF", bold=True)
@@ -1362,13 +1356,10 @@ if not is_logged_in():
 ensure_current_user_in_registry()
 touch_current_user()
 
-company_result = sync_current_user_company_assignment()
+company_result = sync_company_assignment_from_domain()
 
 if company_result["status"] == "full":
     company = company_result["company"]
-    current_count = get_company_user_count(company.get("key"))
-    max_seats = int(company.get("max_seats", 0) or 0)
-
     st.markdown(
         """
         <div class="locked-wrap">
@@ -1382,49 +1373,24 @@ if company_result["status"] == "full":
         unsafe_allow_html=True,
     )
 
-    c1, c2, c3 = st.columns([1, 1.7, 1])
+    c1, c2, c3 = st.columns([1, 1.6, 1])
     with c2:
-        st.markdown('<div class="app-card">', unsafe_allow_html=True)
-        st.subheader("No available seats")
-        st.warning(
-            f"{company.get('name', 'This company')} is currently using all available seats ({current_count}/{max_seats})."
-        )
-        st.info(
-            "Please contact your company administrator if you need an additional seat "
-            "or if an inactive user should be removed."
-        )
-        st.button(
-            "Logout",
-            on_click=logout_current_user,
-            use_container_width=True,
-            key="company_seat_limit_logout_button",
-        )
-        st.markdown("</div>", unsafe_allow_html=True)
-
+        st.warning(f"{company.get('name', 'This company')} is using all seats ({format_company_seats(company)}).")
+        st.button("Logout", on_click=logout_current_user, use_container_width=True, key="company_full_logout")
     st.stop()
 
 if current_user_is_blocked():
     st.error("Access denied. Your account has been blocked.")
-    st.button(
-        "Logout",
-        on_click=logout_current_user,
-        use_container_width=True,
-        key="blocked_logout_button",
-    )
+    st.button("Logout", on_click=logout_current_user, use_container_width=True, key="blocked_logout")
     st.stop()
 
 if not current_user_is_approved():
     st.warning("Your account is pending admin approval.")
-    st.button(
-        "Logout",
-        on_click=logout_current_user,
-        use_container_width=True,
-        key="pending_logout_button",
-    )
+    st.button("Logout", on_click=logout_current_user, use_container_width=True, key="pending_logout")
     st.stop()
 
 if not is_admin_user():
-    session_allowed, _ = register_current_session()
+    session_allowed, active_count = register_current_session()
     if not session_allowed:
         st.markdown(
             """
@@ -1438,76 +1404,41 @@ if not is_admin_user():
             """,
             unsafe_allow_html=True,
         )
-
-        c1, c2, c3 = st.columns([1, 1.7, 1])
-        with c2:
-            st.markdown('<div class="app-card">', unsafe_allow_html=True)
-            st.subheader("Maximum active devices reached")
-            st.warning(f"This account allows up to {MAX_ACTIVE_SESSIONS} active devices/browsers at the same time.")
-            st.info(
-                "If you are already logged in on your phone and your computer, "
-                "you need to logout from one of them before signing in on a third device."
-            )
-            st.button(
-                "Logout",
-                on_click=logout_current_user,
-                use_container_width=True,
-                key="session_limit_logout_button",
-            )
-            st.markdown("</div>", unsafe_allow_html=True)
-
+        st.button("Logout", on_click=logout_current_user, use_container_width=True, key="device_limit_logout")
         st.stop()
     else:
         touch_current_session()
 
 user_email = get_current_user_email()
+current_company = get_current_user_company()
+user_idx, user_row, _users = get_current_user_registry_row()
 
 if (not is_admin_user()) and (not current_user_has_access()):
-    idx, row, users = get_current_user_registry_row()
-    days_left = trial_days_left(row.get("trial_end")) if row else 0
-    checkout_url = get_checkout_url(user_email) if user_email else None
+    checkout_url = get_checkout_url(user_email)
 
     st.markdown(
         """
         <div class="locked-wrap">
-            <div class="locked-badge">Premium access required</div>
-            <div class="locked-title">Your free trial has ended</div>
+            <div class="locked-badge">Access required</div>
+            <div class="locked-title">Your access is currently locked</div>
             <div class="locked-subtitle">
-                You can still log in, but access to the full app is now locked.
-                To continue using all features, activate the monthly plan.
+                Activate an individual plan to continue using all features.
             </div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
-    c1, c2, c3 = st.columns([1, 1.6, 1])
-    with c2:
-        st.markdown('<div class="app-card">', unsafe_allow_html=True)
-        st.subheader("Continue with Premium")
-        st.write("Unlock full access for **€10/month** and continue using the app without restrictions.")
-        if days_left > 0:
-            st.info(f"Your free trial is still active. Days left: {days_left}")
-        else:
-            st.warning("Your 2-day free trial has expired.")
+    days_left = trial_days_left(user_row.get("trial_end")) if user_row else 0
+    if days_left > 0:
+        st.info(f"Your free trial is still active. Days left: {days_left}")
+    else:
+        st.warning("Your 2-day free trial has expired.")
 
-        if checkout_url:
-            st.link_button(
-                "💳 Subscribe for €10/month",
-                checkout_url,
-                use_container_width=True,
-            )
-            st.caption("Secure checkout powered by Stripe.")
-        else:
-            st.error("Unable to prepare checkout right now. Please try again.")
+    if checkout_url:
+        st.link_button("Subscribe €10/month", checkout_url, use_container_width=True)
 
-        st.button(
-            "Logout",
-            on_click=logout_current_user,
-            use_container_width=True,
-            key="locked_logout_button",
-        )
-        st.markdown("</div>", unsafe_allow_html=True)
+    st.button("Logout", on_click=logout_current_user, use_container_width=True, key="locked_logout")
     st.stop()
 
 
@@ -1519,59 +1450,47 @@ with st.sidebar:
     st.success("Logged in")
     st.write(f"User: {get_current_user_email() or get_current_user_id()}")
 
-    idx, row, users = get_current_user_registry_row()
-    days_left = trial_days_left(row.get("trial_end")) if row else 0
-    company = get_current_user_company()
-
     if is_admin_user():
         st.success("Admin: Full Access")
     else:
+        company = get_current_user_company()
+
         if company:
-            current_count = get_company_user_count(company.get("key"))
-            max_seats = int(company.get("max_seats", 0) or 0)
-            st.success(f"Company: {company.get('name', 'Company Plan')}")
-            st.info(f"Seats: {format_company_seats(current_count, max_seats)}")
-        elif row and row.get("billing_status") == "active":
+            st.success(f"Workspace: {company.get('name')}")
+            st.info(f"Seats: {format_company_seats(company)}")
+        elif user_row and user_row.get("billing_status") == "active":
             st.success("Plan: Premium")
-        elif days_left > 0:
-            st.info(f"Trial: {days_left} day(s) left")
         else:
-            st.warning("Plan: Locked")
+            trial_left = trial_days_left(user_row.get("trial_end")) if user_row else 0
+            if trial_left > 0:
+                st.info(f"Trial: {trial_left} day(s) left")
+            else:
+                st.warning("Plan: Locked")
 
     st.markdown("---")
     st.subheader("💳 Billing")
 
     if not is_admin_user():
-        if company:
-            st.success("Your access is managed through your company plan.")
-        elif row and row.get("billing_status") == "active":
-            st.success("Your subscription is active.")
-        elif days_left > 0:
-            st.info("You are currently using the free 2-day trial.")
-        elif user_email:
+        if current_company:
+            if current_company.get("billing_status") == "active":
+                st.success("Your company subscription is active.")
+            else:
+                st.info("Your access is managed through your company workspace.")
+        elif user_row and user_row.get("billing_status") == "active":
+            st.success("Your individual subscription is active.")
+        else:
             checkout_url = get_checkout_url(user_email)
             if checkout_url:
-                st.link_button(
-                    "Subscribe €10/month",
-                    checkout_url,
-                    use_container_width=True,
-                )
-            else:
-                st.error("Checkout unavailable.")
+                st.link_button("Individual €10/month", checkout_url, use_container_width=True)
 
     st.markdown("---")
 
     if not is_admin_user():
+        active_sessions_count = len(user_row.get("active_sessions", [])) if user_row else 0
         st.warning("⚠️ Please logout before closing the app to free your session.")
-        active_sessions_count = len(row.get("active_sessions", [])) if row else 0
-        st.caption(f"Active sessions: {format_sessions(active_sessions_count)}")
+        st.caption(f"Active sessions: {active_sessions_count}/{MAX_ACTIVE_SESSIONS}")
 
-    st.button(
-        "Logout",
-        on_click=logout_current_user,
-        use_container_width=True,
-        key="logout_button",
-    )
+    st.button("Logout", on_click=logout_current_user, use_container_width=True, key="logout_button")
 
 
 # -------------------------------------------------
@@ -1590,7 +1509,7 @@ st.markdown(
 )
 
 if st.query_params.get("payment") == "success":
-    st.success("Payment completed successfully. Your access will be available after the page refreshes.")
+    st.success("Payment completed successfully. Refreshing access may take a few seconds.")
 elif st.query_params.get("payment") == "cancel":
     st.info("Checkout was cancelled.")
 
@@ -1841,9 +1760,7 @@ else:
         with top2:
             st.write("")
             if st.button("Delete This Row", key=f"delete_row_{row_id}", use_container_width=True):
-                st.session_state.row_ids = [
-                    r for r in st.session_state.row_ids if r != row_id
-                ]
+                st.session_state.row_ids = [r for r in st.session_state.row_ids if r != row_id]
                 st.rerun()
 
         row_cols = st.columns(len(selected_codes))
@@ -1911,7 +1828,6 @@ else:
                 best_label = best_code if best_name_row.empty else best_name_row.iloc[0]["name"]
             else:
                 best_label = "-"
-
             st.metric(f"Row {visible_index + 1} Best Price", best_label)
 
         st.markdown("---")
@@ -1920,22 +1836,39 @@ else:
 # 7. EXPORT
 st.markdown("## 7. Export Excel Report")
 
-export_df = build_export_dataframe(st.session_state.row_ids, catalogs, selected_codes)
+full_export_df = build_export_dataframe(st.session_state.row_ids, catalogs, selected_codes)
 
-if not export_df.empty:
-    st.dataframe(export_df, use_container_width=True, hide_index=True)
+selected_export_fields = st.multiselect(
+    "Choose columns for Excel export",
+    options=EXPORT_FIELD_OPTIONS,
+    default=["Product", "Final Price", "Best Price"],
+    key="selected_export_fields",
+)
 
-    excel_bytes = to_excel_bytes(export_df)
-    st.download_button(
-        "Download Excel Report",
-        data=excel_bytes,
-        file_name="comparison_report.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key="download_excel_report",
-        use_container_width=True,
-    )
+if not selected_export_fields:
+    st.warning("Please select at least one export field.")
 else:
-    st.info("No data available for export yet.")
+    export_df = filter_export_dataframe(
+        full_export_df,
+        selected_codes,
+        selected_export_fields,
+        companies_df,
+    )
+
+    if not export_df.empty:
+        st.dataframe(export_df, use_container_width=True, hide_index=True)
+
+        excel_bytes = to_excel_bytes(export_df)
+        st.download_button(
+            "Download Excel Report",
+            data=excel_bytes,
+            file_name="comparison_report.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_excel_report",
+            use_container_width=True,
+        )
+    else:
+        st.info("No data available for export yet.")
 
 
 # 8. ADMIN PANEL
@@ -1956,8 +1889,8 @@ if is_admin_user():
                     "Billing": row.get("billing_status", "trialing"),
                     "Premium": row.get("is_premium", False),
                     "Company": row.get("company_name", "") or "",
-                    "Active Sessions": format_sessions(sessions_count),
-                    "Session Status": session_status_label(sessions_count),
+                    "Role": row.get("role", "member"),
+                    "Active Sessions": f"{sessions_count}/{MAX_ACTIVE_SESSIONS}",
                     "First Seen": row.get("first_seen", ""),
                     "Last Login": row.get("last_login", ""),
                     "Last Seen": row.get("last_seen", ""),
@@ -1971,12 +1904,7 @@ if is_admin_user():
 
         user_options = {}
         for row in users_registry:
-            sessions_count = len(row.get("active_sessions", []))
-            label = (
-                f"{row.get('email', '')} | "
-                f"{row.get('status', '')} | "
-                f"{session_status_label(sessions_count)}"
-            )
+            label = f"{row.get('email', '')} | {row.get('status', '')}"
             user_options[label] = row
 
         selected_user_label = st.selectbox(
@@ -1989,9 +1917,7 @@ if is_admin_user():
 
         with c1:
             if st.button("Approve User", key="approve_user_button", use_container_width=True):
-                if not selected_user_label:
-                    st.warning("Please select a user.")
-                else:
+                if selected_user_label:
                     row = user_options[selected_user_label]
                     set_user_status(row.get("email", ""), row.get("sub", ""), "approved")
                     st.success(f"Approved: {row.get('email', '')}")
@@ -1999,9 +1925,7 @@ if is_admin_user():
 
         with c2:
             if st.button("Block User", key="block_user_button", use_container_width=True):
-                if not selected_user_label:
-                    st.warning("Please select a user.")
-                else:
+                if selected_user_label:
                     row = user_options[selected_user_label]
                     set_user_status(row.get("email", ""), row.get("sub", ""), "blocked")
                     st.success(f"Blocked: {row.get('email', '')}")
@@ -2009,9 +1933,7 @@ if is_admin_user():
 
         with c3:
             if st.button("Set Pending", key="pending_user_button", use_container_width=True):
-                if not selected_user_label:
-                    st.warning("Please select a user.")
-                else:
+                if selected_user_label:
                     row = user_options[selected_user_label]
                     set_user_status(row.get("email", ""), row.get("sub", ""), "pending")
                     st.success(f"Set to pending: {row.get('email', '')}")
@@ -2019,9 +1941,7 @@ if is_admin_user():
 
         with c4:
             if st.button("Give Premium", key="give_premium_button", use_container_width=True):
-                if not selected_user_label:
-                    st.warning("Please select a user.")
-                else:
+                if selected_user_label:
                     row = user_options[selected_user_label]
                     set_user_premium(row.get("email", ""), row.get("sub", ""), True)
                     st.success(f"Premium granted to: {row.get('email', '')}")
@@ -2029,9 +1949,7 @@ if is_admin_user():
 
         with c5:
             if st.button("Remove Premium", key="remove_premium_button", use_container_width=True):
-                if not selected_user_label:
-                    st.warning("Please select a user.")
-                else:
+                if selected_user_label:
                     row = user_options[selected_user_label]
                     set_user_premium(row.get("email", ""), row.get("sub", ""), False)
                     st.success(f"Premium removed from: {row.get('email', '')}")
@@ -2039,9 +1957,7 @@ if is_admin_user():
 
         with c6:
             if st.button("Reset Sessions", key="reset_sessions_button", use_container_width=True):
-                if not selected_user_label:
-                    st.warning("Please select a user.")
-                else:
+                if selected_user_label:
                     row = user_options[selected_user_label]
                     reset_user_sessions(row.get("email", ""), row.get("sub", ""))
                     st.success(f"Sessions reset for: {row.get('email', '')}")
@@ -2049,48 +1965,43 @@ if is_admin_user():
 
         with c7:
             if st.button("Remove From Company", key="remove_from_company_button", use_container_width=True):
-                if not selected_user_label:
-                    st.warning("Please select a user.")
-                else:
+                if selected_user_label:
                     row = user_options[selected_user_label]
                     remove_user_from_company(row.get("email", ""), row.get("sub", ""))
                     st.success(f"User removed from company: {row.get('email', '')}")
                     st.rerun()
-    else:
-        st.info("No users found yet.")
 
     st.markdown("---")
-    st.markdown("### Company Plans")
+    st.markdown("### Company Workspaces")
 
     companies_registry = load_companies_registry()
-
     companies_for_view = []
     for company in companies_registry:
-        current_count = get_company_user_count(company.get("key"))
-        max_seats = int(company.get("max_seats", 0) or 0)
+        company = ensure_company_fields(company)
         companies_for_view.append(
             {
                 "Key": company.get("key", ""),
                 "Name": company.get("name", ""),
                 "Domain": company.get("domain", ""),
-                "Seats": format_company_seats(current_count, max_seats),
-                "Max Seats": max_seats,
+                "Billing": company.get("billing_status", ""),
+                "Seats": format_company_seats(company),
+                "Max Seats": company.get("max_seats", 0),
+                "Owner Email": company.get("owner_email", ""),
                 "Active": company.get("is_active", True),
-                "Created At": company.get("created_at", ""),
-                "Updated At": company.get("updated_at", ""),
+                "Trial End": company.get("trial_end", ""),
             }
         )
 
     if companies_for_view:
         st.dataframe(pd.DataFrame(companies_for_view), use_container_width=True, hide_index=True)
     else:
-        st.info("No company plans found yet.")
+        st.info("No company workspaces found yet.")
 
-    st.markdown("#### Create / Update Company")
+    st.markdown("#### Create / Update Company Workspace")
 
     cc1, cc2, cc3, cc4 = st.columns(4)
     with cc1:
-        company_key_input = st.text_input("Company Key", key="company_key_input", placeholder="knaufteam")
+        company_key_input = st.text_input("Company Key", key="company_key_input", placeholder="knauf_team")
     with cc2:
         company_name_input = st.text_input("Company Name", key="company_name_input", placeholder="Knauf")
     with cc3:
@@ -2098,19 +2009,20 @@ if is_admin_user():
     with cc4:
         company_max_seats_input = st.number_input(
             "Max Seats",
-            min_value=1,
+            min_value=0,
             max_value=1000,
-            value=5,
+            value=3,
             step=1,
             key="company_max_seats_input",
         )
 
-    company_active_input = st.checkbox("Company Plan Active", value=True, key="company_active_input")
+    company_owner_email = st.text_input("Owner Email", key="company_owner_email", placeholder="owner@company.com")
+    company_active_input = st.checkbox("Company Workspace Active", value=True, key="company_active_input")
 
     ccu1, ccu2 = st.columns(2)
 
     with ccu1:
-        if st.button("Save Company Plan", key="save_company_plan_button", use_container_width=True):
+        if st.button("Save Company Workspace", key="save_company_plan_button", use_container_width=True):
             if not company_key_input.strip():
                 st.warning("Please enter a company key.")
             elif not company_name_input.strip():
@@ -2124,8 +2036,10 @@ if is_admin_user():
                     company_domain_input,
                     company_max_seats_input,
                     company_active_input,
+                    "trialing",
+                    company_owner_email,
                 )
-                st.success(f"Company plan saved: {company_name_input}")
+                st.success(f"Company workspace saved: {company_name_input}")
                 st.rerun()
 
     company_options_for_delete = {
@@ -2135,14 +2049,12 @@ if is_admin_user():
 
     with ccu2:
         selected_company_to_delete = st.selectbox(
-            "Delete Company Plan",
+            "Delete Company Workspace",
             [""] + list(company_options_for_delete.keys()),
             key="selected_company_to_delete",
         )
-        if st.button("Delete Company Plan", key="delete_company_plan_button", use_container_width=True):
-            if not selected_company_to_delete:
-                st.warning("Please select a company.")
-            else:
+        if st.button("Delete Company Workspace", key="delete_company_plan_button", use_container_width=True):
+            if selected_company_to_delete:
                 remove_company(company_options_for_delete[selected_company_to_delete])
-                st.success(f"Company plan deleted: {selected_company_to_delete}")
+                st.success(f"Company workspace deleted: {selected_company_to_delete}")
                 st.rerun()
