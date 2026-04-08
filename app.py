@@ -88,7 +88,7 @@ server_metadata_url = "{_escape_toml(google_server_metadata_url)}"
 [auth.microsoft]
 client_id = "{_escape_toml(ms_client_id)}"
 client_secret = "{_escape_toml(ms_client_secret)}"
-server_metadata_url = "{_escape_toml(ms_server_METADATA_URL)}"
+server_metadata_url = "{_escape_toml(ms_server_metadata_url)}"
 '''
         # Keep compatibility if env var typo not present
         content = content.replace(
