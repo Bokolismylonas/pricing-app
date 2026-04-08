@@ -90,7 +90,7 @@ ensure_render_secrets_file()
 
 
 # -------------------------------------------------
-# UI STYLE
+# UI STYLE (SAFE PREMIUM VERSION)
 # -------------------------------------------------
 st.markdown(
     """
@@ -104,20 +104,20 @@ st.markdown(
     .app-hero {
         padding: 28px 32px;
         border-radius: 22px;
-        background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 45%, #1e3a8a 100%);
+        background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 48%, #1e3a8a 100%);
         color: white;
-        border: 1px solid rgba(255,255,255,0.14);
+        border: 1px solid rgba(255,255,255,0.10);
         margin-bottom: 1.2rem;
-        box-shadow: 0 14px 34px rgba(0,0,0,0.20);
+        box-shadow: 0 14px 34px rgba(0,0,0,0.18);
     }
 
     .app-card {
         background: linear-gradient(180deg, #0f172a 0%, #111827 100%);
-        border: 1px solid rgba(255,255,255,0.10);
+        border: 1px solid rgba(255,255,255,0.08);
         border-radius: 18px;
         padding: 22px 24px;
         color: white;
-        box-shadow: 0 8px 22px rgba(0,0,0,0.14);
+        box-shadow: 0 8px 22px rgba(0,0,0,0.12);
         margin-bottom: 14px;
     }
 
@@ -128,7 +128,7 @@ st.markdown(
         border-radius: 22px;
         background: linear-gradient(180deg, #0f172a 0%, #111827 100%);
         border: 1px solid rgba(255,255,255,0.10);
-        box-shadow: 0 20px 50px rgba(0,0,0,0.24);
+        box-shadow: 0 20px 50px rgba(0,0,0,0.22);
         text-align: center;
         color: white;
     }
@@ -151,9 +151,9 @@ st.markdown(
         display: inline-block;
         padding: 6px 12px;
         border-radius: 999px;
-        background: rgba(96,165,250,0.16);
-        border: 1px solid rgba(96,165,250,0.28);
-        color: #dbeafe;
+        background: rgba(96,165,250,0.12);
+        border: 1px solid rgba(96,165,250,0.25);
+        color: #bfdbfe;
         font-size: 13px;
         margin-bottom: 18px;
     }
@@ -164,8 +164,8 @@ st.markdown(
         padding: 42px 40px 34px 40px;
         border-radius: 24px;
         background: linear-gradient(180deg, #020617 0%, #0f172a 100%);
-        border: 1px solid rgba(255,255,255,0.10);
-        box-shadow: 0 20px 60px rgba(0,0,0,0.35);
+        border: 1px solid rgba(255,255,255,0.08);
+        box-shadow: 0 20px 50px rgba(0,0,0,0.28);
         text-align: center;
         color: white;
     }
@@ -181,7 +181,7 @@ st.markdown(
     .login-shell p {
         margin: 0;
         font-size: 18px;
-        color: #94a3b8;
+        color: #cbd5e1;
     }
 
     .login-note {
@@ -195,8 +195,8 @@ st.markdown(
         display: inline-block;
         padding: 7px 12px;
         border-radius: 999px;
-        background: rgba(255,255,255,0.07);
-        border: 1px solid rgba(255,255,255,0.10);
+        background: rgba(255,255,255,0.06);
+        border: 1px solid rgba(255,255,255,0.08);
         color: #cbd5e1;
         font-size: 13px;
         margin-bottom: 18px;
@@ -204,94 +204,45 @@ st.markdown(
 
     div[data-testid="stSidebar"] {
         border-right: 1px solid rgba(255,255,255,0.08);
-        background: #020617;
-    }
-
-    div[data-baseweb="input"] input {
-        border-radius: 12px !important;
-        border: 1px solid rgba(148,163,184,0.35) !important;
-        background-color: #0f172a !important;
-        color: white !important;
-    }
-
-    div[data-baseweb="select"] > div {
-        border-radius: 12px !important;
-        border: 1px solid rgba(148,163,184,0.35) !important;
-        background-color: #0f172a !important;
-        color: white !important;
-    }
-
-    textarea {
-        border-radius: 12px !important;
-        border: 1px solid rgba(148,163,184,0.35) !important;
-        background-color: #0f172a !important;
-        color: white !important;
-    }
-
-    div[data-testid="stNumberInput"] input {
-        border-radius: 12px !important;
-        border: 1px solid rgba(148,163,184,0.35) !important;
-        background-color: #0f172a !important;
-        color: white !important;
-    }
-
-    div[data-testid="stDateInput"] input {
-        border-radius: 12px !important;
-        border: 1px solid rgba(148,163,184,0.35) !important;
-        background-color: #0f172a !important;
-        color: white !important;
-    }
-
-    div[data-testid="stFileUploader"] section {
-        border-radius: 14px !important;
-        border: 1px dashed rgba(96,165,250,0.45) !important;
-        background: rgba(37,99,235,0.06) !important;
     }
 
     div[data-testid="stButton"] > button {
         border-radius: 12px;
         font-size: 15px;
         font-weight: 700;
-        background: linear-gradient(135deg, #2563eb, #1d4ed8);
-        color: white;
-        border: 1px solid rgba(255,255,255,0.08);
-        transition: all 0.2s ease;
-        box-shadow: 0 6px 16px rgba(37,99,235,0.22);
+        border: 1px solid rgba(255,255,255,0.10);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.08);
     }
 
     div[data-testid="stButton"] > button:hover {
-        transform: translateY(-1px);
-        box-shadow: 0 10px 20px rgba(37,99,235,0.30);
+        border: 1px solid rgba(59,130,246,0.55);
+        box-shadow: 0 6px 14px rgba(59,130,246,0.16);
     }
 
     div[data-testid="stDownloadButton"] > button {
         border-radius: 12px;
         font-size: 15px;
         font-weight: 700;
-        background: linear-gradient(135deg, #059669, #047857);
-        color: white;
-        border: 1px solid rgba(255,255,255,0.08);
-        box-shadow: 0 6px 16px rgba(5,150,105,0.20);
+        border: 1px solid rgba(255,255,255,0.10);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.08);
     }
 
     div[data-testid="stDownloadButton"] > button:hover {
-        transform: translateY(-1px);
-        box-shadow: 0 10px 20px rgba(5,150,105,0.28);
+        border: 1px solid rgba(16,185,129,0.55);
+        box-shadow: 0 6px 14px rgba(16,185,129,0.16);
     }
 
     div[data-testid="stMetric"] {
-        background: linear-gradient(180deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.02) 100%);
+        background: rgba(255,255,255,0.03);
         border: 1px solid rgba(255,255,255,0.08);
-        padding: 12px 14px;
+        padding: 10px 12px;
         border-radius: 16px;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.10);
     }
 
     .stDataFrame {
         border: 1px solid rgba(255,255,255,0.10);
         border-radius: 14px;
         overflow: hidden;
-        box-shadow: 0 6px 18px rgba(0,0,0,0.10);
     }
 
     .stAlert {
