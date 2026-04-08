@@ -1575,10 +1575,21 @@ def restore_comparison_state_payload(payload: dict):
     ]
 
     for key in keys_to_clear:
-        del st.session_state[key]
+        if key in st.session_state:
+            del st.session_state[key]
+
+    protected_keys = {
+        "current_comparison_id",
+        "comparison_name_input",
+        "show_saved_comparisons",
+        "pending_load_payload",
+        "pending_loaded_comparison_id",
+        "pending_loaded_comparison_name",
+    }
 
     for key, value in payload.items():
-        st.session_state[key] = value
+        if key not in protected_keys:
+            st.session_state[key] = value
 
 
 # -------------------------------------------------
@@ -1598,6 +1609,15 @@ if "comparison_name_input" not in st.session_state:
 
 if "show_saved_comparisons" not in st.session_state:
     st.session_state.show_saved_comparisons = False
+
+if "pending_load_payload" not in st.session_state:
+    st.session_state.pending_load_payload = None
+
+if "pending_loaded_comparison_id" not in st.session_state:
+    st.session_state.pending_loaded_comparison_id = None
+
+if "pending_loaded_comparison_name" not in st.session_state:
+    st.session_state.pending_loaded_comparison_name = ""
 
 
 # -------------------------------------------------
@@ -1983,6 +2003,16 @@ with src_d2:
 st.markdown("</div>", unsafe_allow_html=True)
 
 
+# APPLY PENDING COMPARISON LOAD BEFORE WIDGETS ARE CREATED
+if st.session_state.get("pending_load_payload") is not None:
+    restore_comparison_state_payload(st.session_state["pending_load_payload"])
+    st.session_state["current_comparison_id"] = st.session_state.get("pending_loaded_comparison_id")
+    st.session_state["comparison_name_input"] = st.session_state.get("pending_loaded_comparison_name", "")
+    st.session_state["pending_load_payload"] = None
+    st.session_state["pending_loaded_comparison_id"] = None
+    st.session_state["pending_loaded_comparison_name"] = ""
+
+
 # 4. SELECT SAVED SOURCES
 st.markdown('<div class="app-card">', unsafe_allow_html=True)
 st.markdown("## 4. Select Saved Sources for Comparison")
@@ -2163,10 +2193,9 @@ if st.session_state.get("show_saved_comparisons"):
 
                 with load_c1:
                     if st.button("Load Selected", use_container_width=True, key="load_selected_comparison_btn"):
-                        restore_comparison_state_payload(selected_record.get("state", {}))
-                        st.session_state["current_comparison_id"] = selected_record.get("id")
-                        st.session_state["comparison_name_input"] = selected_record.get("name", "")
-                        st.success("Comparison loaded successfully.")
+                        st.session_state["pending_load_payload"] = selected_record.get("state", {})
+                        st.session_state["pending_loaded_comparison_id"] = selected_record.get("id")
+                        st.session_state["pending_loaded_comparison_name"] = selected_record.get("name", "")
                         st.rerun()
 
                 with load_c2:
