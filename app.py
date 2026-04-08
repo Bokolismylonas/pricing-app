@@ -88,8 +88,13 @@ server_metadata_url = "{_escape_toml(google_server_metadata_url)}"
 [auth.microsoft]
 client_id = "{_escape_toml(ms_client_id)}"
 client_secret = "{_escape_toml(ms_client_secret)}"
-server_metadata_url = "{_escape_toml(ms_server_metadata_url)}"
+server_metadata_url = "{_escape_toml(ms_server_METADATA_URL)}"
 '''
+        # Keep compatibility if env var typo not present
+        content = content.replace(
+            os.getenv("MS_SERVER_METADATA_URL", ""),
+            _escape_toml(ms_server_metadata_url),
+        )
 
     SECRETS_FILE.write_text(content, encoding="utf-8")
 
@@ -1619,6 +1624,15 @@ if "pending_loaded_comparison_id" not in st.session_state:
 if "pending_loaded_comparison_name" not in st.session_state:
     st.session_state.pending_loaded_comparison_name = ""
 
+if "selected_export_fields" not in st.session_state:
+    st.session_state["selected_export_fields"] = [
+        "Product",
+        "Total Discounts",
+        "Final Price",
+        "Comparison %",
+        "Best Price",
+    ]
+
 
 # -------------------------------------------------
 # APP FLOW
@@ -2048,9 +2062,6 @@ def render_comparisons():
     st.markdown('<div class="app-card">', unsafe_allow_html=True)
     st.markdown("## Comparisons")
 
-    render_source_library(show_title=True)
-    st.markdown("---")
-
     st.markdown("### 4. Select Saved Sources for Comparison")
 
     company_options = {
@@ -2060,7 +2071,6 @@ def render_comparisons():
     selected_company_displays = st.multiselect(
         "Select up to 3 companies to compare",
         options=list(company_options.keys()),
-        default=[],
         max_selections=3,
         key="comparison_company_selection",
     )
@@ -2406,10 +2416,6 @@ def render_export():
     selected_export_fields = st.multiselect(
         "Choose columns for Excel export",
         options=EXPORT_FIELD_OPTIONS,
-        default=st.session_state.get(
-            "selected_export_fields",
-            ["Product", "Total Discounts", "Final Price", "Comparison %", "Best Price"],
-        ),
         key="selected_export_fields",
     )
 
