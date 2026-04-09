@@ -1587,14 +1587,82 @@ def restore_comparison_state_payload(payload: dict):
         "current_comparison_id",
         "comparison_name_input",
         "show_saved_comparisons",
+        "show_new_comparison_confirm",
         "pending_load_payload",
         "pending_loaded_comparison_id",
         "pending_loaded_comparison_name",
+        "pending_clear_comparison",
     }
 
     for key, value in payload.items():
         if key not in protected_keys:
             st.session_state[key] = value
+
+
+def clear_current_comparison_state():
+    keys_to_clear = [
+        key for key in list(st.session_state.keys())
+        if key.startswith("row_") or key.startswith("select_")
+    ]
+
+    for key in keys_to_clear:
+        if key in st.session_state:
+            del st.session_state[key]
+
+    st.session_state["row_ids"] = [1]
+    st.session_state["next_row_id"] = 2
+    st.session_state["comparison_company_selection"] = []
+    st.session_state["comparison_name_input"] = ""
+    st.session_state["current_comparison_id"] = None
+    st.session_state["show_saved_comparisons"] = False
+    st.session_state["show_new_comparison_confirm"] = False
+    st.session_state["selected_export_fields"] = [
+        "Product",
+        "Total Discounts",
+        "Final Price",
+        "Comparison %",
+        "Best Price",
+    ]
+
+
+def save_or_update_current_comparison(selected_codes):
+    if not selected_codes:
+        return False, "Please select companies first."
+
+    comparison_name = st.session_state.get("comparison_name_input", "").strip()
+    if not comparison_name:
+        comparison_name = auto_comparison_name(selected_codes)
+        st.session_state["comparison_name_input"] = comparison_name
+
+    comparison_file = get_current_user_comparisons_file()
+    current_id = st.session_state.get("current_comparison_id")
+
+    if current_id:
+        ok = update_comparison(
+            comparison_file,
+            comparison_id=current_id,
+            owner_sub=get_current_user_id(),
+            owner_email=get_current_user_email(),
+            name=comparison_name,
+            companies=[get_company_label(code) for code in selected_codes],
+            source_files=build_source_files_map(selected_codes),
+            state=collect_comparison_state_payload(selected_codes),
+        )
+        if ok:
+            return True, "Comparison updated successfully."
+        return False, "This comparison no longer exists. Save it again as new."
+
+    comparison_id = save_new_comparison(
+        comparison_file,
+        owner_sub=get_current_user_id(),
+        owner_email=get_current_user_email(),
+        name=comparison_name,
+        companies=[get_company_label(code) for code in selected_codes],
+        source_files=build_source_files_map(selected_codes),
+        state=collect_comparison_state_payload(selected_codes),
+    )
+    st.session_state["current_comparison_id"] = comparison_id
+    return True, "Comparison saved successfully."
 
 
 # -------------------------------------------------
@@ -1615,8 +1683,14 @@ if "comparison_name_input" not in st.session_state:
 if "show_saved_comparisons" not in st.session_state:
     st.session_state.show_saved_comparisons = False
 
+if "show_new_comparison_confirm" not in st.session_state:
+    st.session_state.show_new_comparison_confirm = False
+
 if "pending_load_payload" not in st.session_state:
     st.session_state.pending_load_payload = None
+
+if "pending_clear_comparison" not in st.session_state:
+    st.session_state.pending_clear_comparison = False
 
 if "pending_loaded_comparison_id" not in st.session_state:
     st.session_state.pending_loaded_comparison_id = None
@@ -1768,6 +1842,10 @@ if st.session_state.get("pending_load_payload") is not None:
     st.session_state["pending_loaded_comparison_id"] = None
     st.session_state["pending_loaded_comparison_name"] = ""
 
+if st.session_state.get("pending_clear_comparison"):
+    clear_current_comparison_state()
+    st.session_state["pending_clear_comparison"] = False
+
 
 # -------------------------------------------------
 # SIDEBAR
@@ -1801,7 +1879,6 @@ with st.sidebar:
         "Company Manager",
         "Sources",
         "Comparisons",
-        "Export",
     ]
     if is_admin_user():
         nav_options.append("Admin Panel")
@@ -2069,9 +2146,9 @@ def render_comparisons():
     }
 
     selected_company_displays = st.multiselect(
-        "Select up to 3 companies to compare",
+        "Select up to 5 companies to compare",
         options=list(company_options.keys()),
-        max_selections=3,
+        max_selections=5,
         key="comparison_company_selection",
     )
 
@@ -2084,15 +2161,20 @@ def render_comparisons():
     catalogs = {}
 
     if selected_codes:
-        cols = st.columns(len(selected_codes))
-        for i, code in enumerate(selected_codes):
-            with cols[i]:
-                files = get_company_files(code)
-                selected[code] = st.selectbox(
-                    f"{code} source file",
-                    [""] + files,
-                    key=f"select_{code}",
-                )
+        source_cols_per_row = 2 if len(selected_codes) >= 4 else len(selected_codes)
+
+        for start_idx in range(0, len(selected_codes), source_cols_per_row):
+            chunk = selected_codes[start_idx:start_idx + source_cols_per_row]
+            cols = st.columns(len(chunk))
+
+            for i, code in enumerate(chunk):
+                with cols[i]:
+                    files = get_company_files(code)
+                    selected[code] = st.selectbox(
+                        f"{code} source file",
+                        [""] + files,
+                        key=f"select_{code}",
+                    )
 
         for code in selected_codes:
             if selected.get(code):
@@ -2114,7 +2196,7 @@ def render_comparisons():
         placeholder="e.g. Siniat vs Knauf - April",
     )
 
-    save_c1, save_c2, save_c3, save_c4 = st.columns(4)
+    save_c1, save_c2, save_c3, save_c4, save_c5 = st.columns(5)
 
     with save_c1:
         if st.button("💾 Save Comparison", use_container_width=True, key="save_comparison_btn"):
@@ -2198,6 +2280,42 @@ def render_comparisons():
     with save_c4:
         if st.button("📂 Load Comparison", use_container_width=True, key="toggle_load_comparison_btn"):
             st.session_state["show_saved_comparisons"] = not st.session_state.get("show_saved_comparisons", False)
+
+    with save_c5:
+        if st.button("🧹 New Comparison", use_container_width=True, key="new_comparison_btn"):
+            st.session_state["show_new_comparison_confirm"] = True
+            st.rerun()
+
+    if st.session_state.get("show_new_comparison_confirm"):
+        st.warning("Do you want to save the current comparison before clearing it?")
+
+        nc1, nc2, nc3 = st.columns(3)
+
+        with nc1:
+            if st.button("Save & Clear", use_container_width=True, key="save_and_clear_btn"):
+                if selected_codes:
+                    ok, msg = save_or_update_current_comparison(selected_codes)
+                    if ok:
+                        st.session_state["show_new_comparison_confirm"] = False
+                        st.session_state["pending_clear_comparison"] = True
+                        st.rerun()
+                    else:
+                        st.warning(msg)
+                else:
+                    st.session_state["show_new_comparison_confirm"] = False
+                    st.session_state["pending_clear_comparison"] = True
+                    st.rerun()
+
+        with nc2:
+            if st.button("Clear Without Saving", use_container_width=True, key="clear_without_saving_btn"):
+                st.session_state["show_new_comparison_confirm"] = False
+                st.session_state["pending_clear_comparison"] = True
+                st.rerun()
+
+        with nc3:
+            if st.button("Cancel", use_container_width=True, key="cancel_new_comparison_btn"):
+                st.session_state["show_new_comparison_confirm"] = False
+                st.rerun()
 
     if st.session_state.get("show_saved_comparisons"):
         comparison_file = get_current_user_comparisons_file()
@@ -2303,61 +2421,65 @@ def render_comparisons():
                     ]
                     st.rerun()
 
-            row_cols = st.columns(len(selected_codes))
             row_final_prices = {}
+            comparison_cols_per_row = 2 if len(selected_codes) >= 4 else len(selected_codes)
 
-            for col_idx, code in enumerate(selected_codes):
-                with row_cols[col_idx]:
-                    label = get_company_label(code)
+            for start_idx in range(0, len(selected_codes), comparison_cols_per_row):
+                chunk = selected_codes[start_idx:start_idx + comparison_cols_per_row]
+                row_cols = st.columns(len(chunk))
 
-                    st.write(f"**{label}**")
+                for col_idx, code in enumerate(chunk):
+                    with row_cols[col_idx]:
+                        label = get_company_label(code)
 
-                    df = catalogs.get(code)
-                    if df is not None and not df.empty:
-                        options = [""] + df["DISPLAY"].tolist()
-                        selected_product = st.selectbox(
-                            f"{label} product",
-                            options,
-                            key=f"row_{row_id}_{code}_product",
-                        )
-                        row = get_catalog_row(df, selected_product)
+                        st.write(f"**{label}**")
 
-                        if row is not None:
-                            st.write("SAP:", row["SAP"])
-                            st.write("MM:", row["MM"])
-                            st.write("Package:", row["Package"])
-                            st.write("Base Price:", round(float(row["Price"]), 2))
+                        df = catalogs.get(code)
+                        if df is not None and not df.empty:
+                            options = [""] + df["DISPLAY"].tolist()
+                            selected_product = st.selectbox(
+                                f"{label} product",
+                                options,
+                                key=f"row_{row_id}_{code}_product",
+                            )
+                            row = get_catalog_row(df, selected_product)
 
-                            discs = []
-                            for j in range(1, 6):
-                                disc_val = st.number_input(
-                                    f"{label} Disc {j}",
-                                    min_value=0.0,
-                                    max_value=100.0,
-                                    value=0.0,
-                                    step=0.1,
-                                    key=f"row_{row_id}_{code}_disc_{j}",
-                                )
-                                discs.append(disc_val)
+                            if row is not None:
+                                st.write("SAP:", row["SAP"])
+                                st.write("MM:", row["MM"])
+                                st.write("Package:", row["Package"])
+                                st.write("Base Price:", round(float(row["Price"]), 2))
 
-                            final = apply_discounts(row["Price"], discs)
-                            row_final_prices[code] = final
-                            st.success(f"Final Price: {final}")
+                                discs = []
+                                for j in range(1, 6):
+                                    disc_val = st.number_input(
+                                        f"{label} Disc {j}",
+                                        min_value=0.0,
+                                        max_value=100.0,
+                                        value=0.0,
+                                        step=0.1,
+                                        key=f"row_{row_id}_{code}_disc_{j}",
+                                    )
+                                    discs.append(disc_val)
+
+                                final = apply_discounts(row["Price"], discs)
+                                row_final_prices[code] = final
+                                st.success(f"Final Price: {final}")
+                            else:
+                                for j in range(1, 6):
+                                    st.number_input(
+                                        f"{label} Disc {j}",
+                                        min_value=0.0,
+                                        max_value=100.0,
+                                        value=0.0,
+                                        step=0.1,
+                                        key=f"row_{row_id}_{code}_disc_{j}",
+                                    )
+                                row_final_prices[code] = None
+                                st.info("No product selected")
                         else:
-                            for j in range(1, 6):
-                                st.number_input(
-                                    f"{label} Disc {j}",
-                                    min_value=0.0,
-                                    max_value=100.0,
-                                    value=0.0,
-                                    step=0.1,
-                                    key=f"row_{row_id}_{code}_disc_{j}",
-                                )
                             row_final_prices[code] = None
-                            st.info("No product selected")
-                    else:
-                        row_final_prices[code] = None
-                        st.info("No data")
+                            st.info("No data")
 
             if row_final_prices:
                 valid = {k: v for k, v in row_final_prices.items() if v is not None}
@@ -2384,30 +2506,13 @@ def render_comparisons():
 
             st.markdown("---")
 
+    render_export_inside_comparisons(catalogs, selected_codes)
     st.markdown("</div>", unsafe_allow_html=True)
 
 
-def render_export():
-    st.markdown('<div class="app-card">', unsafe_allow_html=True)
-    st.markdown("## 7. Export Excel Report")
-
-    company_options = {
-        f"{row['name']} ({row['code']})": row["code"] for _, row in companies_df.iterrows()
-    }
-
-    selected_company_displays = st.session_state.get("comparison_company_selection", [])
-    selected_codes = [company_options[x] for x in selected_company_displays if x in company_options]
-
-    selected = {}
-    catalogs = {}
-    for code in selected_codes:
-        current_file = st.session_state.get(f"select_{code}", "")
-        selected[code] = current_file
-        if current_file:
-            df = load_data(get_company_folder(code) / current_file)
-            catalogs[code] = prepare_catalog(df)
-        else:
-            catalogs[code] = None
+def render_export_inside_comparisons(catalogs, selected_codes):
+    st.markdown("---")
+    st.markdown("### 7. Export Excel Report")
 
     full_export_df = build_export_dataframe(
         st.session_state.row_ids, catalogs, selected_codes
@@ -2421,30 +2526,29 @@ def render_export():
 
     if not selected_export_fields:
         st.warning("Please select at least one export field.")
-    else:
-        export_df = filter_export_dataframe(
-            full_export_df,
-            selected_codes,
-            selected_export_fields,
-            companies_df,
+        return
+
+    export_df = filter_export_dataframe(
+        full_export_df,
+        selected_codes,
+        selected_export_fields,
+        companies_df,
+    )
+
+    if not export_df.empty:
+        st.dataframe(export_df, use_container_width=True, hide_index=True)
+
+        excel_bytes = to_excel_bytes(export_df)
+        st.download_button(
+            "Download Excel Report",
+            data=excel_bytes,
+            file_name="comparison_report.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_excel_report",
+            use_container_width=True,
         )
-
-        if not export_df.empty:
-            st.dataframe(export_df, use_container_width=True, hide_index=True)
-
-            excel_bytes = to_excel_bytes(export_df)
-            st.download_button(
-                "Download Excel Report",
-                data=excel_bytes,
-                file_name="comparison_report.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="download_excel_report",
-                use_container_width=True,
-            )
-        else:
-            st.info("No data available for export yet. Go to Comparisons first.")
-
-    st.markdown("</div>", unsafe_allow_html=True)
+    else:
+        st.info("No data available for export yet.")
 
 
 def render_admin_panel():
@@ -2722,7 +2826,5 @@ elif current_view == "Sources":
     render_sources()
 elif current_view == "Comparisons":
     render_comparisons()
-elif current_view == "Export":
-    render_export()
 elif current_view == "Admin Panel":
     render_admin_panel()
