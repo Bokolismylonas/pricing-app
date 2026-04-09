@@ -171,21 +171,22 @@ st.markdown(
         margin-bottom: 18px;
     }
 
-    .login-shell {
-        max-width: 560px;
-        margin: 60px auto 20px auto;
-        padding: 42px 40px 34px 40px;
-        border-radius: 24px;
+    
+.login-shell {
+        max-width: 620px;
+        margin: 56px auto 18px auto;
+        padding: 44px 42px 34px 42px;
+        border-radius: 28px;
         background: linear-gradient(180deg, #020617 0%, #0f172a 100%);
         border: 1px solid rgba(255,255,255,0.08);
-        box-shadow: 0 20px 50px rgba(0,0,0,0.28);
+        box-shadow: 0 24px 60px rgba(0,0,0,0.30);
         text-align: center;
         color: white;
     }
 
     .login-shell h1 {
         margin: 0 0 10px 0;
-        font-size: 44px;
+        font-size: 46px;
         font-weight: 900;
         letter-spacing: -0.03em;
         color: white;
@@ -195,6 +196,152 @@ st.markdown(
         margin: 0;
         font-size: 18px;
         color: #cbd5e1;
+    }
+
+    .login-badge {
+        display: inline-block;
+        padding: 7px 14px;
+        border-radius: 999px;
+        background: rgba(96,165,250,0.16);
+        border: 1px solid rgba(147,197,253,0.28);
+        color: #dbeafe;
+        font-size: 13px;
+        font-weight: 700;
+        margin-bottom: 16px;
+    }
+
+    .login-shell-premium {
+        background:
+            radial-gradient(circle at top right, rgba(59,130,246,0.22), transparent 28%),
+            linear-gradient(180deg, #020617 0%, #0f172a 100%);
+    }
+
+    .login-feature-row {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+        margin-top: 22px;
+        text-align: left;
+    }
+
+    .login-feature-card {
+        padding: 14px 16px;
+        border-radius: 16px;
+        background: rgba(255,255,255,0.05);
+        border: 1px solid rgba(255,255,255,0.08);
+    }
+
+    .login-feature-title {
+        font-size: 14px;
+        font-weight: 800;
+        color: #ffffff;
+        margin-bottom: 6px;
+    }
+
+    .login-feature-text {
+        font-size: 13px;
+        line-height: 1.5;
+        color: #cbd5e1;
+    }
+
+    .login-provider-preview {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+        margin-bottom: 16px;
+    }
+
+    .login-provider-card {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 14px 16px;
+        border-radius: 16px;
+        background: #ffffff;
+        border: 1px solid #e5e7eb;
+        color: #111827;
+        text-align: left;
+        box-shadow: 0 10px 22px rgba(15,23,42,0.10);
+    }
+
+    .login-provider-card-ms {
+        background: #f8fafc;
+    }
+
+    .provider-logo-box {
+        width: 38px;
+        height: 38px;
+        border-radius: 10px;
+        background: #ffffff;
+        border: 1px solid #e5e7eb;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+    }
+
+    .provider-logo-box.ms-box {
+        background: #ffffff;
+    }
+
+    .provider-logo-google {
+        width: 20px;
+        height: 20px;
+        border-radius: 999px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 15px;
+        font-weight: 800;
+        color: #4285f4;
+        background: #ffffff;
+    }
+
+    .provider-logo-microsoft {
+        width: 18px;
+        height: 18px;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 2px;
+    }
+
+    .provider-logo-microsoft span:nth-child(1) { background: #f25022; }
+    .provider-logo-microsoft span:nth-child(2) { background: #7fba00; }
+    .provider-logo-microsoft span:nth-child(3) { background: #00a4ef; }
+    .provider-logo-microsoft span:nth-child(4) { background: #ffb900; }
+
+    .provider-logo-microsoft span {
+        display: block;
+        width: 8px;
+        height: 8px;
+        border-radius: 1px;
+    }
+
+    .provider-meta {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+    }
+
+    .provider-title {
+        font-size: 14px;
+        font-weight: 800;
+        color: #111827;
+        line-height: 1.2;
+    }
+
+    .provider-subtitle {
+        font-size: 12px;
+        color: #6b7280;
+        line-height: 1.3;
+    }
+
+    .login-actions-label {
+        text-align: center;
+        margin: 4px 0 12px 0;
+        font-size: 13px;
+        color: #94a3b8;
+        font-weight: 600;
     }
 
     .login-note {
@@ -307,25 +454,62 @@ def get_current_user_name():
         return ""
 
 
+
 def show_login_screen():
-    top_left, top_mid, top_right = st.columns([1.1, 2.2, 1.1])
+    top_left, top_mid, top_right = st.columns([1.0, 2.5, 1.0])
 
     with top_mid:
         st.markdown(
             """
-            <div class="login-shell">
+            <div class="login-shell login-shell-premium">
+                <div class="login-badge">Secure workspace access</div>
                 <h1>Pricing App</h1>
-                <p>Sign in to continue to your workspace</p>
+                <p>Upload supplier sources, compare products and export polished Excel reports.</p>
+                <div class="login-feature-row">
+                    <div class="login-feature-card">
+                        <div class="login-feature-title">Fast comparison</div>
+                        <div class="login-feature-text">Build, save and reload pricing scenarios in seconds.</div>
+                    </div>
+                    <div class="login-feature-card">
+                        <div class="login-feature-title">Protected access</div>
+                        <div class="login-feature-text">Sign in securely with your Google or Microsoft account.</div>
+                    </div>
+                </div>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-    btn_left, btn_mid, btn_right = st.columns([1.25, 2.0, 1.25])
+    btn_left, btn_mid, btn_right = st.columns([1.1, 2.2, 1.1])
 
     with btn_mid:
         st.markdown(
-            '<div class="provider-chip">Secure sign-in with Google or Microsoft</div>',
+            """
+            <div class="provider-chip">Choose a sign-in provider</div>
+            <div class="login-provider-preview">
+                <div class="login-provider-card">
+                    <span class="provider-logo-box">
+                        <span class="provider-logo-google">G</span>
+                    </span>
+                    <span class="provider-meta">
+                        <span class="provider-title">Continue with Google</span>
+                        <span class="provider-subtitle">Use your Google account</span>
+                    </span>
+                </div>
+                <div class="login-provider-card login-provider-card-ms">
+                    <span class="provider-logo-box ms-box">
+                        <span class="provider-logo-microsoft">
+                            <span></span><span></span><span></span><span></span>
+                        </span>
+                    </span>
+                    <span class="provider-meta">
+                        <span class="provider-title">Sign in with Microsoft</span>
+                        <span class="provider-subtitle">Use your Microsoft account</span>
+                    </span>
+                </div>
+            </div>
+            <div class="login-actions-label">Use the buttons below to continue</div>
+            """,
             unsafe_allow_html=True,
         )
 
@@ -339,14 +523,14 @@ def show_login_screen():
         st.write("")
 
         if st.button(
-            "Continue with Microsoft",
+            "Sign in with Microsoft",
             use_container_width=True,
             key="login_microsoft_button",
         ):
             st.login("microsoft")
 
         st.markdown(
-            '<div class="login-note">Secure login • No passwords stored</div>',
+            '<div class="login-note">Secure login • No passwords stored • Existing app flow unchanged</div>',
             unsafe_allow_html=True,
         )
 
@@ -1707,6 +1891,12 @@ if "selected_export_fields" not in st.session_state:
         "Best Price",
     ]
 
+if "pending_company_delete_code" not in st.session_state:
+    st.session_state["pending_company_delete_code"] = None
+
+if "pending_company_delete_display" not in st.session_state:
+    st.session_state["pending_company_delete_display"] = ""
+
 
 # -------------------------------------------------
 # APP FLOW
@@ -1952,6 +2142,35 @@ elif st.query_params.get("payment") == "cancel":
 # -------------------------------------------------
 # SECTION RENDERERS
 # -------------------------------------------------
+
+
+def comparison_has_missing_companies(state_payload, company_options):
+    selected_displays = state_payload.get("comparison_company_selection", []) if isinstance(state_payload, dict) else []
+    missing = [item for item in selected_displays if item not in company_options]
+    return missing
+
+
+def comparisons_reference_company(comparison_file, company_code, company_name):
+    records = list_comparisons(comparison_file)
+    for record in records:
+        companies = record.get("companies", []) or []
+        source_files = record.get("source_files", {}) or {}
+        state = record.get("state", {}) or {}
+
+        if company_name in companies:
+            return True
+
+        if company_name in source_files:
+            return True
+
+        selected_displays = state.get("comparison_company_selection", []) if isinstance(state, dict) else []
+        for display in selected_displays:
+            if f"({company_code})" in str(display):
+                return True
+
+    return False
+
+
 def render_company_manager():
     st.markdown('<div class="app-card">', unsafe_allow_html=True)
     st.markdown("## 1. Company Manager")
@@ -2018,15 +2237,61 @@ def render_company_manager():
                 elif company_has_files(delete_code):
                     st.error("This company has source files. Delete the source files first.")
                 else:
-                    updated_df = companies_df[companies_df["code"] != delete_code].copy()
-                    save_companies(updated_df)
-                    folder = get_company_folder(delete_code)
-                    try:
-                        folder.rmdir()
-                    except Exception:
-                        pass
-                    st.success(f"Company {delete_code} was deleted.")
+                    st.session_state["pending_company_delete_code"] = delete_code
+                    st.session_state["pending_company_delete_display"] = delete_company_display
                     st.rerun()
+
+    pending_company_delete_code = st.session_state.get("pending_company_delete_code")
+    pending_company_delete_display = st.session_state.get("pending_company_delete_display", "")
+
+    if pending_company_delete_code:
+        pending_company_name = get_company_label(pending_company_delete_code)
+        comparison_file = get_current_user_comparisons_file()
+        has_linked_comparisons = comparisons_reference_company(
+            comparison_file,
+            pending_company_delete_code,
+            pending_company_name,
+        )
+
+        warning_text = (
+            f"Deleting {pending_company_name} ({pending_company_delete_code}) may make saved comparisons that include this company unloadable."
+        )
+        if has_linked_comparisons:
+            warning_text += " Some of your saved comparisons reference this company."
+
+        st.warning(warning_text)
+
+        confirm_c1, confirm_c2 = st.columns(2)
+
+        with confirm_c1:
+            if st.button(
+                "Confirm Delete Company",
+                key="confirm_delete_company_button",
+                use_container_width=True,
+            ):
+                updated_df = companies_df[companies_df["code"] != pending_company_delete_code].copy()
+                save_companies(updated_df)
+                folder = get_company_folder(pending_company_delete_code)
+                try:
+                    folder.rmdir()
+                except Exception:
+                    pass
+
+                st.session_state["pending_company_delete_code"] = None
+                st.session_state["pending_company_delete_display"] = ""
+                st.success(f"Company {pending_company_delete_code} was deleted.")
+                st.rerun()
+
+        with confirm_c2:
+            if st.button(
+                "Cancel Delete",
+                key="cancel_delete_company_button",
+                use_container_width=True,
+            ):
+                st.session_state["pending_company_delete_code"] = None
+                st.session_state["pending_company_delete_display"] = ""
+                st.info("Company deletion cancelled.")
+                st.rerun()
     st.markdown("</div>", unsafe_allow_html=True)
 
 
@@ -2145,6 +2410,17 @@ def render_comparisons():
         f"{row['name']} ({row['code']})": row["code"] for _, row in companies_df.iterrows()
     }
 
+    current_selection = st.session_state.get("comparison_company_selection", [])
+    missing_current_companies = [item for item in current_selection if item not in company_options]
+    if missing_current_companies:
+        st.warning(
+            "Some previously selected companies were deleted and have been removed from the current comparison: "
+            + ", ".join(missing_current_companies)
+        )
+        st.session_state["comparison_company_selection"] = [
+            item for item in current_selection if item in company_options
+        ]
+
     selected_company_displays = st.multiselect(
         "Select up to 5 companies to compare",
         options=list(company_options.keys()),
@@ -2152,7 +2428,7 @@ def render_comparisons():
         key="comparison_company_selection",
     )
 
-    selected_codes = [company_options[x] for x in selected_company_displays]
+    selected_codes = [company_options[x] for x in selected_company_displays if x in company_options]
 
     if not selected_codes:
         st.info("Please select at least 1 company for comparison.")
@@ -2354,10 +2630,19 @@ def render_comparisons():
 
                     with load_c1:
                         if st.button("Load Selected", use_container_width=True, key="load_selected_comparison_btn"):
-                            st.session_state["pending_load_payload"] = selected_record.get("state", {})
-                            st.session_state["pending_loaded_comparison_id"] = selected_record.get("id")
-                            st.session_state["pending_loaded_comparison_name"] = selected_record.get("name", "")
-                            st.rerun()
+                            state_payload = selected_record.get("state", {}) or {}
+                            missing_companies = comparison_has_missing_companies(state_payload, company_options)
+
+                            if missing_companies:
+                                st.warning(
+                                    "This comparison cannot be loaded because some companies were deleted: "
+                                    + ", ".join(missing_companies)
+                                )
+                            else:
+                                st.session_state["pending_load_payload"] = state_payload
+                                st.session_state["pending_loaded_comparison_id"] = selected_record.get("id")
+                                st.session_state["pending_loaded_comparison_name"] = selected_record.get("name", "")
+                                st.rerun()
 
                     with load_c2:
                         st.info("Select a saved comparison and use Load or Delete.")
