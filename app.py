@@ -1639,61 +1639,114 @@ def filter_export_dataframe(export_df, selected_codes, selected_fields, companie
 
 
 def style_excel_worksheet(ws):
-    header_fill = PatternFill(fill_type="solid", fgColor="1F4E78")
-    header_font = Font(color="FFFFFF", bold=True)
+    title_fill = PatternFill(fill_type="solid", fgColor="0F172A")
+    title_font = Font(color="FFFFFF", bold=True, size=14)
+    header_fill = PatternFill(fill_type="solid", fgColor="1E3A8A")
+    header_font = Font(color="FFFFFF", bold=True, size=11)
+    subheader_fill = PatternFill(fill_type="solid", fgColor="DBEAFE")
+    zebra_fill = PatternFill(fill_type="solid", fgColor="F8FAFC")
+    siniat_fill = PatternFill(fill_type="solid", fgColor="E0F2FE")
+    knauf_fill = PatternFill(fill_type="solid", fgColor="ECFCCB")
+    sg_fill = PatternFill(fill_type="solid", fgColor="FCE7F3")
+    result_fill = PatternFill(fill_type="solid", fgColor="FEF3C7")
+    best_fill = PatternFill(fill_type="solid", fgColor="DCFCE7")
+
     center_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
     left_align = Alignment(horizontal="left", vertical="center", wrap_text=True)
-    thin = Side(style="thin", color="D9D9D9")
+    right_align = Alignment(horizontal="right", vertical="center", wrap_text=True)
+
+    thin = Side(style="thin", color="CBD5E1")
+    medium = Side(style="medium", color="94A3B8")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    header_border = Border(left=medium, right=medium, top=medium, bottom=medium)
 
-    siniat_fill = PatternFill(fill_type="solid", fgColor="DDEBF7")
-    knauf_fill = PatternFill(fill_type="solid", fgColor="E2F0D9")
-    sg_fill = PatternFill(fill_type="solid", fgColor="FCE4D6")
-    result_fill = PatternFill(fill_type="solid", fgColor="FFF2CC")
+    max_col = ws.max_column
 
-    ws.freeze_panes = "A2"
+    ws.insert_rows(1, amount=2)
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max_col)
+    ws["A1"] = "Pricing Comparison Report"
+    ws["A1"].fill = title_fill
+    ws["A1"].font = title_font
+    ws["A1"].alignment = left_align
+    ws["A1"].border = header_border
 
-    for cell in ws[1]:
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=max_col)
+    ws["A2"] = f"Generated on {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}"
+    ws["A2"].fill = subheader_fill
+    ws["A2"].font = Font(color="0F172A", italic=True, size=10)
+    ws["A2"].alignment = left_align
+    ws["A2"].border = border
+
+    header_row = 3
+    data_start_row = 4
+    ws.freeze_panes = "A4"
+    ws.auto_filter.ref = f"A{header_row}:{get_column_letter(max_col)}{ws.max_row}"
+
+    for cell in ws[header_row]:
         cell.fill = header_fill
         cell.font = header_font
         cell.alignment = center_align
-        cell.border = border
+        cell.border = header_border
 
-    for row in ws.iter_rows(min_row=2):
-        for cell in row:
+    headers = [cell.value for cell in ws[header_row]]
+
+    for row_idx in range(data_start_row, ws.max_row + 1):
+        is_zebra = (row_idx - data_start_row) % 2 == 1
+        for col_idx in range(1, max_col + 1):
+            cell = ws.cell(row=row_idx, column=col_idx)
+            header = headers[col_idx - 1]
             cell.border = border
-            cell.alignment = left_align
 
-    headers = [cell.value for cell in ws[1]]
+            if isinstance(cell.value, (int, float)) and header != "Row":
+                cell.number_format = '#,##0.00'
+                cell.alignment = right_align
+            else:
+                cell.alignment = left_align
+
+            if is_zebra and cell.fill.fill_type is None:
+                cell.fill = zebra_fill
+
+            if isinstance(header, str):
+                if header.startswith("Siniat "):
+                    cell.fill = siniat_fill
+                elif header.startswith("Knauf "):
+                    cell.fill = knauf_fill
+                elif header.startswith("Saint-Gobain "):
+                    cell.fill = sg_fill
+                elif header in ["Best Price", "Comparisons"]:
+                    cell.fill = result_fill
+
+        best_price_col = None
+        for idx, header in enumerate(headers, start=1):
+            if header == "Best Price":
+                best_price_col = idx
+                break
+        if best_price_col:
+            ws.cell(row=row_idx, column=best_price_col).fill = best_fill
+            ws.cell(row=row_idx, column=best_price_col).font = Font(bold=True, color="166534")
+
     for col_idx, header in enumerate(headers, start=1):
-        if header is None:
-            continue
+        max_len = len(str(header)) if header is not None else 0
+        for row_idx in range(1, ws.max_row + 1):
+            val = ws.cell(row=row_idx, column=col_idx).value
+            val_len = len(str(val)) if val is not None else 0
+            if val_len > max_len:
+                max_len = val_len
 
-        if str(header).startswith("Siniat "):
-            fill = siniat_fill
-        elif str(header).startswith("Knauf "):
-            fill = knauf_fill
-        elif str(header).startswith("Saint-Gobain "):
-            fill = sg_fill
-        elif str(header) in ["Best Price", "Comparisons"]:
-            fill = result_fill
+        if header == "Comparisons":
+            adjusted_width = 70
+        elif header == "Row":
+            adjusted_width = 10
+        elif isinstance(header, str) and ("Price" in header or "Disc" in header):
+            adjusted_width = 14
         else:
-            fill = None
+            adjusted_width = min(max(max_len + 3, 14), 38)
 
-        if fill:
-            for row_idx in range(2, ws.max_row + 1):
-                ws.cell(row=row_idx, column=col_idx).fill = fill
-
-    for col_idx, column_cells in enumerate(ws.columns, start=1):
-        max_len = 0
-        for cell in column_cells:
-            val = "" if cell.value is None else str(cell.value)
-            if len(val) > max_len:
-                max_len = len(val)
-
-        adjusted_width = min(max(max_len + 2, 12), 45)
         ws.column_dimensions[get_column_letter(col_idx)].width = adjusted_width
 
+    ws.row_dimensions[1].height = 24
+    ws.row_dimensions[2].height = 20
+    ws.row_dimensions[3].height = 28
 
 def to_excel_bytes(df):
     output = io.BytesIO()
@@ -1704,6 +1757,7 @@ def to_excel_bytes(df):
 
     output.seek(0)
     return output.getvalue()
+
 
 
 # -------------------------------------------------
