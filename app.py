@@ -1927,19 +1927,37 @@ def get_previous_row_discounts(current_row_id, code):
     return values
 
 
+def row_discounts_are_blank(row_id, code):
+    values = []
+    for j in range(1, 6):
+        disc_key = f"row_{row_id}_{code}_disc_{j}"
+        raw = st.session_state.get(disc_key, None)
+        if raw is None:
+            values.append(None)
+            continue
+        try:
+            values.append(float(raw))
+        except Exception:
+            values.append(None)
+    present_values = [v for v in values if v is not None]
+    if not present_values:
+        return True
+    return all(abs(v) < 1e-9 for v in present_values)
+
+
 def ensure_discount_defaults_for_row(row_id, selected_codes):
     for code in selected_codes:
         carry_enabled = bool(st.session_state.get(f"carry_forward_{code}", False))
-        defaults_key = f"row_{row_id}_{code}_discounts_seeded"
-        if st.session_state.get(defaults_key):
-            continue
 
-        base_values = get_previous_row_discounts(row_id, code) if carry_enabled else [0.0] * 5
-        for j, value in enumerate(base_values, start=1):
-            disc_key = f"row_{row_id}_{code}_disc_{j}"
-            if disc_key not in st.session_state:
-                st.session_state[disc_key] = float(value)
-        st.session_state[defaults_key] = True
+        if carry_enabled and row_id != st.session_state.row_ids[0] and row_discounts_are_blank(row_id, code):
+            base_values = get_previous_row_discounts(row_id, code)
+            for j, value in enumerate(base_values, start=1):
+                st.session_state[f"row_{row_id}_{code}_disc_{j}"] = float(value)
+        else:
+            for j in range(1, 6):
+                disc_key = f"row_{row_id}_{code}_disc_{j}"
+                if disc_key not in st.session_state:
+                    st.session_state[disc_key] = 0.0
 
 
 # -------------------------------------------------
@@ -2552,23 +2570,6 @@ def render_comparisons():
             else:
                 catalogs[code] = None
 
-    if selected_codes:
-        st.markdown("### Carry Discounts Forward")
-        st.caption(
-            "When enabled, each new row starts with the previous row's discounts for that company. You can still edit any discount normally."
-        )
-        carry_cols_per_row = 2 if len(selected_codes) >= 4 else len(selected_codes)
-        for start_idx in range(0, len(selected_codes), carry_cols_per_row):
-            chunk = selected_codes[start_idx:start_idx + carry_cols_per_row]
-            carry_cols = st.columns(len(chunk))
-            for i, code in enumerate(chunk):
-                with carry_cols[i]:
-                    label = get_company_label(code)
-                    st.checkbox(
-                        f"{label}: use previous row discounts",
-                        key=f"carry_forward_{code}",
-                    )
-
     st.markdown("---")
     st.markdown("### 4B. Saved Comparisons")
 
@@ -2780,6 +2781,24 @@ def render_comparisons():
                     st.write(f"{code} prepared rows:", len(catalogs[code]))
     else:
         st.info("No comparison companies selected yet.")
+
+    if selected_codes:
+        st.markdown("---")
+        st.markdown("### Carry Discounts Forward")
+        st.caption(
+            "When enabled, each new row starts with the previous row's discounts for that company. If a row is still blank, turning this on will also prefill it. You can still edit any discount normally."
+        )
+        carry_cols_per_row = 2 if len(selected_codes) >= 4 else len(selected_codes)
+        for start_idx in range(0, len(selected_codes), carry_cols_per_row):
+            chunk = selected_codes[start_idx:start_idx + carry_cols_per_row]
+            carry_cols = st.columns(len(chunk))
+            for i, code in enumerate(chunk):
+                with carry_cols[i]:
+                    label = get_company_label(code)
+                    st.checkbox(
+                        f"{label}: use previous row discounts",
+                        key=f"carry_forward_{code}",
+                    )
 
     st.markdown("---")
     st.markdown("### 6. Multi-Line Comparison")
