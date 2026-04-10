@@ -1,5 +1,6 @@
 import os
 import io
+import base64
 import json
 import re
 import uuid
@@ -23,12 +24,18 @@ from storage import (
 )
 
 
+BASE_DIR = Path(__file__).parent
+ASSETS_DIR = BASE_DIR / "assets"
+FULL_LOGO_PATH = ASSETS_DIR / "pricingtool-final-logo-dark.svg"
+ICON_LOGO_PATH = ASSETS_DIR / "pricingtool-icon-dark.svg"
+PAGE_ICON = str(ICON_LOGO_PATH) if ICON_LOGO_PATH.exists() else "💎"
+
 # -------------------------------------------------
 # APP CONFIG
 # -------------------------------------------------
 st.set_page_config(
     page_title="Pricing App",
-    page_icon="💎",
+    page_icon=PAGE_ICON,
     layout="wide",
 )
 
@@ -38,7 +45,6 @@ stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 # -------------------------------------------------
 # RENDER -> CREATE .streamlit/secrets.toml FROM ENV
 # -------------------------------------------------
-BASE_DIR = Path(__file__).parent
 STREAMLIT_DIR = BASE_DIR / ".streamlit"
 STREAMLIT_DIR.mkdir(parents=True, exist_ok=True)
 SECRETS_FILE = STREAMLIT_DIR / "secrets.toml"
@@ -455,11 +461,21 @@ def get_current_user_name():
         return ""
 
 
+def render_logo_if_available(path, width=None):
+    try:
+        if Path(path).exists():
+            st.image(str(path), width=width)
+            return True
+    except Exception:
+        pass
+    return False
+
 
 def show_login_screen():
     top_left, top_mid, top_right = st.columns([1.0, 2.5, 1.0])
 
     with top_mid:
+        render_logo_if_available(FULL_LOGO_PATH, width=260)
         st.markdown(
             """
             <div class="login-shell login-shell-premium">
@@ -2258,6 +2274,7 @@ if st.session_state.get("pending_clear_comparison"):
 # SIDEBAR
 # -------------------------------------------------
 with st.sidebar:
+    render_logo_if_available(FULL_LOGO_PATH, width=180)
     st.markdown("### Account")
     st.success("Logged in")
     st.write(f"User: {get_current_user_email() or get_current_user_id()}")
@@ -2338,9 +2355,15 @@ with st.sidebar:
 # -------------------------------------------------
 # MAIN UI
 # -------------------------------------------------
+hero_logo_html = ""
+if FULL_LOGO_PATH.exists():
+    hero_logo_b64 = base64.b64encode(FULL_LOGO_PATH.read_bytes()).decode("utf-8")
+    hero_logo_html = f'<div style="margin-bottom:14px;"><img src="data:image/svg+xml;base64,{hero_logo_b64}" style="height:52px;width:auto;" /></div>'
+
 st.markdown(
-    """
+    f"""
     <div class="app-hero">
+        {hero_logo_html}
         <div style="font-size:38px;font-weight:900;letter-spacing:-0.03em;">Pricing App</div>
         <div style="font-size:16px;color:#dbeafe;margin-top:8px;">
             Upload supplier sources, compare products and export polished Excel reports.

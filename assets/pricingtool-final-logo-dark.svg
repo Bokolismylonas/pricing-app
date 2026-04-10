@@ -1,0 +1,39 @@
+<svg width="1200" height="360" viewBox="0 0 1200 360" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="iconGrad" x1="40" y1="20" x2="190" y2="200" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#60A5FA"/>
+      <stop offset="1" stop-color="#1D4ED8"/>
+    </linearGradient>
+    <linearGradient id="toolGrad" x1="0" y1="0" x2="260" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#60A5FA"/>
+      <stop offset="1" stop-color="#2563EB"/>
+    </linearGradient>
+    <filter id="softGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="8" result="blur"/>
+      <feColorMatrix in="blur" type="matrix"
+        values="0 0 0 0 0.18
+                0 0 0 0 0.40
+                0 0 0 0 0.95
+                0 0 0 0.18 0"/>
+      <feBlend in="SourceGraphic" mode="normal"/>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="360" rx="28" fill="#0B0F1A"/>
+
+  <!-- Icon -->
+  <g transform="translate(56 45)" filter="url(#softGlow)">
+    <path d="M78 10H160C193.137 10 220 36.863 220 70V70C220 103.137 193.137 130 160 130H128V240C128 257.673 113.673 272 96 272H92C74.327 272 60 257.673 60 240V46C60 26.118 76.118 10 96 10H78Z" fill="url(#iconGrad)"/>
+    <path d="M58 11H102V271H92C73.222 271 58 255.778 58 237V11Z" fill="#0F2C8A"/>
+    <path d="M81 169L165 117V164L118 191V271H81V169Z" fill="#F8FAFC"/>
+    <path d="M125 141L165 117V271H125V141Z" fill="#F8FAFC"/>
+  </g>
+
+  <!-- Wordmark -->
+  <text x="315" y="180" fill="#F8FAFC" font-family="Inter, Arial, Helvetica, sans-serif" font-size="104" font-weight="800" letter-spacing="-3">Pricing</text>
+  <text x="705" y="180" fill="url(#toolGrad)" font-family="Inter, Arial, Helvetica, sans-serif" font-size="104" font-weight="800" letter-spacing="-3">Tool</text>
+
+  <!-- Tagline -->
+  <text x="316" y="238" fill="#F8FAFC" opacity="0.92" font-family="Inter, Arial, Helvetica, sans-serif" font-size="31" font-weight="600" letter-spacing="6">PRODUCT COMPARISON. SIMPLIFIED.</text>
+  <rect x="561" y="256" width="96" height="6" rx="3" fill="url(#toolGrad)"/>
+</svg>
