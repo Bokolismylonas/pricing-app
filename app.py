@@ -1962,15 +1962,17 @@ def ensure_discount_defaults_for_row(row_id, selected_codes):
     for code in selected_codes:
         carry_enabled = bool(st.session_state.get(f"carry_forward_{code}", False))
 
+        # ALWAYS ensure keys exist first (critical fix)
+        for j in range(1, 6):
+            disc_key = f"row_{row_id}_{code}_disc_{j}"
+            if disc_key not in st.session_state or st.session_state[disc_key] is None:
+                st.session_state[disc_key] = 0.0
+
+        # THEN apply carry forward only if needed
         if carry_enabled and row_id != st.session_state.row_ids[0] and row_discounts_are_blank(row_id, code):
             base_values = get_previous_row_discounts(row_id, code)
             for j, value in enumerate(base_values, start=1):
                 st.session_state[f"row_{row_id}_{code}_disc_{j}"] = float(value)
-        else:
-            for j in range(1, 6):
-                disc_key = f"row_{row_id}_{code}_disc_{j}"
-                if disc_key not in st.session_state:
-                    st.session_state[disc_key] = 0.0
 
 
 def add_comparison_row(selected_codes, insert_after_row_id=None):
