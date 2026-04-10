@@ -26,15 +26,29 @@ from storage import (
 
 BASE_DIR = Path(__file__).parent
 ASSETS_DIR = BASE_DIR / "assets"
-FULL_LOGO_PATH = ASSETS_DIR / "pricingtool-final-logo-dark.svg"
-ICON_LOGO_PATH = ASSETS_DIR / "pricingtool-icon-dark.svg"
+
+
+def resolve_asset_path(filename: str) -> Path:
+    candidates = [
+        ASSETS_DIR / filename,
+        BASE_DIR / filename,
+        Path("/mnt/data") / filename,
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return ASSETS_DIR / filename
+
+
+FULL_LOGO_PATH = resolve_asset_path("pricingtool-final-logo-dark.svg")
+ICON_LOGO_PATH = resolve_asset_path("pricingtool-icon-dark.svg")
 PAGE_ICON = str(ICON_LOGO_PATH) if ICON_LOGO_PATH.exists() else "💎"
 
 # -------------------------------------------------
 # APP CONFIG
 # -------------------------------------------------
 st.set_page_config(
-    page_title="Pricing App",
+    page_title="Pricing Tool",
     page_icon=PAGE_ICON,
     layout="wide",
 )
@@ -191,12 +205,15 @@ st.markdown(
         color: white;
     }
 
-    .login-shell h1 {
-        margin: 0 0 10px 0;
-        font-size: 46px;
-        font-weight: 900;
-        letter-spacing: -0.03em;
-        color: white;
+    .login-shell .login-header-logo {
+        margin: 0 0 14px 0;
+    }
+
+    .login-shell .login-header-logo img {
+        height: 46px;
+        width: auto;
+        max-width: 100%;
+        display: inline-block;
     }
 
     .login-shell p {
@@ -475,12 +492,20 @@ def show_login_screen():
     top_left, top_mid, top_right = st.columns([1.0, 2.5, 1.0])
 
     with top_mid:
-        render_logo_if_available(FULL_LOGO_PATH, width=260)
+        login_header_logo_html = ""
+        if FULL_LOGO_PATH.exists():
+            login_logo_b64 = base64.b64encode(FULL_LOGO_PATH.read_bytes()).decode("utf-8")
+            login_header_logo_html = (
+                '<div class="login-header-logo">'
+                f'<img src="data:image/svg+xml;base64,{login_logo_b64}" alt="Pricing Tool logo" />'
+                '</div>'
+            )
+
         st.markdown(
-            """
+            f"""
             <div class="login-shell login-shell-premium">
                 <div class="login-badge">Secure workspace access</div>
-                <h1>Pricing App</h1>
+                {login_header_logo_html}
                 <p>Upload supplier sources, compare products and export polished Excel reports.</p>
                 <div class="login-feature-row">
                     <div class="login-feature-card">
@@ -2364,7 +2389,6 @@ st.markdown(
     f"""
     <div class="app-hero">
         {hero_logo_html}
-        <div style="font-size:38px;font-weight:900;letter-spacing:-0.03em;">Pricing App</div>
         <div style="font-size:16px;color:#dbeafe;margin-top:8px;">
             Upload supplier sources, compare products and export polished Excel reports.
         </div>
