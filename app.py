@@ -1880,6 +1880,19 @@ def clear_current_comparison_state():
     ]
 
 
+def load_selected_comparison_record(selected_record):
+    if not selected_record:
+        return False, "Could not load comparison."
+
+    state_payload = selected_record.get("state", {}) or {}
+    restore_comparison_state_payload(state_payload)
+    st.session_state["current_comparison_id"] = selected_record.get("id")
+    st.session_state["comparison_name_input"] = selected_record.get("name", "")
+    st.session_state["show_saved_comparisons"] = False
+    st.session_state["comparison_loaded_success_message"] = "Comparison loaded successfully."
+    return True, ""
+
+
 def save_or_update_current_comparison(selected_codes):
     if not selected_codes:
         return False, "Please select companies first."
@@ -2726,7 +2739,8 @@ def render_comparisons():
 
     with save_c4:
         if st.button("📂 Load Comparison", use_container_width=True, key="toggle_load_comparison_btn"):
-            st.session_state["show_saved_comparisons"] = not st.session_state.get("show_saved_comparisons", False)
+            st.session_state["show_saved_comparisons"] = True
+            st.rerun()
 
     with save_c5:
         if st.button("🧹 New Comparison", use_container_width=True, key="new_comparison_btn"):
@@ -2810,10 +2824,11 @@ def render_comparisons():
                                     + ", ".join(missing_companies)
                                 )
                             else:
-                                st.session_state["pending_load_payload"] = state_payload
-                                st.session_state["pending_loaded_comparison_id"] = selected_record.get("id")
-                                st.session_state["pending_loaded_comparison_name"] = selected_record.get("name", "")
-                                st.rerun()
+                                ok, msg = load_selected_comparison_record(selected_record)
+                                if ok:
+                                    st.rerun()
+                                else:
+                                    st.warning(msg)
 
                     with load_c2:
                         st.info("Select a saved comparison and use Load or Delete.")
