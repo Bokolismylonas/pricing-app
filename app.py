@@ -1885,11 +1885,10 @@ def load_selected_comparison_record(selected_record):
         return False, "Could not load comparison."
 
     state_payload = selected_record.get("state", {}) or {}
-    restore_comparison_state_payload(state_payload)
-    st.session_state["current_comparison_id"] = selected_record.get("id")
-    st.session_state["comparison_name_input"] = selected_record.get("name", "")
+    st.session_state["pending_load_payload"] = state_payload
+    st.session_state["pending_loaded_comparison_id"] = selected_record.get("id")
+    st.session_state["pending_loaded_comparison_name"] = selected_record.get("name", "")
     st.session_state["show_saved_comparisons"] = False
-    st.session_state["comparison_loaded_success_message"] = "Comparison loaded successfully."
     return True, ""
 
 
