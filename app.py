@@ -2030,6 +2030,29 @@ def apply_specific_discount_to_all_rows(selected_codes, target_code, disc_index,
             st.session_state[f"row_{row_id}_{target_code}_disc_{j}"] = float(current_values[j])
 
 
+def get_discount_widget_key(row_id, code, disc_number):
+    return f"widget_row_{row_id}_{code}_disc_{disc_number}"
+
+
+def sync_discount_widget_to_data(row_id, code, disc_number):
+    data_key = f"row_{row_id}_{code}_disc_{disc_number}"
+    widget_key = get_discount_widget_key(row_id, code, disc_number)
+    try:
+        st.session_state[data_key] = float(st.session_state.get(widget_key, 0.0) or 0.0)
+    except Exception:
+        st.session_state[data_key] = 0.0
+
+
+def mirror_discount_data_to_widget(row_id, code, disc_number):
+    data_key = f"row_{row_id}_{code}_disc_{disc_number}"
+    widget_key = get_discount_widget_key(row_id, code, disc_number)
+    try:
+        value = float(st.session_state.get(data_key, 0.0) or 0.0)
+    except Exception:
+        value = 0.0
+    st.session_state[widget_key] = value
+
+
 
 # -------------------------------------------------
 # SESSION STATE
@@ -2084,6 +2107,9 @@ if "pending_focus_row_id" not in st.session_state:
 
 if "bulk_discount_success_message" not in st.session_state:
     st.session_state["bulk_discount_success_message"] = ""
+
+if "comparison_loaded_success_message" not in st.session_state:
+    st.session_state["comparison_loaded_success_message"] = ""
 
 
 # -------------------------------------------------
@@ -2209,6 +2235,7 @@ if st.session_state.get("pending_load_payload") is not None:
     st.session_state["pending_load_payload"] = None
     st.session_state["pending_loaded_comparison_id"] = None
     st.session_state["pending_loaded_comparison_name"] = ""
+    st.session_state["comparison_loaded_success_message"] = "Comparison loaded successfully."
 
 if st.session_state.get("pending_clear_comparison"):
     clear_current_comparison_state()
@@ -2581,6 +2608,11 @@ def render_sources():
 def render_comparisons():
     st.markdown('<div class="app-card">', unsafe_allow_html=True)
     st.markdown("## Comparisons")
+
+    loaded_msg = st.session_state.get("comparison_loaded_success_message", "")
+    if loaded_msg:
+        st.success(loaded_msg)
+        st.session_state["comparison_loaded_success_message"] = ""
 
     company_options = {
         f"{row['name']} ({row['code']})": row["code"] for _, row in companies_df.iterrows()
@@ -2969,13 +3001,19 @@ def render_comparisons():
 
                                 discs = []
                                 for j in range(1, 6):
+                                    data_key = f"row_{row_id}_{code}_disc_{j}"
+                                    widget_key = get_discount_widget_key(row_id, code, j)
+                                    mirror_discount_data_to_widget(row_id, code, j)
                                     disc_val = st.number_input(
                                         f"{label} Disc {j}",
                                         min_value=0.0,
                                         max_value=100.0,
                                         step=0.1,
-                                        key=f"row_{row_id}_{code}_disc_{j}",
+                                        key=widget_key,
+                                        on_change=sync_discount_widget_to_data,
+                                        args=(row_id, code, j),
                                     )
+                                    st.session_state[data_key] = float(disc_val)
                                     discs.append(disc_val)
 
                                 final = apply_discounts(row["Price"], discs)
@@ -2983,13 +3021,18 @@ def render_comparisons():
                                 st.success(f"Final Price: {final}")
                             else:
                                 for j in range(1, 6):
-                                    st.number_input(
+                                    widget_key = get_discount_widget_key(row_id, code, j)
+                                    mirror_discount_data_to_widget(row_id, code, j)
+                                    disc_val = st.number_input(
                                         f"{label} Disc {j}",
                                         min_value=0.0,
                                         max_value=100.0,
                                         step=0.1,
-                                        key=f"row_{row_id}_{code}_disc_{j}",
+                                        key=widget_key,
+                                        on_change=sync_discount_widget_to_data,
+                                        args=(row_id, code, j),
                                     )
+                                    st.session_state[f"row_{row_id}_{code}_disc_{j}"] = float(disc_val)
                                 row_final_prices[code] = None
                                 st.info("No product selected")
                         else:
