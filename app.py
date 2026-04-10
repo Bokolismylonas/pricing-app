@@ -916,6 +916,18 @@ def set_user_premium(email, sub, is_premium=True):
         save_users_registry(users)
 
 
+def reset_user_to_trial(email, sub):
+    users = load_users_registry()
+    idx = find_user_index(users, email, sub)
+    if idx is not None:
+        users[idx]["is_premium"] = False
+        users[idx]["billing_status"] = "trialing"
+        users[idx]["trial_start"] = now_iso()
+        users[idx]["trial_end"] = (now_utc() + timedelta(days=TRIAL_DAYS)).isoformat()
+        users[idx]["status"] = "approved"
+        save_users_registry(users)
+
+
 def reset_user_sessions(email, sub):
     users = load_users_registry()
     idx = find_user_index(users, email, sub)
@@ -1018,7 +1030,7 @@ def ensure_current_user_in_registry():
                 "email": email,
                 "sub": sub,
                 "name": name,
-                "status": "approved" if email in ADMIN_EMAILS else "pending",
+                "status": "approved",
                 "first_seen": now_iso(),
                 "last_login": now_iso(),
                 "last_seen": now_iso(),
@@ -2089,16 +2101,6 @@ if current_user_is_blocked():
     )
     st.stop()
 
-if not current_user_is_approved():
-    st.warning("Your account is pending admin approval.")
-    st.button(
-        "Logout",
-        on_click=logout_current_user,
-        use_container_width=True,
-        key="pending_logout",
-    )
-    st.stop()
-
 if not is_admin_user():
     session_allowed, active_count = register_current_session()
     if not session_allowed:
@@ -3075,11 +3077,11 @@ def render_admin_panel():
             key="admin_selected_user_to_manage",
         )
 
-        c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
+        c1, c2, c3, c4, c5, c6, c7, c8 = st.columns(8)
 
         with c1:
             if st.button(
-                "Approve User", key="approve_user_button", use_container_width=True
+                "Unblock User", key="unblock_user_button", use_container_width=True
             ):
                 if selected_user_label:
                     row = user_options[selected_user_label]
@@ -3088,7 +3090,7 @@ def render_admin_panel():
                         row.get("sub", ""),
                         "approved",
                     )
-                    st.success(f"Approved: {row.get('email', '')}")
+                    st.success(f"User restored: {row.get('email', '')}")
                     st.rerun()
 
         with c2:
@@ -3107,16 +3109,15 @@ def render_admin_panel():
 
         with c3:
             if st.button(
-                "Set Pending", key="pending_user_button", use_container_width=True
+                "Reset to Trial", key="reset_to_trial_button", use_container_width=True
             ):
                 if selected_user_label:
                     row = user_options[selected_user_label]
-                    set_user_status(
+                    reset_user_to_trial(
                         row.get("email", ""),
                         row.get("sub", ""),
-                        "pending",
                     )
-                    st.success(f"Set to pending: {row.get('email', '')}")
+                    st.success(f"Trial reset for: {row.get('email', '')}")
                     st.rerun()
 
         with c4:
@@ -3161,7 +3162,7 @@ def render_admin_panel():
                     st.success(f"Sessions reset for: {row.get('email', '')}")
                     st.rerun()
 
-        with c7:
+        with c8:
             if st.button(
                 "Remove From Company",
                 key="remove_from_company_button",
