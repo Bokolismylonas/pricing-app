@@ -1907,6 +1907,41 @@ def save_or_update_current_comparison(selected_codes):
     return True, "Comparison saved successfully."
 
 
+def get_previous_row_discounts(current_row_id, code):
+    row_ids = st.session_state.get("row_ids", [])
+    try:
+        idx = row_ids.index(current_row_id)
+    except ValueError:
+        return [0.0] * 5
+
+    if idx <= 0:
+        return [0.0] * 5
+
+    prev_row_id = row_ids[idx - 1]
+    values = []
+    for j in range(1, 6):
+        try:
+            values.append(float(st.session_state.get(f"row_{prev_row_id}_{code}_disc_{j}", 0.0) or 0.0))
+        except Exception:
+            values.append(0.0)
+    return values
+
+
+def ensure_discount_defaults_for_row(row_id, selected_codes):
+    for code in selected_codes:
+        carry_enabled = bool(st.session_state.get(f"carry_forward_{code}", False))
+        defaults_key = f"row_{row_id}_{code}_discounts_seeded"
+        if st.session_state.get(defaults_key):
+            continue
+
+        base_values = get_previous_row_discounts(row_id, code) if carry_enabled else [0.0] * 5
+        for j, value in enumerate(base_values, start=1):
+            disc_key = f"row_{row_id}_{code}_disc_{j}"
+            if disc_key not in st.session_state:
+                st.session_state[disc_key] = float(value)
+        st.session_state[defaults_key] = True
+
+
 # -------------------------------------------------
 # SESSION STATE
 # -------------------------------------------------
@@ -2229,21 +2264,6 @@ def comparisons_reference_company(comparison_file, company_code, company_name):
     return False
 
 
-def get_previous_row_discount_defaults(row_ids, visible_index, code):
-    if visible_index <= 0:
-        return [0.0, 0.0, 0.0, 0.0, 0.0]
-
-    previous_row_id = row_ids[visible_index - 1]
-    defaults = []
-    for j in range(1, 6):
-        prev_key = f"row_{previous_row_id}_{code}_disc_{j}"
-        try:
-            defaults.append(float(st.session_state.get(prev_key, 0.0) or 0.0))
-        except Exception:
-            defaults.append(0.0)
-    return defaults
-
-
 def render_company_manager():
     st.markdown('<div class="app-card">', unsafe_allow_html=True)
     st.markdown("## 1. Company Manager")
@@ -2534,15 +2554,20 @@ def render_comparisons():
 
     if selected_codes:
         st.markdown("### Carry Discounts Forward")
-        st.caption("When enabled, each new row starts with the previous row's discounts for that company. You can still edit any discount normally.")
-
-        carry_cols = st.columns(len(selected_codes) if len(selected_codes) <= 3 else 3)
-        for idx, code in enumerate(selected_codes):
-            with carry_cols[idx % len(carry_cols)]:
-                st.checkbox(
-                    f"{get_company_label(code)}: use previous row discounts",
-                    key=f"carry_forward_{code}",
-                )
+        st.caption(
+            "When enabled, each new row starts with the previous row's discounts for that company. You can still edit any discount normally."
+        )
+        carry_cols_per_row = 2 if len(selected_codes) >= 4 else len(selected_codes)
+        for start_idx in range(0, len(selected_codes), carry_cols_per_row):
+            chunk = selected_codes[start_idx:start_idx + carry_cols_per_row]
+            carry_cols = st.columns(len(chunk))
+            for i, code in enumerate(chunk):
+                with carry_cols[i]:
+                    label = get_company_label(code)
+                    st.checkbox(
+                        f"{label}: use previous row discounts",
+                        key=f"carry_forward_{code}",
+                    )
 
     st.markdown("---")
     st.markdown("### 4B. Saved Comparisons")
@@ -2774,6 +2799,7 @@ def render_comparisons():
             st.info(f"Current rows: {len(st.session_state.row_ids)}")
 
         for visible_index, row_id in enumerate(st.session_state.row_ids):
+            ensure_discount_defaults_for_row(row_id, selected_codes)
             top1, top2 = st.columns([4, 1])
 
             with top1:
@@ -2821,21 +2847,13 @@ def render_comparisons():
                                 st.write("Base Price:", round(float(row["Price"]), 2))
 
                                 discs = []
-                                previous_defaults = get_previous_row_discount_defaults(st.session_state.row_ids, visible_index, code)
                                 for j in range(1, 6):
-                                    disc_key = f"row_{row_id}_{code}_disc_{j}"
-                                    default_disc = 0.0
-                                    if st.session_state.get(f"carry_forward_{code}", False):
-                                        default_disc = previous_defaults[j - 1]
-                                    default_disc = float(st.session_state.get(disc_key, default_disc) or 0.0)
-
                                     disc_val = st.number_input(
                                         f"{label} Disc {j}",
                                         min_value=0.0,
                                         max_value=100.0,
-                                        value=default_disc,
                                         step=0.1,
-                                        key=disc_key,
+                                        key=f"row_{row_id}_{code}_disc_{j}",
                                     )
                                     discs.append(disc_val)
 
@@ -2843,21 +2861,13 @@ def render_comparisons():
                                 row_final_prices[code] = final
                                 st.success(f"Final Price: {final}")
                             else:
-                                previous_defaults = get_previous_row_discount_defaults(st.session_state.row_ids, visible_index, code)
                                 for j in range(1, 6):
-                                    disc_key = f"row_{row_id}_{code}_disc_{j}"
-                                    default_disc = 0.0
-                                    if st.session_state.get(f"carry_forward_{code}", False):
-                                        default_disc = previous_defaults[j - 1]
-                                    default_disc = float(st.session_state.get(disc_key, default_disc) or 0.0)
-
                                     st.number_input(
                                         f"{label} Disc {j}",
                                         min_value=0.0,
                                         max_value=100.0,
-                                        value=default_disc,
                                         step=0.1,
-                                        key=disc_key,
+                                        key=f"row_{row_id}_{code}_disc_{j}",
                                     )
                                 row_final_prices[code] = None
                                 st.info("No product selected")
