@@ -2547,8 +2547,6 @@ def render_comparisons():
     st.markdown('<div class="app-card">', unsafe_allow_html=True)
     st.markdown("## Comparisons")
 
-    st.markdown("### 4. Select Saved Sources for Comparison")
-
     company_options = {
         f"{row['name']} ({row['code']})": row["code"] for _, row in companies_df.iterrows()
     }
@@ -2564,50 +2562,13 @@ def render_comparisons():
             item for item in current_selection if item in company_options
         ]
 
-    selected_company_displays = st.multiselect(
-        "Select up to 5 companies to compare",
-        options=list(company_options.keys()),
-        max_selections=5,
-        key="comparison_company_selection",
-    )
-
-    selected_codes = [company_options[x] for x in selected_company_displays if x in company_options]
-
-    if not selected_codes:
-        st.info("Please select at least 1 company for comparison.")
-
-    selected = {}
-    catalogs = {}
-
-    if selected_codes:
-        source_cols_per_row = 2 if len(selected_codes) >= 4 else len(selected_codes)
-
-        for start_idx in range(0, len(selected_codes), source_cols_per_row):
-            chunk = selected_codes[start_idx:start_idx + source_cols_per_row]
-            cols = st.columns(len(chunk))
-
-            for i, code in enumerate(chunk):
-                with cols[i]:
-                    files = get_company_files(code)
-                    selected[code] = st.selectbox(
-                        f"{code} source file",
-                        [""] + files,
-                        key=f"select_{code}",
-                    )
-
-        for code in selected_codes:
-            if selected.get(code):
-                df = load_data(get_company_folder(code) / selected[code])
-                catalogs[code] = prepare_catalog(df)
-            else:
-                catalogs[code] = None
-
-    st.markdown("---")
     st.markdown("### 4B. Saved Comparisons")
 
     default_name = st.session_state.get("comparison_name_input", "").strip()
-    if not default_name and selected_codes:
-        st.session_state["comparison_name_input"] = auto_comparison_name(selected_codes)
+    current_selected_displays = st.session_state.get("comparison_company_selection", [])
+    current_selected_codes = [company_options[x] for x in current_selected_displays if x in company_options]
+    if not default_name and current_selected_codes:
+        st.session_state["comparison_name_input"] = auto_comparison_name(current_selected_codes)
 
     st.text_input(
         "Comparison Name",
@@ -2619,12 +2580,12 @@ def render_comparisons():
 
     with save_c1:
         if st.button("💾 Save Comparison", use_container_width=True, key="save_comparison_btn"):
-            if not selected_codes:
+            if not current_selected_codes:
                 st.warning("Please select companies first.")
             else:
                 comparison_name = st.session_state.get("comparison_name_input", "").strip()
                 if not comparison_name:
-                    comparison_name = auto_comparison_name(selected_codes)
+                    comparison_name = auto_comparison_name(current_selected_codes)
                     st.session_state["comparison_name_input"] = comparison_name
 
                 comparison_file = get_current_user_comparisons_file()
@@ -2633,9 +2594,9 @@ def render_comparisons():
                     owner_sub=get_current_user_id(),
                     owner_email=get_current_user_email(),
                     name=comparison_name,
-                    companies=[get_company_label(code) for code in selected_codes],
-                    source_files=build_source_files_map(selected_codes),
-                    state=collect_comparison_state_payload(selected_codes),
+                    companies=[get_company_label(code) for code in current_selected_codes],
+                    source_files=build_source_files_map(current_selected_codes),
+                    state=collect_comparison_state_payload(current_selected_codes),
                 )
 
                 st.session_state["current_comparison_id"] = comparison_id
@@ -2647,12 +2608,12 @@ def render_comparisons():
 
             if not comparison_id:
                 st.warning("Save a comparison first.")
-            elif not selected_codes:
+            elif not current_selected_codes:
                 st.warning("Please select companies first.")
             else:
                 comparison_name = st.session_state.get("comparison_name_input", "").strip()
                 if not comparison_name:
-                    comparison_name = auto_comparison_name(selected_codes)
+                    comparison_name = auto_comparison_name(current_selected_codes)
                     st.session_state["comparison_name_input"] = comparison_name
 
                 comparison_file = get_current_user_comparisons_file()
@@ -2662,9 +2623,9 @@ def render_comparisons():
                     owner_sub=get_current_user_id(),
                     owner_email=get_current_user_email(),
                     name=comparison_name,
-                    companies=[get_company_label(code) for code in selected_codes],
-                    source_files=build_source_files_map(selected_codes),
-                    state=collect_comparison_state_payload(selected_codes),
+                    companies=[get_company_label(code) for code in current_selected_codes],
+                    source_files=build_source_files_map(current_selected_codes),
+                    state=collect_comparison_state_payload(current_selected_codes),
                 )
 
                 if ok:
@@ -2674,12 +2635,12 @@ def render_comparisons():
 
     with save_c3:
         if st.button("🆕 Save As New", use_container_width=True, key="save_as_new_btn"):
-            if not selected_codes:
+            if not current_selected_codes:
                 st.warning("Please select companies first.")
             else:
                 comparison_name = st.session_state.get("comparison_name_input", "").strip()
                 if not comparison_name:
-                    comparison_name = auto_comparison_name(selected_codes)
+                    comparison_name = auto_comparison_name(current_selected_codes)
                     st.session_state["comparison_name_input"] = comparison_name
 
                 comparison_file = get_current_user_comparisons_file()
@@ -2688,9 +2649,9 @@ def render_comparisons():
                     owner_sub=get_current_user_id(),
                     owner_email=get_current_user_email(),
                     name=comparison_name,
-                    companies=[get_company_label(code) for code in selected_codes],
-                    source_files=build_source_files_map(selected_codes),
-                    state=collect_comparison_state_payload(selected_codes),
+                    companies=[get_company_label(code) for code in current_selected_codes],
+                    source_files=build_source_files_map(current_selected_codes),
+                    state=collect_comparison_state_payload(current_selected_codes),
                 )
 
                 st.session_state["current_comparison_id"] = comparison_id
@@ -2712,8 +2673,8 @@ def render_comparisons():
 
         with nc1:
             if st.button("Save & Clear", use_container_width=True, key="save_and_clear_btn"):
-                if selected_codes:
-                    ok, msg = save_or_update_current_comparison(selected_codes)
+                if current_selected_codes:
+                    ok, msg = save_or_update_current_comparison(current_selected_codes)
                     if ok:
                         st.session_state["show_new_comparison_confirm"] = False
                         st.session_state["pending_clear_comparison"] = True
@@ -2800,6 +2761,47 @@ def render_comparisons():
                                 st.rerun()
                             else:
                                 st.warning("Could not delete comparison.")
+
+    st.markdown("---")
+    st.markdown("### 4. Select Saved Sources for Comparison")
+
+    selected_company_displays = st.multiselect(
+        "Select up to 5 companies to compare",
+        options=list(company_options.keys()),
+        max_selections=5,
+        key="comparison_company_selection",
+    )
+
+    selected_codes = [company_options[x] for x in selected_company_displays if x in company_options]
+
+    if not selected_codes:
+        st.info("Please select at least 1 company for comparison.")
+
+    selected = {}
+    catalogs = {}
+
+    if selected_codes:
+        source_cols_per_row = 2 if len(selected_codes) >= 4 else len(selected_codes)
+
+        for start_idx in range(0, len(selected_codes), source_cols_per_row):
+            chunk = selected_codes[start_idx:start_idx + source_cols_per_row]
+            cols = st.columns(len(chunk))
+
+            for i, code in enumerate(chunk):
+                with cols[i]:
+                    files = get_company_files(code)
+                    selected[code] = st.selectbox(
+                        f"{code} source file",
+                        [""] + files,
+                        key=f"select_{code}",
+                    )
+
+        for code in selected_codes:
+            if selected.get(code):
+                df = load_data(get_company_folder(code) / selected[code])
+                catalogs[code] = prepare_catalog(df)
+            else:
+                catalogs[code] = None
 
     st.markdown("---")
     st.markdown("### 5. Debug")
@@ -2990,7 +2992,6 @@ def render_comparisons():
 
     render_export_inside_comparisons(catalogs, selected_codes)
     st.markdown("</div>", unsafe_allow_html=True)
-
 
 def render_export_inside_comparisons(catalogs, selected_codes):
     st.markdown("---")
