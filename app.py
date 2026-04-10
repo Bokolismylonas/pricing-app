@@ -2621,6 +2621,10 @@ def render_comparisons():
     st.markdown('<div class="app-card">', unsafe_allow_html=True)
     st.markdown("## Comparisons")
 
+    current_name = st.session_state.get("comparison_name_input", "").strip()
+    if current_name:
+        st.info(f"📊 Working on: {current_name}")
+
     loaded_msg = st.session_state.get("comparison_loaded_success_message", "")
     if loaded_msg:
         st.success(loaded_msg)
