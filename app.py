@@ -1018,7 +1018,7 @@ def ensure_current_user_in_registry():
                 "email": email,
                 "sub": sub,
                 "name": name,
-                "status": "approved",
+                "status": "approved" if email in ADMIN_EMAILS else "pending",
                 "first_seen": now_iso(),
                 "last_login": now_iso(),
                 "last_seen": now_iso(),
@@ -2089,6 +2089,16 @@ if current_user_is_blocked():
     )
     st.stop()
 
+if not current_user_is_approved():
+    st.warning("Your account is pending admin approval.")
+    st.button(
+        "Logout",
+        on_click=logout_current_user,
+        use_container_width=True,
+        key="pending_logout",
+    )
+    st.stop()
+
 if not is_admin_user():
     session_allowed, active_count = register_current_session()
     if not session_allowed:
@@ -2928,6 +2938,20 @@ def render_comparisons():
                         ]
                         st.rerun()
 
+                save_complete_left, save_complete_mid, save_complete_right = st.columns([3.2, 1.2, 1.2])
+
+                with save_complete_right:
+                    if st.button(
+                        "Save and Complete",
+                        key=f"save_complete_{row_id}",
+                        use_container_width=True,
+                    ):
+                        ok, msg = save_or_update_current_comparison(selected_codes)
+                        if ok:
+                            st.success("Comparison saved successfully.")
+                        else:
+                            st.warning(msg)
+
                 comparison_summaries = build_comparison_summary(
                     row_final_prices, selected_codes
                 )
@@ -3051,11 +3075,11 @@ def render_admin_panel():
             key="admin_selected_user_to_manage",
         )
 
-        c1, c2, c3, c4, c5 = st.columns(5)
+        c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
 
         with c1:
             if st.button(
-                "Unblock User", key="unblock_user_button", use_container_width=True
+                "Approve User", key="approve_user_button", use_container_width=True
             ):
                 if selected_user_label:
                     row = user_options[selected_user_label]
@@ -3064,7 +3088,7 @@ def render_admin_panel():
                         row.get("sub", ""),
                         "approved",
                     )
-                    st.success(f"Unblocked: {row.get('email', '')}")
+                    st.success(f"Approved: {row.get('email', '')}")
                     st.rerun()
 
         with c2:
@@ -3083,6 +3107,20 @@ def render_admin_panel():
 
         with c3:
             if st.button(
+                "Set Pending", key="pending_user_button", use_container_width=True
+            ):
+                if selected_user_label:
+                    row = user_options[selected_user_label]
+                    set_user_status(
+                        row.get("email", ""),
+                        row.get("sub", ""),
+                        "pending",
+                    )
+                    st.success(f"Set to pending: {row.get('email', '')}")
+                    st.rerun()
+
+        with c4:
+            if st.button(
                 "Give Premium", key="give_premium_button", use_container_width=True
             ):
                 if selected_user_label:
@@ -3095,7 +3133,7 @@ def render_admin_panel():
                     st.success(f"Premium granted to: {row.get('email', '')}")
                     st.rerun()
 
-        with c4:
+        with c5:
             if st.button(
                 "Remove Premium",
                 key="remove_premium_button",
@@ -3111,7 +3149,7 @@ def render_admin_panel():
                     st.success(f"Premium removed from: {row.get('email', '')}")
                     st.rerun()
 
-        with c5:
+        with c6:
             if st.button(
                 "Reset Sessions",
                 key="reset_sessions_button",
@@ -3121,6 +3159,18 @@ def render_admin_panel():
                     row = user_options[selected_user_label]
                     reset_user_sessions(row.get("email", ""), row.get("sub", ""))
                     st.success(f"Sessions reset for: {row.get('email', '')}")
+                    st.rerun()
+
+        with c7:
+            if st.button(
+                "Remove From Company",
+                key="remove_from_company_button",
+                use_container_width=True,
+            ):
+                if selected_user_label:
+                    row = user_options[selected_user_label]
+                    remove_user_from_company(row.get("email", ""), row.get("sub", ""))
+                    st.success(f"User removed from company: {row.get('email', '')}")
                     st.rerun()
 
     st.markdown("---")
