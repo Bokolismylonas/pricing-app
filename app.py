@@ -2011,7 +2011,21 @@ def apply_specific_discount_to_all_rows(selected_codes, target_code, disc_index,
         return
 
     for row_id in st.session_state.get("row_ids", []):
-        st.session_state[f"row_{row_id}_{target_code}_disc_{disc_number}"] = float(disc_value)
+        current_values = {}
+        for j in range(1, 6):
+            disc_key = f"row_{row_id}_{target_code}_disc_{j}"
+            if disc_key in st.session_state:
+                try:
+                    current_values[j] = float(st.session_state.get(disc_key, 0.0) or 0.0)
+                except Exception:
+                    current_values[j] = 0.0
+            else:
+                current_values[j] = 0.0
+
+        current_values[disc_number] = float(disc_value)
+
+        for j in range(1, 6):
+            st.session_state[f"row_{row_id}_{target_code}_disc_{j}"] = float(current_values[j])
 
 
 
