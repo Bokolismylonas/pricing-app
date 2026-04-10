@@ -1960,6 +1960,31 @@ def ensure_discount_defaults_for_row(row_id, selected_codes):
                     st.session_state[disc_key] = 0.0
 
 
+def add_comparison_row(selected_codes, insert_after_row_id=None):
+    new_row_id = st.session_state.next_row_id
+    st.session_state.next_row_id += 1
+
+    current_rows = list(st.session_state.get("row_ids", []))
+    if insert_after_row_id is not None and insert_after_row_id in current_rows:
+        insert_index = current_rows.index(insert_after_row_id) + 1
+        current_rows.insert(insert_index, new_row_id)
+    else:
+        current_rows.append(new_row_id)
+
+    st.session_state.row_ids = current_rows
+
+    for code in selected_codes:
+        product_key = f"row_{new_row_id}_{code}_product"
+        if product_key not in st.session_state:
+            st.session_state[product_key] = ""
+
+        carry_enabled = bool(st.session_state.get(f"carry_forward_{code}", False))
+        base_values = get_previous_row_discounts(new_row_id, code) if carry_enabled else [0.0] * 5
+
+        for j, value in enumerate(base_values, start=1):
+            disc_key = f"row_{new_row_id}_{code}_disc_{j}"
+            st.session_state[disc_key] = float(value)
+
 # -------------------------------------------------
 # SESSION STATE
 # -------------------------------------------------
@@ -2806,25 +2831,26 @@ def render_comparisons():
     if not selected_codes:
         st.info("Select companies first to start comparison.")
     else:
-        b1, b2 = st.columns([1, 3])
-
-        with b1:
-            if st.button("Add Row", key="add_row_button", use_container_width=True):
-                st.session_state.row_ids.append(st.session_state.next_row_id)
-                st.session_state.next_row_id += 1
-                st.rerun()
-
-        with b2:
-            st.info(f"Current rows: {len(st.session_state.row_ids)}")
+        st.info(f"Current rows: {len(st.session_state.row_ids)}")
 
         for visible_index, row_id in enumerate(st.session_state.row_ids):
             ensure_discount_defaults_for_row(row_id, selected_codes)
-            top1, top2 = st.columns([4, 1])
+            top1, top2, top3 = st.columns([4, 1, 1])
 
             with top1:
                 st.markdown(f"#### Row {visible_index + 1}")
 
             with top2:
+                st.write("")
+                if st.button(
+                    "Add Row Below",
+                    key=f"add_row_after_{row_id}",
+                    use_container_width=True,
+                ):
+                    add_comparison_row(selected_codes, insert_after_row_id=row_id)
+                    st.rerun()
+
+            with top3:
                 st.write("")
                 if st.button(
                     "Delete This Row",
