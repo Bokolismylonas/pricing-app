@@ -8,6 +8,7 @@ from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 import stripe
 from supabase import create_client, Client
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -1972,6 +1973,7 @@ def add_comparison_row(selected_codes, insert_after_row_id=None):
         current_rows.append(new_row_id)
 
     st.session_state.row_ids = current_rows
+    st.session_state["pending_focus_row_id"] = new_row_id
 
     for code in selected_codes:
         product_key = f"row_{new_row_id}_{code}_product"
@@ -2032,6 +2034,9 @@ if "pending_company_delete_code" not in st.session_state:
 
 if "pending_company_delete_display" not in st.session_state:
     st.session_state["pending_company_delete_display"] = ""
+
+if "pending_focus_row_id" not in st.session_state:
+    st.session_state["pending_focus_row_id"] = None
 
 
 # -------------------------------------------------
@@ -2835,32 +2840,8 @@ def render_comparisons():
 
         for visible_index, row_id in enumerate(st.session_state.row_ids):
             ensure_discount_defaults_for_row(row_id, selected_codes)
-            top1, top2, top3 = st.columns([4, 1, 1])
-
-            with top1:
-                st.markdown(f"#### Row {visible_index + 1}")
-
-            with top2:
-                st.write("")
-                if st.button(
-                    "Add Row Below",
-                    key=f"add_row_after_{row_id}",
-                    use_container_width=True,
-                ):
-                    add_comparison_row(selected_codes, insert_after_row_id=row_id)
-                    st.rerun()
-
-            with top3:
-                st.write("")
-                if st.button(
-                    "Delete This Row",
-                    key=f"delete_row_{row_id}",
-                    use_container_width=True,
-                ):
-                    st.session_state.row_ids = [
-                        r for r in st.session_state.row_ids if r != row_id
-                    ]
-                    st.rerun()
+            st.markdown(f'<div id="row-anchor-{row_id}"></div>', unsafe_allow_html=True)
+            st.markdown(f"#### Row {visible_index + 1}")
 
             row_final_prices = {}
             comparison_cols_per_row = 2 if len(selected_codes) >= 4 else len(selected_codes)
@@ -2928,7 +2909,34 @@ def render_comparisons():
                 else:
                     best_label = "-"
 
-                st.metric(f"Row {visible_index + 1} Best Price", best_label)
+                action_cols = st.columns([3.2, 1.2, 1.2])
+
+                with action_cols[0]:
+                    st.metric(f"Row {visible_index + 1} Best Price", best_label)
+
+                with action_cols[1]:
+                    st.write("")
+                    st.write("")
+                    if st.button(
+                        "Add Row Below",
+                        key=f"add_row_after_{row_id}",
+                        use_container_width=True,
+                    ):
+                        add_comparison_row(selected_codes, insert_after_row_id=row_id)
+                        st.rerun()
+
+                with action_cols[2]:
+                    st.write("")
+                    st.write("")
+                    if st.button(
+                        "Delete This Row",
+                        key=f"delete_row_{row_id}",
+                        use_container_width=True,
+                    ):
+                        st.session_state.row_ids = [
+                            r for r in st.session_state.row_ids if r != row_id
+                        ]
+                        st.rerun()
 
                 comparison_summaries = build_comparison_summary(
                     row_final_prices, selected_codes
@@ -2944,6 +2952,25 @@ def render_comparisons():
                             st.write(f"**{label}:** {summary}")
 
             st.markdown("---")
+
+    target_row_id = st.session_state.get("pending_focus_row_id")
+    if target_row_id is not None:
+        components.html(
+            f"""
+            <script>
+            const scrollToNewRow = () => {{
+                const el = window.parent.document.getElementById("row-anchor-{target_row_id}");
+                if (el) {{
+                    el.scrollIntoView({{behavior: "smooth", block: "start"}});
+                }}
+            }};
+            setTimeout(scrollToNewRow, 150);
+            setTimeout(scrollToNewRow, 500);
+            </script>
+            """,
+            height=0,
+        )
+        st.session_state["pending_focus_row_id"] = None
 
     render_export_inside_comparisons(catalogs, selected_codes)
     st.markdown("</div>", unsafe_allow_html=True)
