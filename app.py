@@ -1999,6 +1999,22 @@ def add_comparison_row(selected_codes, insert_after_row_id=None):
             disc_key = f"row_{new_row_id}_{code}_disc_{j}"
             st.session_state[disc_key] = float(value)
 
+
+def apply_specific_discount_to_all_rows(selected_codes, target_code, disc_index, disc_value):
+    if target_code not in selected_codes:
+        return
+    try:
+        disc_number = int(disc_index)
+    except Exception:
+        return
+    if disc_number < 1 or disc_number > 5:
+        return
+
+    for row_id in st.session_state.get("row_ids", []):
+        st.session_state[f"row_{row_id}_{target_code}_disc_{disc_number}"] = float(disc_value)
+
+
+
 # -------------------------------------------------
 # SESSION STATE
 # -------------------------------------------------
@@ -2049,6 +2065,9 @@ if "pending_company_delete_display" not in st.session_state:
 
 if "pending_focus_row_id" not in st.session_state:
     st.session_state["pending_focus_row_id"] = None
+
+if "bulk_discount_success_message" not in st.session_state:
+    st.session_state["bulk_discount_success_message"] = ""
 
 
 # -------------------------------------------------
@@ -2815,6 +2834,62 @@ def render_comparisons():
                     st.write(f"{code} prepared rows:", len(catalogs[code]))
     else:
         st.info("No comparison companies selected yet.")
+
+    if selected_codes:
+        st.markdown("---")
+        st.markdown("### Apply Specific Discount to All Products")
+        st.caption(
+            "Choose one discount slot and one value for each company. It will be applied to all current rows of that company only."
+        )
+
+        bulk_cols_per_row = 2 if len(selected_codes) >= 4 else len(selected_codes)
+        for start_idx in range(0, len(selected_codes), bulk_cols_per_row):
+            chunk = selected_codes[start_idx:start_idx + bulk_cols_per_row]
+            bulk_cols = st.columns(len(chunk))
+
+            for i, code in enumerate(chunk):
+                with bulk_cols[i]:
+                    label = get_company_label(code)
+
+                    selector_key = f"bulk_discount_slot_{code}"
+                    value_key = f"bulk_discount_value_{code}"
+
+                    if selector_key not in st.session_state:
+                        st.session_state[selector_key] = "Disc1"
+                    if value_key not in st.session_state:
+                        st.session_state[value_key] = 0.0
+
+                    st.markdown(f"**{label}**")
+                    st.selectbox(
+                        f"{label} discount slot",
+                        ["Disc1", "Disc2", "Disc3", "Disc4", "Disc5"],
+                        key=selector_key,
+                    )
+                    st.number_input(
+                        f"{label} discount value %",
+                        min_value=0.0,
+                        max_value=100.0,
+                        step=0.1,
+                        key=value_key,
+                    )
+
+                    if st.button(
+                        f"Apply to all {label} rows",
+                        key=f"apply_bulk_discount_{code}",
+                        use_container_width=True,
+                    ):
+                        disc_index = int(str(st.session_state[selector_key]).replace("Disc", ""))
+                        disc_value = float(st.session_state[value_key])
+                        apply_specific_discount_to_all_rows(selected_codes, code, disc_index, disc_value)
+                        st.session_state["bulk_discount_success_message"] = (
+                            f"{label}: {st.session_state[selector_key]} set to {disc_value:.2f}% for all current rows."
+                        )
+                        st.rerun()
+
+        success_message = st.session_state.get("bulk_discount_success_message", "")
+        if success_message:
+            st.success(success_message)
+            st.session_state["bulk_discount_success_message"] = ""
 
     if selected_codes:
         st.markdown("---")
