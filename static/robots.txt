@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://www.pricingtool.gr/app/static/sitemap.xml

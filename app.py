@@ -14,32 +14,6 @@ import stripe
 from supabase import create_client, Client
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
-
-
-components.html(
-    """
-    <script>
-    (function () {
-      const MEASUREMENT_ID = "G-5KW46EWY1C";
-      const parentDoc = window.parent && window.parent.document ? window.parent.document : document;
-
-      if (!parentDoc.getElementById("ga4-loader")) {
-        const s = parentDoc.createElement("script");
-        s.id = "ga4-loader";
-        s.async = true;
-        s.src = "https://www.googletagmanager.com/gtag/js?id=" + MEASUREMENT_ID;
-        parentDoc.head.appendChild(s);
-      }
-
-      window.parent.dataLayer = window.parent.dataLayer || [];
-      window.parent.gtag = window.parent.gtag || function(){window.parent.dataLayer.push(arguments);};
-      window.parent.gtag('js', new Date());
-      window.parent.gtag('config', MEASUREMENT_ID, { 'page_path': window.parent.location.pathname + window.parent.location.search });
-    })();
-    </script>
-    """,
-    height=0,
-)
 from storage import (
     list_comparisons,
     save_new_comparison,
@@ -74,9 +48,18 @@ PAGE_ICON = str(ICON_LOGO_PATH) if ICON_LOGO_PATH.exists() else "💎"
 # APP CONFIG
 # -------------------------------------------------
 st.set_page_config(
-    page_title="Pricing Tool",
+    page_title="Pricing Tool – Compare Products & Export Excel Reports",
     page_icon=PAGE_ICON,
     layout="wide",
+)
+
+st.markdown(
+    """
+    <meta name="description" content="Upload supplier data, compare products and export polished Excel reports instantly with Pricing Tool.">
+    <meta name="robots" content="index,follow">
+    <link rel="canonical" href="https://www.pricingtool.gr/">
+    """,
+    unsafe_allow_html=True,
 )
 
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
