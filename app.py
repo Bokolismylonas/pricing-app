@@ -14,6 +14,21 @@ import stripe
 from supabase import create_client, Client
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+
+
+components.html(
+    """
+    <!-- Google tag (gtag.js) -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-5KW46EWY1C"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', 'G-5KW46EWY1C');
+    </script>
+    """,
+    height=0,
+)
 from storage import (
     list_comparisons,
     save_new_comparison,
