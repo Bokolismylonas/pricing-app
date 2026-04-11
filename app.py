@@ -18,13 +18,24 @@ from openpyxl.utils import get_column_letter
 
 components.html(
     """
-    <!-- Google tag (gtag.js) -->
-    <script async src="https://www.googletagmanager.com/gtag/js?id=G-5KW46EWY1C"></script>
     <script>
-      window.dataLayer = window.dataLayer || [];
-      function gtag(){dataLayer.push(arguments);}
-      gtag('js', new Date());
-      gtag('config', 'G-5KW46EWY1C');
+    (function () {
+      const MEASUREMENT_ID = "G-5KW46EWY1C";
+      const parentDoc = window.parent && window.parent.document ? window.parent.document : document;
+
+      if (!parentDoc.getElementById("ga4-loader")) {
+        const s = parentDoc.createElement("script");
+        s.id = "ga4-loader";
+        s.async = true;
+        s.src = "https://www.googletagmanager.com/gtag/js?id=" + MEASUREMENT_ID;
+        parentDoc.head.appendChild(s);
+      }
+
+      window.parent.dataLayer = window.parent.dataLayer || [];
+      window.parent.gtag = window.parent.gtag || function(){window.parent.dataLayer.push(arguments);};
+      window.parent.gtag('js', new Date());
+      window.parent.gtag('config', MEASUREMENT_ID, { 'page_path': window.parent.location.pathname + window.parent.location.search });
+    })();
     </script>
     """,
     height=0,
