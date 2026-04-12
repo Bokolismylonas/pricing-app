@@ -2355,6 +2355,7 @@ def save_current_comparison_from_state(force_new: bool = False, override_name: s
             st.session_state["pending_comparison_name_input"] = comparison_name
             st.session_state["active_comparison_label"] = comparison_name
             st.session_state["active_loaded_state_payload"] = dict(payload_state)
+            st.session_state["comparison_loaded_from_record"] = True
             st.session_state["comparison_dirty"] = False
             st.session_state["comparison_clean_generation"] = st.session_state.get("comparison_edit_generation", 0)
             return True, "Comparison updated successfully."
@@ -2373,6 +2374,7 @@ def save_current_comparison_from_state(force_new: bool = False, override_name: s
     st.session_state["pending_comparison_name_input"] = comparison_name
     st.session_state["active_comparison_label"] = comparison_name
     st.session_state["active_loaded_state_payload"] = dict(payload_state)
+    st.session_state["comparison_loaded_from_record"] = True
     st.session_state["comparison_dirty"] = False
     st.session_state["comparison_clean_generation"] = st.session_state.get("comparison_edit_generation", 0)
     return True, "Comparison saved successfully."
@@ -2593,6 +2595,9 @@ if "comparison_name_input" not in st.session_state:
 
 if "pending_comparison_name_input" not in st.session_state:
     st.session_state["pending_comparison_name_input"] = None
+
+if "post_save_success_message" not in st.session_state:
+    st.session_state["post_save_success_message"] = ""
 
 if "show_saved_comparisons" not in st.session_state:
     st.session_state.show_saved_comparisons = False
@@ -3315,6 +3320,11 @@ def render_comparisons():
         st.success(loaded_msg)
         st.session_state["comparison_loaded_success_message"] = ""
 
+    post_save_msg = st.session_state.get("post_save_success_message", "")
+    if post_save_msg:
+        st.success(post_save_msg)
+        st.session_state["post_save_success_message"] = ""
+
     company_options = {
         f"{row['name']} ({row['code']})": row["code"] for _, row in companies_df.iterrows()
     }
@@ -3426,8 +3436,9 @@ def render_comparisons():
                 if ok:
                     st.session_state["comparison_loaded_from_record"] = True
                     st.session_state["active_loaded_state_payload"] = collect_comparison_state_payload(current_selected_codes)
-                    st.success("Saved as new comparison.")
+                    st.session_state["post_save_success_message"] = "Saved as new comparison."
                     mark_comparison_clean()
+                    st.rerun()
                 else:
                     st.warning(msg)
 
