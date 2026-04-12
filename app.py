@@ -2246,6 +2246,7 @@ def clear_current_comparison_state():
     st.session_state["next_row_id"] = 2
     st.session_state["comparison_company_selection"] = []
     st.session_state["comparison_name_input"] = ""
+    st.session_state["pending_comparison_name_input"] = None
     st.session_state["active_comparison_label"] = ""
     st.session_state["active_loaded_state_payload"] = {}
     st.session_state["comparison_loaded_from_record"] = False
@@ -2351,7 +2352,7 @@ def save_current_comparison_from_state(force_new: bool = False, override_name: s
             state=payload_state,
         )
         if ok:
-            st.session_state["comparison_name_input"] = comparison_name
+            st.session_state["pending_comparison_name_input"] = comparison_name
             st.session_state["active_comparison_label"] = comparison_name
             st.session_state["active_loaded_state_payload"] = dict(payload_state)
             st.session_state["comparison_dirty"] = False
@@ -2369,7 +2370,7 @@ def save_current_comparison_from_state(force_new: bool = False, override_name: s
         state=payload_state,
     )
     st.session_state["current_comparison_id"] = comparison_id
-    st.session_state["comparison_name_input"] = comparison_name
+    st.session_state["pending_comparison_name_input"] = comparison_name
     st.session_state["active_comparison_label"] = comparison_name
     st.session_state["active_loaded_state_payload"] = dict(payload_state)
     st.session_state["comparison_dirty"] = False
@@ -2589,6 +2590,9 @@ if "current_comparison_id" not in st.session_state:
 
 if "comparison_name_input" not in st.session_state:
     st.session_state.comparison_name_input = ""
+
+if "pending_comparison_name_input" not in st.session_state:
+    st.session_state["pending_comparison_name_input"] = None
 
 if "show_saved_comparisons" not in st.session_state:
     st.session_state.show_saved_comparisons = False
@@ -3294,6 +3298,11 @@ def render_sources():
 
 
 def render_comparisons():
+    pending_name = st.session_state.get("pending_comparison_name_input")
+    if pending_name is not None:
+        st.session_state["comparison_name_input"] = pending_name
+        st.session_state["pending_comparison_name_input"] = None
+
     st.markdown('<div class="app-card">', unsafe_allow_html=True)
     st.markdown("## Comparisons")
 
