@@ -840,6 +840,7 @@ def get_comparison_payload_signature_from_state():
 def mark_comparison_clean():
     st.session_state["comparison_saved_signature"] = get_comparison_state_signature()
     st.session_state["comparison_baseline_state_json"] = get_comparison_payload_signature_from_state()
+    st.session_state["comparison_clean_generation"] = st.session_state.get("comparison_edit_generation", 0)
     st.session_state["comparison_dirty"] = False
 
 
@@ -886,13 +887,17 @@ def refresh_comparison_dirty_state():
 
 def has_unsaved_comparison_changes():
     return bool(
-        st.session_state.get("comparison_dirty", False)
-        and comparison_has_meaningful_content()
+        comparison_has_meaningful_content()
+        and st.session_state.get("comparison_edit_generation", 0) > st.session_state.get("comparison_clean_generation", 0)
     )
 
 
 def mark_comparison_dirty():
-    st.session_state["comparison_dirty"] = comparison_has_meaningful_content()
+    if not comparison_has_meaningful_content():
+        st.session_state["comparison_dirty"] = False
+        return
+    st.session_state["comparison_edit_generation"] = st.session_state.get("comparison_edit_generation", 0) + 1
+    st.session_state["comparison_dirty"] = True
 
 
 @st.cache_data(show_spinner=False)
@@ -2246,6 +2251,8 @@ def clear_current_comparison_state():
     st.session_state["comparison_loaded_from_record"] = False
     st.session_state["comparison_baseline_state_json"] = ""
     st.session_state["comparison_dirty"] = False
+    st.session_state["comparison_edit_generation"] = 0
+    st.session_state["comparison_clean_generation"] = 0
     st.session_state["current_comparison_id"] = None
     st.session_state["show_saved_comparisons"] = False
     st.session_state["show_new_comparison_confirm"] = False
@@ -2347,6 +2354,8 @@ def save_current_comparison_from_state(force_new: bool = False, override_name: s
             st.session_state["comparison_name_input"] = comparison_name
             st.session_state["active_comparison_label"] = comparison_name
             st.session_state["active_loaded_state_payload"] = dict(payload_state)
+            st.session_state["comparison_dirty"] = False
+            st.session_state["comparison_clean_generation"] = st.session_state.get("comparison_edit_generation", 0)
             return True, "Comparison updated successfully."
         return False, "This comparison no longer exists. Save it again as new."
 
@@ -2363,6 +2372,8 @@ def save_current_comparison_from_state(force_new: bool = False, override_name: s
     st.session_state["comparison_name_input"] = comparison_name
     st.session_state["active_comparison_label"] = comparison_name
     st.session_state["active_loaded_state_payload"] = dict(payload_state)
+    st.session_state["comparison_dirty"] = False
+    st.session_state["comparison_clean_generation"] = st.session_state.get("comparison_edit_generation", 0)
     return True, "Comparison saved successfully."
 
 
@@ -2654,6 +2665,12 @@ if "active_comparison_label" not in st.session_state:
 if "active_loaded_state_payload" not in st.session_state:
     st.session_state["active_loaded_state_payload"] = {}
 
+if "comparison_edit_generation" not in st.session_state:
+    st.session_state["comparison_edit_generation"] = 0
+
+if "comparison_clean_generation" not in st.session_state:
+    st.session_state["comparison_clean_generation"] = 0
+
 if "comparison_baseline_state_json" not in st.session_state:
     st.session_state["comparison_baseline_state_json"] = ""
 
@@ -2788,6 +2805,7 @@ if st.session_state.get("pending_load_payload") is not None:
     st.session_state["pending_loaded_comparison_name"] = ""
     st.session_state["comparison_loaded_success_message"] = "Comparison loaded successfully."
     st.session_state["comparison_dirty"] = False
+    st.session_state["comparison_clean_generation"] = st.session_state.get("comparison_edit_generation", 0)
     mark_comparison_clean()
 
 if st.session_state.get("pending_clear_comparison"):
@@ -2970,6 +2988,7 @@ if st.session_state.get("show_leave_prompt"):
         if st.button("No", key="leave_prompt_no", use_container_width=True):
             st.session_state["leave_prompt_step"] = ""
             st.session_state["comparison_dirty"] = False
+            st.session_state["comparison_clean_generation"] = st.session_state.get("comparison_edit_generation", 0)
             execute_pending_leave_action()
             st.rerun()
 
@@ -2988,6 +3007,7 @@ if st.session_state.get("show_leave_prompt"):
                     ok, msg = save_current_comparison_from_state(force_new=False)
                     if ok:
                         st.session_state["comparison_dirty"] = False
+                        st.session_state["comparison_clean_generation"] = st.session_state.get("comparison_edit_generation", 0)
                         mark_comparison_clean()
                         execute_pending_leave_action()
                         st.rerun()
@@ -3003,6 +3023,7 @@ if st.session_state.get("show_leave_prompt"):
                         ok, msg = save_current_comparison_from_state(force_new=True, override_name=new_name)
                         if ok:
                             st.session_state["comparison_dirty"] = False
+                            st.session_state["comparison_clean_generation"] = st.session_state.get("comparison_edit_generation", 0)
                             mark_comparison_clean()
                             execute_pending_leave_action()
                             st.rerun()
@@ -3392,24 +3413,14 @@ def render_comparisons():
                     comparison_name = auto_comparison_name(current_selected_codes)
                     st.session_state["comparison_name_input"] = comparison_name
 
-                comparison_file = get_current_user_comparisons_file()
-                comparison_id = save_new_comparison(
-                    comparison_file,
-                    owner_sub=get_current_user_id(),
-                    owner_email=get_current_user_email(),
-                    name=comparison_name,
-                    companies=[get_company_label(code) for code in current_selected_codes],
-                    source_files=build_source_files_map(current_selected_codes),
-                    state=collect_comparison_state_payload(current_selected_codes),
-                )
-
-                st.session_state["current_comparison_id"] = comparison_id
-                st.session_state["active_comparison_label"] = st.session_state.get("comparison_name_input", "").strip()
-                st.session_state["comparison_loaded_from_record"] = True
-                st.session_state["comparison_dirty"] = False
-                st.session_state["active_loaded_state_payload"] = collect_comparison_state_payload(current_selected_codes)
-                st.success("Saved as new comparison.")
-                mark_comparison_clean()
+                ok, msg = save_current_comparison_from_state(force_new=True, override_name=comparison_name)
+                if ok:
+                    st.session_state["comparison_loaded_from_record"] = True
+                    st.session_state["active_loaded_state_payload"] = collect_comparison_state_payload(current_selected_codes)
+                    st.success("Saved as new comparison.")
+                    mark_comparison_clean()
+                else:
+                    st.warning(msg)
 
     with save_c4:
         if st.button("📂 Load Comparison", use_container_width=True, key="toggle_load_comparison_btn"):
