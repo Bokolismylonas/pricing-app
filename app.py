@@ -1550,6 +1550,7 @@ def get_next_version_filename(company, dt, original_name):
     return f"{company}_{yyyy}_{mm}_{dd}_v{max_v + 1}{ext}"
 
 
+@st.cache_data(show_spinner=False)
 def get_company_files(code):
     folder = get_company_folder(code)
     files = []
@@ -2237,6 +2238,32 @@ def focus_existing_row(target_row_id):
         st.session_state["pending_focus_row_id"] = target_row_id
 
 
+def execute_pending_leave_action():
+    action_type = st.session_state.get("pending_action_type")
+    target_view = st.session_state.get("pending_target_view")
+    payload = st.session_state.get("pending_action_payload")
+
+    st.session_state["show_leave_prompt"] = False
+    st.session_state["leave_prompt_step"] = ""
+    st.session_state["pending_action_type"] = None
+    st.session_state["pending_target_view"] = None
+    st.session_state["pending_action_payload"] = None
+    st.session_state["save_as_exit_name"] = ""
+
+    if action_type == "switch_view" and target_view:
+        st.session_state["committed_view"] = target_view
+    elif action_type == "logout":
+        logout_current_user()
+    elif action_type == "clear_comparison":
+        st.session_state["show_new_comparison_confirm"] = False
+        st.session_state["pending_clear_comparison"] = True
+    elif action_type == "load_comparison" and payload:
+        st.session_state["pending_load_payload"] = payload.get("state_payload")
+        st.session_state["pending_loaded_comparison_id"] = payload.get("comparison_id")
+        st.session_state["pending_loaded_comparison_name"] = payload.get("comparison_name", "")
+        st.session_state["show_saved_comparisons"] = False
+
+
 def render_row_navigation_buttons(current_row_id, visible_index):
     row_ids = st.session_state.get("row_ids", [])
     if not row_ids:
@@ -2684,6 +2711,22 @@ if st.session_state.get("show_leave_prompt"):
         "clear_comparison": "You are about to start a new comparison.",
         "load_comparison": "You are about to load another saved comparison.",
     }
+
+    components.html(
+        """
+        <script>
+        const scrollTopNow = () => {
+            try {
+                window.parent.scrollTo({top: 0, behavior: 'auto'});
+            } catch (e) {}
+        };
+        requestAnimationFrame(scrollTopNow);
+        setTimeout(scrollTopNow, 20);
+        </script>
+        """,
+        height=0,
+    )
+
     st.warning(prompt_text)
     if note_map.get(action_type):
         st.caption(note_map[action_type])
@@ -2695,115 +2738,51 @@ if st.session_state.get("show_leave_prompt"):
             st.rerun()
     with ask_c2:
         if st.button("No", key="leave_prompt_no", use_container_width=True):
-            action_type = st.session_state.get("pending_action_type")
-            target_view = st.session_state.get("pending_target_view")
-            payload = st.session_state.get("pending_action_payload")
-            st.session_state["show_leave_prompt"] = False
-            st.session_state["leave_prompt_step"] = ""
-            st.session_state["pending_action_type"] = None
-            st.session_state["pending_target_view"] = None
-            st.session_state["pending_action_payload"] = None
-
-            if action_type == "switch_view" and target_view:
-                st.session_state["committed_view"] = target_view
-            elif action_type == "logout":
-                logout_current_user()
-            elif action_type == "clear_comparison":
-                st.session_state["pending_clear_comparison"] = True
-            elif action_type == "load_comparison" and payload:
-                st.session_state["pending_load_payload"] = payload.get("state_payload")
-                st.session_state["pending_loaded_comparison_id"] = payload.get("comparison_id")
-                st.session_state["pending_loaded_comparison_name"] = payload.get("comparison_name", "")
-                st.session_state["show_saved_comparisons"] = False
-
             mark_comparison_clean()
+            execute_pending_leave_action()
             st.rerun()
 
     if st.session_state.get("leave_prompt_step") == "save":
-        save_c1, save_c2 = st.columns(2)
-        with save_c1:
-            if st.button("Save", key="leave_prompt_save", use_container_width=True):
-                company_options_for_save = {
-                    f"{row['name']} ({row['code']})": row["code"] for _, row in companies_df.iterrows()
-                }
-                selected_codes_for_save = [
-                    company_options_for_save[x]
-                    for x in st.session_state.get("comparison_company_selection", [])
-                    if x in company_options_for_save
-                ]
-                ok, msg = save_or_update_current_comparison(selected_codes_for_save)
-                if ok:
-                    action_type = st.session_state.get("pending_action_type")
-                    target_view = st.session_state.get("pending_target_view")
-                    payload = st.session_state.get("pending_action_payload")
-                    mark_comparison_clean()
-                    st.session_state["show_leave_prompt"] = False
-                    st.session_state["leave_prompt_step"] = ""
-                    st.session_state["pending_action_type"] = None
-                    st.session_state["pending_target_view"] = None
-                    st.session_state["pending_action_payload"] = None
+        company_options_for_save = {
+            f"{row['name']} ({row['code']})": row["code"] for _, row in companies_df.iterrows()
+        }
+        selected_codes_for_save = [
+            company_options_for_save[x]
+            for x in st.session_state.get("comparison_company_selection", [])
+            if x in company_options_for_save
+        ]
 
-                    if action_type == "switch_view" and target_view:
-                        st.session_state["committed_view"] = target_view
-                    elif action_type == "logout":
-                        logout_current_user()
-                    elif action_type == "clear_comparison":
-                        st.session_state["pending_clear_comparison"] = True
-                    elif action_type == "load_comparison" and payload:
-                        st.session_state["pending_load_payload"] = payload.get("state_payload")
-                        st.session_state["pending_loaded_comparison_id"] = payload.get("comparison_id")
-                        st.session_state["pending_loaded_comparison_name"] = payload.get("comparison_name", "")
-                        st.session_state["show_saved_comparisons"] = False
-
-                    st.rerun()
-                else:
-                    st.warning(msg)
-        with save_c2:
-            st.text_input("New name for Save As", key="save_as_exit_name")
-            if st.button("Save As", key="leave_prompt_save_as", use_container_width=True):
-                company_options_for_save = {
-                    f"{row['name']} ({row['code']})": row["code"] for _, row in companies_df.iterrows()
-                }
-                selected_codes_for_save = [
-                    company_options_for_save[x]
-                    for x in st.session_state.get("comparison_company_selection", [])
-                    if x in company_options_for_save
-                ]
-                new_name = st.session_state.get("save_as_exit_name", "").strip()
-                if not new_name:
-                    st.warning("Please enter a new name for Save As.")
-                else:
-                    st.session_state["comparison_name_input"] = new_name
-                    st.session_state["current_comparison_id"] = None
+        if not selected_codes_for_save:
+            st.info("This comparison cannot be saved yet because no companies are selected. Choose No to leave without saving, or stay on Comparisons and complete the setup.")
+        else:
+            save_c1, save_c2 = st.columns(2)
+            with save_c1:
+                if st.button("Save", key="leave_prompt_save", use_container_width=True):
                     ok, msg = save_or_update_current_comparison(selected_codes_for_save)
                     if ok:
-                        action_type = st.session_state.get("pending_action_type")
-                        target_view = st.session_state.get("pending_target_view")
-                        payload = st.session_state.get("pending_action_payload")
                         mark_comparison_clean()
-                        st.session_state["show_leave_prompt"] = False
-                        st.session_state["leave_prompt_step"] = ""
-                        st.session_state["pending_action_type"] = None
-                        st.session_state["pending_target_view"] = None
-                        st.session_state["pending_action_payload"] = None
-                        st.session_state["save_as_exit_name"] = ""
-
-                        if action_type == "switch_view" and target_view:
-                            st.session_state["committed_view"] = target_view
-                        elif action_type == "logout":
-                            logout_current_user()
-                        elif action_type == "clear_comparison":
-                            st.session_state["pending_clear_comparison"] = True
-                        elif action_type == "load_comparison" and payload:
-                            st.session_state["pending_load_payload"] = payload.get("state_payload")
-                            st.session_state["pending_loaded_comparison_id"] = payload.get("comparison_id")
-                            st.session_state["pending_loaded_comparison_name"] = payload.get("comparison_name", "")
-                            st.session_state["show_saved_comparisons"] = False
-
+                        execute_pending_leave_action()
                         st.rerun()
                     else:
                         st.warning(msg)
+            with save_c2:
+                st.text_input("New name for Save As", key="save_as_exit_name")
+                if st.button("Save As", key="leave_prompt_save_as", use_container_width=True):
+                    new_name = st.session_state.get("save_as_exit_name", "").strip()
+                    if not new_name:
+                        st.warning("Please enter a new name for Save As.")
+                    else:
+                        st.session_state["comparison_name_input"] = new_name
+                        st.session_state["current_comparison_id"] = None
+                        ok, msg = save_or_update_current_comparison(selected_codes_for_save)
+                        if ok:
+                            mark_comparison_clean()
+                            execute_pending_leave_action()
+                            st.rerun()
+                        else:
+                            st.warning(msg)
 
+    st.stop()
 
 # -------------------------------------------------
 # SECTION RENDERERS
@@ -3363,18 +3342,6 @@ def render_comparisons():
             else:
                 catalogs[code] = None
 
-    st.markdown("---")
-    st.markdown("### 5. Debug")
-
-    if selected_codes:
-        dbg_cols = st.columns(len(selected_codes))
-        for i, code in enumerate(selected_codes):
-            with dbg_cols[i]:
-                st.write(f"Selected {code} file:", selected.get(code, ""))
-                if catalogs.get(code) is not None:
-                    st.write(f"{code} prepared rows:", len(catalogs[code]))
-    else:
-        st.info("No comparison companies selected yet.")
 
     if selected_codes:
         st.markdown("---")
