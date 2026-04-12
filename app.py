@@ -885,6 +885,23 @@ def refresh_comparison_dirty_state():
     st.session_state["comparison_dirty"] = (current != baseline)
 
 
+def has_real_changes_against_loaded_baseline():
+    if not st.session_state.get("comparison_loaded_from_record"):
+        return has_unsaved_comparison_changes()
+
+    baseline = st.session_state.get("active_loaded_state_payload", {}) or {}
+    selected_codes = get_current_selected_codes_from_state()
+    current_payload = collect_merged_comparison_state_payload(selected_codes)
+
+    baseline_filtered = dict(baseline)
+    current_filtered = dict(current_payload)
+
+    baseline_filtered.pop("next_row_id", None)
+    current_filtered.pop("next_row_id", None)
+
+    return baseline_filtered != current_filtered
+
+
 def has_unsaved_comparison_changes():
     return bool(
         comparison_has_meaningful_content()
@@ -2815,6 +2832,7 @@ if st.session_state.get("pending_load_payload") is not None:
     st.session_state["comparison_loaded_success_message"] = "Comparison loaded successfully."
     st.session_state["comparison_dirty"] = False
     st.session_state["comparison_clean_generation"] = st.session_state.get("comparison_edit_generation", 0)
+    st.session_state["active_loaded_state_payload"] = collect_comparison_state_payload(get_current_selected_codes_from_state())
     mark_comparison_clean()
 
 if st.session_state.get("pending_clear_comparison"):
@@ -3535,7 +3553,7 @@ def render_comparisons():
                                     + ", ".join(missing_companies)
                                 )
                             else:
-                                if has_unsaved_comparison_changes():
+                                if has_real_changes_against_loaded_baseline():
                                     st.session_state["show_leave_prompt"] = True
                                     st.session_state["leave_prompt_step"] = ""
                                     st.session_state["pending_action_type"] = "load_comparison"
