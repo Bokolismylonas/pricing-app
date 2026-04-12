@@ -726,7 +726,7 @@ def parse_iso(value):
 
 def get_comparison_state_signature():
     relevant = {}
-    prefixes = ("row_", "select_", "carry_forward_", "widget_row_")
+    prefixes = ("row_", "select_", "carry_forward_")
     direct_keys = {
         "row_ids",
         "next_row_id",
@@ -735,18 +735,54 @@ def get_comparison_state_signature():
         "current_comparison_id",
         "selected_export_fields",
     }
+    excluded_keys = {
+        "sidebar_navigation",
+        "comparison_dirty",
+        "comparison_saved_signature",
+        "comparison_last_active_view",
+        "show_leave_comparison_prompt",
+        "pending_leave_target_view",
+        "save_as_exit_name",
+        "active_comparison_label",
+        "leave_prompt_step",
+        "pending_focus_row_id",
+        "bulk_discount_success_message",
+        "comparison_loaded_success_message",
+        "pending_load_payload",
+        "pending_loaded_comparison_id",
+        "pending_loaded_comparison_name",
+        "pending_clear_comparison",
+        "checkout_email",
+        "checkout_url",
+        "checkout_created_at",
+        "app_session_id",
+    }
+
     for key in list(st.session_state.keys()):
+        if key in excluded_keys:
+            continue
         if key in direct_keys or key.startswith(prefixes):
             try:
-                relevant[key] = st.session_state.get(key)
+                value = st.session_state.get(key)
+                if isinstance(value, Path):
+                    value = str(value)
+                relevant[key] = value
             except Exception:
                 pass
+
     return json.dumps(relevant, sort_keys=True, ensure_ascii=False, default=str)
 
 
 def mark_comparison_clean():
     st.session_state["comparison_saved_signature"] = get_comparison_state_signature()
     st.session_state["comparison_dirty"] = False
+
+def refresh_comparison_dirty_state():
+    saved = st.session_state.get("comparison_saved_signature", "")
+    if not saved or not comparison_has_meaningful_content():
+        st.session_state["comparison_dirty"] = False
+        return
+    st.session_state["comparison_dirty"] = (get_comparison_state_signature() != saved)
 
 
 def comparison_has_meaningful_content():
@@ -777,19 +813,12 @@ def comparison_has_meaningful_content():
 
 
 def has_unsaved_comparison_changes():
+    refresh_comparison_dirty_state()
+
     if not comparison_has_meaningful_content():
         return False
 
-    if st.session_state.get("comparison_dirty"):
-        return True
-
-    saved = st.session_state.get("comparison_saved_signature", "")
-    current = get_comparison_state_signature()
-
-    if not saved:
-        return False
-
-    return current != saved
+    return bool(st.session_state.get("comparison_dirty", False))
 
 
 def mark_comparison_dirty():
@@ -3097,6 +3126,7 @@ def render_sources():
 
 
 def render_comparisons():
+    refresh_comparison_dirty_state()
     st.markdown('<div class="app-card">', unsafe_allow_html=True)
     st.markdown("## Comparisons")
 
