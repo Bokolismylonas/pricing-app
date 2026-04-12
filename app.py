@@ -485,6 +485,61 @@ st.markdown(
             height: 58px;
         }
     }
+
+    .row-nav-wrap {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        gap: 8px;
+        margin: 10px 0 4px 0;
+        flex-wrap: nowrap;
+    }
+
+    .row-nav-btn {
+        width: 40px;
+        height: 40px;
+        min-width: 40px;
+        border-radius: 10px;
+        border: 1px solid rgba(148,163,184,0.35);
+        background: #ffffff;
+        color: #111827;
+        font-size: 18px;
+        font-weight: 700;
+        line-height: 1;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+        cursor: pointer;
+        transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
+    }
+
+    .row-nav-btn:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 6px 14px rgba(59,130,246,0.16);
+    }
+
+    .row-nav-btn:disabled {
+        opacity: 0.38;
+        cursor: default;
+        box-shadow: none;
+    }
+
+    @media (max-width: 768px) {
+        .row-nav-wrap {
+            justify-content: center;
+            gap: 10px;
+            margin: 8px 0 0 0;
+        }
+
+        .row-nav-btn {
+            width: 42px;
+            height: 42px;
+            min-width: 42px;
+            border-radius: 12px;
+            font-size: 18px;
+        }
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -2104,6 +2159,39 @@ def focus_existing_row(target_row_id):
         st.session_state["pending_focus_row_id"] = target_row_id
 
 
+def render_row_navigation_buttons(current_row_id, visible_index):
+    row_ids = st.session_state.get("row_ids", [])
+    if not row_ids:
+        return
+
+    first_row_id = row_ids[0]
+    last_row_id = row_ids[-1]
+    prev_row_id = row_ids[visible_index - 1] if visible_index > 0 else None
+    next_row_id = row_ids[visible_index + 1] if visible_index < len(row_ids) - 1 else None
+
+    def make_button_html(symbol, target_row_id, disabled=False):
+        disabled_attr = "disabled" if disabled or not target_row_id else ""
+        onclick = ""
+        if target_row_id and not disabled:
+            onclick = (
+                "onclick=\"(function(){"
+                f"const el = window.parent.document.getElementById('row-anchor-{target_row_id}');"
+                "if (el) { el.scrollIntoView({behavior: 'auto', block: 'start'}); }"
+                "})()\""
+            )
+        return f'<button type="button" class="row-nav-btn" {disabled_attr} {onclick}>{symbol}</button>'
+
+    nav_html = f'''
+        <div class="row-nav-wrap">
+            {make_button_html("⏮", first_row_id, visible_index == 0)}
+            {make_button_html("◀", prev_row_id, prev_row_id is None)}
+            {make_button_html("▶", next_row_id, next_row_id is None)}
+            {make_button_html("⏭", last_row_id, visible_index == len(row_ids) - 1)}
+        </div>
+    '''
+    components.html(nav_html, height=58)
+
+
 def apply_specific_discount_to_all_rows(selected_codes, target_code, disc_index, disc_value):
     if target_code not in selected_codes:
         return
@@ -3177,59 +3265,7 @@ def render_comparisons():
                         add_comparison_row(selected_codes, insert_after_row_id=row_id)
                         st.rerun()
 
-                    nav_shell_left, nav_shell_mid, nav_shell_right = st.columns([0.12, 0.76, 0.12])
-                    with nav_shell_mid:
-                        nav_cols = st.columns([1, 1, 1, 1], gap="small")
-                        first_row_id = st.session_state.row_ids[0] if st.session_state.row_ids else None
-                        last_row_id = st.session_state.row_ids[-1] if st.session_state.row_ids else None
-                        prev_row_id = (
-                            st.session_state.row_ids[visible_index - 1]
-                            if visible_index > 0 else None
-                        )
-                        next_row_id = (
-                            st.session_state.row_ids[visible_index + 1]
-                            if visible_index < len(st.session_state.row_ids) - 1 else None
-                        )
-
-                        with nav_cols[0]:
-                            if st.button(
-                                "⏮",
-                                key=f"nav_first_{row_id}",
-                                help="First record",
-                                disabled=visible_index == 0,
-                            ):
-                                focus_existing_row(first_row_id)
-                                st.rerun()
-
-                        with nav_cols[1]:
-                            if st.button(
-                                "◀",
-                                key=f"nav_prev_{row_id}",
-                                help="Previous record",
-                                disabled=prev_row_id is None,
-                            ):
-                                focus_existing_row(prev_row_id)
-                                st.rerun()
-
-                        with nav_cols[2]:
-                            if st.button(
-                                "▶",
-                                key=f"nav_next_{row_id}",
-                                help="Next record",
-                                disabled=next_row_id is None,
-                            ):
-                                focus_existing_row(next_row_id)
-                                st.rerun()
-
-                        with nav_cols[3]:
-                            if st.button(
-                                "⏭",
-                                key=f"nav_last_{row_id}",
-                                help="Last record",
-                                disabled=visible_index == len(st.session_state.row_ids) - 1,
-                            ):
-                                focus_existing_row(last_row_id)
-                                st.rerun()
+                    render_row_navigation_buttons(row_id, visible_index)
 
                 with action_cols[2]:
                     st.write("")
