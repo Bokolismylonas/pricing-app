@@ -778,11 +778,31 @@ def get_current_selected_codes_from_state():
     company_options_for_state = {
         f"{row['name']} ({row['code']})": row["code"] for _, row in companies_df.iterrows()
     }
-    return [
+
+    selected_codes = [
         company_options_for_state[x]
         for x in st.session_state.get("comparison_company_selection", [])
         if x in company_options_for_state
     ]
+
+    if selected_codes:
+        return selected_codes
+
+    known_codes = set(companies_df["code"].astype(str).tolist())
+    inferred_codes = []
+
+    for code in known_codes:
+        has_select_key = f"select_{code}" in st.session_state
+        has_carry_key = f"carry_forward_{code}" in st.session_state
+        has_row_key = any(
+            key.startswith("row_") and f"_{code}_" in key
+            for key in st.session_state.keys()
+        )
+
+        if has_select_key or has_carry_key or has_row_key:
+            inferred_codes.append(code)
+
+    return inferred_codes
 
 
 def get_comparison_payload_signature_from_state():
@@ -2872,14 +2892,7 @@ if st.session_state.get("show_leave_prompt"):
             st.rerun()
 
     if st.session_state.get("leave_prompt_step") == "save":
-        company_options_for_save = {
-            f"{row['name']} ({row['code']})": row["code"] for _, row in companies_df.iterrows()
-        }
-        selected_codes_for_save = [
-            company_options_for_save[x]
-            for x in st.session_state.get("comparison_company_selection", [])
-            if x in company_options_for_save
-        ]
+        selected_codes_for_save = get_current_selected_codes_from_state()
 
         if not selected_codes_for_save:
             if st.session_state.get("current_comparison_id"):
