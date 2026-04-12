@@ -724,6 +724,75 @@ def parse_iso(value):
         return None
 
 
+def mark_comparison_dirty():
+    st.session_state["comparison_dirty"] = True
+
+
+def mark_comparison_clean():
+    st.session_state["comparison_dirty"] = False
+    st.session_state["comparison_saved_snapshot"] = get_comparison_state_signature()
+
+
+def get_comparison_state_signature():
+    relevant = {}
+    prefixes = ("row_", "select_", "carry_forward_")
+    direct_keys = {
+        "row_ids",
+        "next_row_id",
+        "comparison_company_selection",
+        "comparison_name_input",
+        "current_comparison_id",
+        "selected_export_fields",
+    }
+    for key in list(st.session_state.keys()):
+        if key in direct_keys or key.startswith(prefixes):
+            try:
+                value = st.session_state.get(key)
+                if isinstance(value, Path):
+                    value = str(value)
+                relevant[key] = value
+            except Exception:
+                pass
+    return json.dumps(relevant, sort_keys=True, ensure_ascii=False, default=str)
+
+
+@st.cache_data(show_spinner=False)
+def load_prepared_catalog_from_file(file_path_str: str, modified_ts: float):
+    file_path = Path(file_path_str)
+    df = pd.read_excel(file_path, sheet_name="PRICELIST")
+    df.columns = [str(c).strip() for c in df.columns]
+
+    def _find_col(local_df, names):
+        cols = {str(c).strip().lower(): c for c in local_df.columns}
+        for n in names:
+            if n.lower() in cols:
+                return cols[n.lower()]
+        return None
+
+    sap = _find_col(df, ["SAP", "Κωδικός SAP"])
+    prod = _find_col(df, ["Product", "Προϊόν"])
+    price = _find_col(df, ["Price", "Τιμή €/ΜΜ", "Τιμή", "Price €/MM"])
+    mm = _find_col(df, ["ΜΜ πώλησης", "MM", "Unit", "ΜΜ"])
+    pack = _find_col(df, ["Συσκευασία", "Package", "pack"])
+    category = _find_col(df, ["Κατηγορία", "Category", "category"])
+
+    if not sap or not prod or not price:
+        return None
+
+    out = pd.DataFrame()
+    out["SAP"] = df[sap].astype(str).str.strip()
+    out["Product"] = df[prod].astype(str).str.strip()
+    out["Price"] = pd.to_numeric(df[price], errors="coerce")
+    out["MM"] = df[mm].astype(str).str.strip() if mm else ""
+    out["Package"] = df[pack].astype(str).str.strip() if pack else ""
+    out["Category"] = df[category].astype(str).str.strip() if category else ""
+    out = out.dropna(subset=["Price"])
+    out = out[out["Price"] > 0]
+    out = out.reset_index(drop=True)
+    out["DISPLAY"] = out["Product"] + " | SAP " + out["SAP"]
+    return out
+
+
 def load_users_registry():
     if not USERS_REGISTRY_FILE.exists():
         return []
@@ -2072,83 +2141,6 @@ def save_or_update_current_comparison(selected_codes):
     return True, "Comparison saved successfully."
 
 
-def save_current_comparison_as_new(selected_codes, new_name):
-    if not selected_codes:
-        return False, "Please select companies first."
-
-    clean_name = str(new_name).strip()
-    if not clean_name:
-        return False, "Please enter a name for Save As."
-
-    comparison_file = get_current_user_comparisons_file()
-    comparison_id = save_new_comparison(
-        comparison_file,
-        owner_sub=get_current_user_id(),
-        owner_email=get_current_user_email(),
-        name=clean_name,
-        companies=[get_company_label(code) for code in selected_codes],
-        source_files=build_source_files_map(selected_codes),
-        state=collect_comparison_state_payload(selected_codes),
-    )
-    st.session_state["current_comparison_id"] = comparison_id
-    st.session_state["comparison_name_input"] = clean_name
-    return True, "Comparison saved as new successfully."
-
-
-def get_company_options_map():
-    return {
-        f"{row['name']} ({row['code']})": row["code"] for _, row in companies_df.iterrows()
-    }
-
-
-def get_selected_codes_from_state():
-    company_options = get_company_options_map()
-    selected_displays = st.session_state.get("comparison_company_selection", [])
-    return [company_options[x] for x in selected_displays if x in company_options]
-
-
-def build_current_comparison_signature(selected_codes=None):
-    selected_codes = selected_codes if selected_codes is not None else get_selected_codes_from_state()
-    snapshot = {
-        "comparison_id": st.session_state.get("current_comparison_id"),
-        "comparison_name_input": st.session_state.get("comparison_name_input", "").strip(),
-        "companies": [get_company_label(code) for code in selected_codes],
-        "source_files": build_source_files_map(selected_codes),
-        "state": collect_comparison_state_payload(selected_codes),
-    }
-    return json.dumps(snapshot, sort_keys=True, ensure_ascii=False, default=str)
-
-
-def sync_comparison_saved_signature(selected_codes=None):
-    st.session_state["comparison_saved_signature"] = build_current_comparison_signature(selected_codes)
-
-
-def comparison_has_unsaved_changes():
-    saved_signature = st.session_state.get("comparison_saved_signature")
-    if saved_signature is None:
-        return False
-    return build_current_comparison_signature() != saved_signature
-
-
-def get_current_comparison_display_name():
-    current_name = st.session_state.get("comparison_name_input", "").strip()
-    if current_name:
-        return current_name
-    selected_codes = get_selected_codes_from_state()
-    if selected_codes:
-        return auto_comparison_name(selected_codes)
-    return "Untitled Comparison"
-
-
-def continue_pending_navigation(target_view):
-    st.session_state["show_leave_comparison_prompt"] = False
-    st.session_state["leave_comparison_save_choice"] = False
-    st.session_state["leave_comparison_save_as_name"] = ""
-    st.session_state["pending_navigation_target"] = None
-    st.session_state["committed_view"] = target_view
-    st.session_state["sidebar_navigation"] = target_view
-
-
 def get_previous_row_discounts(current_row_id, code):
     row_ids = st.session_state.get("row_ids", [])
     try:
@@ -2378,23 +2370,23 @@ if "bulk_discount_success_message" not in st.session_state:
 if "comparison_loaded_success_message" not in st.session_state:
     st.session_state["comparison_loaded_success_message"] = ""
 
-if "comparison_saved_signature" not in st.session_state:
-    st.session_state["comparison_saved_signature"] = None
+if "comparison_dirty" not in st.session_state:
+    st.session_state["comparison_dirty"] = False
 
-if "committed_view" not in st.session_state:
-    st.session_state["committed_view"] = "Company Manager"
+if "comparison_saved_snapshot" not in st.session_state:
+    st.session_state["comparison_saved_snapshot"] = ""
 
-if "pending_navigation_target" not in st.session_state:
-    st.session_state["pending_navigation_target"] = None
+if "comparison_last_active_view" not in st.session_state:
+    st.session_state["comparison_last_active_view"] = "Comparisons"
 
 if "show_leave_comparison_prompt" not in st.session_state:
     st.session_state["show_leave_comparison_prompt"] = False
 
-if "leave_comparison_save_choice" not in st.session_state:
-    st.session_state["leave_comparison_save_choice"] = False
+if "pending_leave_target_view" not in st.session_state:
+    st.session_state["pending_leave_target_view"] = None
 
-if "leave_comparison_save_as_name" not in st.session_state:
-    st.session_state["leave_comparison_save_as_name"] = ""
+if "save_as_exit_name" not in st.session_state:
+    st.session_state["save_as_exit_name"] = ""
 
 
 # -------------------------------------------------
@@ -2521,14 +2513,12 @@ if st.session_state.get("pending_load_payload") is not None:
     st.session_state["pending_loaded_comparison_id"] = None
     st.session_state["pending_loaded_comparison_name"] = ""
     st.session_state["comparison_loaded_success_message"] = "Comparison loaded successfully."
-    sync_comparison_saved_signature()
+    mark_comparison_clean()
 
 if st.session_state.get("pending_clear_comparison"):
     clear_current_comparison_state()
     st.session_state["pending_clear_comparison"] = False
-
-if st.session_state.get("comparison_saved_signature") is None:
-    sync_comparison_saved_signature()
+    mark_comparison_clean()
 
 
 # -------------------------------------------------
@@ -2567,13 +2557,29 @@ with st.sidebar:
     ]
     if is_admin_user():
         nav_options.append("Admin Panel")
-
-    requested_view = st.radio(
+    current_view = st.radio(
         "Go to",
         nav_options,
         key="sidebar_navigation",
         label_visibility="collapsed",
     )
+
+    previous_view = st.session_state.get("comparison_last_active_view", "Comparisons")
+    active_signature = get_comparison_state_signature()
+    saved_signature = st.session_state.get("comparison_saved_snapshot", "")
+    has_unsaved_changes = (
+        previous_view == "Comparisons"
+        and active_signature != saved_signature
+        and bool(st.session_state.get("current_comparison_id") or st.session_state.get("comparison_name_input") or st.session_state.get("row_ids"))
+    )
+
+    if current_view != previous_view:
+        if has_unsaved_changes:
+            st.session_state["show_leave_comparison_prompt"] = True
+            st.session_state["pending_leave_target_view"] = current_view
+            current_view = previous_view
+        else:
+            st.session_state["comparison_last_active_view"] = current_view
 
     st.markdown("---")
     st.subheader("💳 Billing")
@@ -2613,23 +2619,76 @@ with st.sidebar:
         )
 
 
-committed_view = st.session_state.get("committed_view", "Company Manager")
-current_view = committed_view
 
-if requested_view != committed_view:
-    if (
-        committed_view == "Comparisons"
-        and requested_view != "Comparisons"
-        and comparison_has_unsaved_changes()
-    ):
-        st.session_state["pending_navigation_target"] = requested_view
-        st.session_state["show_leave_comparison_prompt"] = True
-        st.session_state["leave_comparison_save_choice"] = False
-        st.session_state["sidebar_navigation"] = committed_view
-        current_view = committed_view
-    else:
-        st.session_state["committed_view"] = requested_view
-        current_view = requested_view
+if st.session_state.get("show_leave_comparison_prompt"):
+    comparison_label = st.session_state.get("comparison_name_input", "").strip() or "Untitled Comparison"
+    leave_target = st.session_state.get("pending_leave_target_view") or "another section"
+    st.warning(f'Do you want to save the changes you made to Comparison "{comparison_label}" before leaving for {leave_target}?')
+
+    ask_c1, ask_c2 = st.columns(2)
+    with ask_c1:
+        if st.button("Yes", key="leave_prompt_yes", use_container_width=True):
+            st.session_state["leave_prompt_step"] = "save"
+    with ask_c2:
+        if st.button("No", key="leave_prompt_no", use_container_width=True):
+            st.session_state["show_leave_comparison_prompt"] = False
+            st.session_state["comparison_last_active_view"] = st.session_state.get("pending_leave_target_view") or "Comparisons"
+            st.session_state["pending_leave_target_view"] = None
+            st.session_state["leave_prompt_step"] = ""
+            mark_comparison_clean()
+            st.rerun()
+
+    if st.session_state.get("leave_prompt_step") == "save":
+        save_c1, save_c2 = st.columns(2)
+        with save_c1:
+            if st.button("Save", key="leave_prompt_save", use_container_width=True):
+                company_options_for_save = {
+                    f"{row['name']} ({row['code']})": row["code"] for _, row in companies_df.iterrows()
+                }
+                selected_codes_for_save = [
+                    company_options_for_save[x]
+                    for x in st.session_state.get("comparison_company_selection", [])
+                    if x in company_options_for_save
+                ]
+                ok, msg = save_or_update_current_comparison(selected_codes_for_save)
+                if ok:
+                    mark_comparison_clean()
+                    st.session_state["show_leave_comparison_prompt"] = False
+                    st.session_state["comparison_last_active_view"] = st.session_state.get("pending_leave_target_view") or "Comparisons"
+                    st.session_state["pending_leave_target_view"] = None
+                    st.session_state["leave_prompt_step"] = ""
+                    st.rerun()
+                else:
+                    st.warning(msg)
+        with save_c2:
+            st.text_input("New name for Save As", key="save_as_exit_name")
+            if st.button("Save As", key="leave_prompt_save_as", use_container_width=True):
+                company_options_for_save = {
+                    f"{row['name']} ({row['code']})": row["code"] for _, row in companies_df.iterrows()
+                }
+                selected_codes_for_save = [
+                    company_options_for_save[x]
+                    for x in st.session_state.get("comparison_company_selection", [])
+                    if x in company_options_for_save
+                ]
+                new_name = st.session_state.get("save_as_exit_name", "").strip()
+                if not new_name:
+                    st.warning("Please enter a new name for Save As.")
+                else:
+                    st.session_state["comparison_name_input"] = new_name
+                    st.session_state["current_comparison_id"] = None
+                    ok, msg = save_or_update_current_comparison(selected_codes_for_save)
+                    if ok:
+                        mark_comparison_clean()
+                        st.session_state["show_leave_comparison_prompt"] = False
+                        st.session_state["comparison_last_active_view"] = st.session_state.get("pending_leave_target_view") or "Comparisons"
+                        st.session_state["pending_leave_target_view"] = None
+                        st.session_state["leave_prompt_step"] = ""
+                        st.session_state["save_as_exit_name"] = ""
+                        st.rerun()
+                    else:
+                        st.warning(msg)
+
 
 # -------------------------------------------------
 # MAIN UI
@@ -2918,92 +2977,9 @@ def render_sources():
     st.markdown("</div>", unsafe_allow_html=True)
 
 
-
-def render_leave_comparison_prompt():
-    if not st.session_state.get("show_leave_comparison_prompt"):
-        return
-
-    target_view = st.session_state.get("pending_navigation_target")
-    comparison_name = get_current_comparison_display_name()
-
-    st.warning(
-        f'Do you want to save the changes you made to Comparison "{comparison_name}"?'
-    )
-
-    prompt_c1, prompt_c2 = st.columns(2)
-
-    with prompt_c1:
-        if st.button(
-            "Yes",
-            key="leave_comparison_yes_button",
-            use_container_width=True,
-        ):
-            st.session_state["leave_comparison_save_choice"] = True
-            st.rerun()
-
-    with prompt_c2:
-        if st.button(
-            "No",
-            key="leave_comparison_no_button",
-            use_container_width=True,
-        ):
-            continue_pending_navigation(target_view)
-            st.rerun()
-
-    if st.session_state.get("leave_comparison_save_choice"):
-        selected_codes = get_selected_codes_from_state()
-
-        save_c1, save_c2 = st.columns(2)
-
-        with save_c1:
-            if st.button(
-                "Save",
-                key="leave_comparison_save_button",
-                use_container_width=True,
-            ):
-                ok, msg = save_or_update_current_comparison(selected_codes)
-                if ok:
-                    sync_comparison_saved_signature(selected_codes)
-                    continue_pending_navigation(target_view)
-                    st.success(msg)
-                    st.rerun()
-                else:
-                    st.warning(msg)
-
-        with save_c2:
-            save_as_default = st.session_state.get("leave_comparison_save_as_name", "").strip()
-            if not save_as_default:
-                save_as_default = f'{comparison_name} Copy'
-                st.session_state["leave_comparison_save_as_name"] = save_as_default
-
-            st.text_input(
-                "Save As name",
-                key="leave_comparison_save_as_name",
-                placeholder="Enter a new comparison name",
-            )
-
-            if st.button(
-                "Save As",
-                key="leave_comparison_save_as_button",
-                use_container_width=True,
-            ):
-                ok, msg = save_current_comparison_as_new(
-                    selected_codes,
-                    st.session_state.get("leave_comparison_save_as_name", "").strip(),
-                )
-                if ok:
-                    sync_comparison_saved_signature(selected_codes)
-                    continue_pending_navigation(target_view)
-                    st.success(msg)
-                    st.rerun()
-                else:
-                    st.warning(msg)
-
-
 def render_comparisons():
     st.markdown('<div class="app-card">', unsafe_allow_html=True)
     st.markdown("## Comparisons")
-    render_leave_comparison_prompt()
 
     current_name = st.session_state.get("comparison_name_input", "").strip()
     if current_name:
@@ -3067,8 +3043,8 @@ def render_comparisons():
                 )
 
                 st.session_state["current_comparison_id"] = comparison_id
-                sync_comparison_saved_signature(current_selected_codes)
                 st.success("Comparison saved successfully.")
+                mark_comparison_clean()
 
     with save_c2:
         if st.button("🔄 Save Changes", use_container_width=True, key="save_changes_btn"):
@@ -3097,8 +3073,8 @@ def render_comparisons():
                 )
 
                 if ok:
-                    sync_comparison_saved_signature(current_selected_codes)
                     st.success("Comparison updated successfully.")
+                mark_comparison_clean()
                 else:
                     st.warning("This comparison no longer exists. Save it again as new.")
 
@@ -3124,8 +3100,8 @@ def render_comparisons():
                 )
 
                 st.session_state["current_comparison_id"] = comparison_id
-                sync_comparison_saved_signature(current_selected_codes)
                 st.success("Saved as new comparison.")
+                mark_comparison_clean()
 
     with save_c4:
         if st.button("📂 Load Comparison", use_container_width=True, key="toggle_load_comparison_btn"):
@@ -3266,12 +3242,17 @@ def render_comparisons():
                         f"{code} source file",
                         [""] + files,
                         key=f"select_{code}",
+                        on_change=mark_comparison_dirty,
                     )
 
         for code in selected_codes:
             if selected.get(code):
-                df = load_data(get_company_folder(code) / selected[code])
-                catalogs[code] = prepare_catalog(df)
+                source_path = get_company_folder(code) / selected[code]
+                try:
+                    catalogs[code] = load_prepared_catalog_from_file(str(source_path), source_path.stat().st_mtime)
+                except Exception as e:
+                    st.error(f"Error loading file: {e}")
+                    catalogs[code] = None
             else:
                 catalogs[code] = None
 
@@ -3334,6 +3315,7 @@ def render_comparisons():
                         disc_index = int(str(st.session_state[selector_key]).replace("Disc", ""))
                         disc_value = float(st.session_state[value_key])
                         apply_specific_discount_to_all_rows(selected_codes, code, disc_index, disc_value)
+                        mark_comparison_dirty()
                         st.session_state["bulk_discount_success_message"] = (
                             f"{label}: {st.session_state[selector_key]} set to {disc_value:.2f}% for all current rows."
                         )
@@ -3360,6 +3342,7 @@ def render_comparisons():
                     st.checkbox(
                         f"{label}: use previous row discounts",
                         key=f"carry_forward_{code}",
+                        on_change=mark_comparison_dirty,
                     )
 
     st.markdown("---")
@@ -3395,6 +3378,7 @@ def render_comparisons():
                                 f"{label} product",
                                 options,
                                 key=f"row_{row_id}_{code}_product",
+                                on_change=mark_comparison_dirty,
                             )
                             row = get_catalog_row(df, selected_product)
 
@@ -3415,8 +3399,7 @@ def render_comparisons():
                                         max_value=100.0,
                                         step=0.1,
                                         key=widget_key,
-                                        on_change=sync_discount_widget_to_data,
-                                        args=(row_id, code, j),
+                                        on_change=lambda r=row_id, c=code, d=j: (sync_discount_widget_to_data(r, c, d), mark_comparison_dirty()),
                                     )
                                     st.session_state[data_key] = float(disc_val)
                                     discs.append(disc_val)
@@ -3434,8 +3417,7 @@ def render_comparisons():
                                         max_value=100.0,
                                         step=0.1,
                                         key=widget_key,
-                                        on_change=sync_discount_widget_to_data,
-                                        args=(row_id, code, j),
+                                        on_change=lambda r=row_id, c=code, d=j: (sync_discount_widget_to_data(r, c, d), mark_comparison_dirty()),
                                     )
                                     st.session_state[f"row_{row_id}_{code}_disc_{j}"] = float(disc_val)
                                 row_final_prices[code] = None
@@ -3466,6 +3448,7 @@ def render_comparisons():
                         use_container_width=True,
                     ):
                         add_comparison_row(selected_codes, insert_after_row_id=row_id)
+                        mark_comparison_dirty()
                         st.rerun()
 
                     render_row_navigation_buttons(row_id, visible_index)
@@ -3481,6 +3464,7 @@ def render_comparisons():
                         st.session_state.row_ids = [
                             r for r in st.session_state.row_ids if r != row_id
                         ]
+                        mark_comparison_dirty()
                         st.rerun()
 
                 save_complete_left, save_complete_mid, save_complete_right = st.columns([3.2, 1.2, 1.2])
@@ -3493,8 +3477,8 @@ def render_comparisons():
                     ):
                         ok, msg = save_or_update_current_comparison(selected_codes)
                         if ok:
-                            sync_comparison_saved_signature(selected_codes)
                             st.success("Comparison saved successfully.")
+                mark_comparison_clean()
                         else:
                             st.warning(msg)
 
@@ -3524,8 +3508,8 @@ def render_comparisons():
                     el.scrollIntoView({{behavior: "smooth", block: "start"}});
                 }}
             }};
-            setTimeout(scrollToNewRow, 150);
-            setTimeout(scrollToNewRow, 500);
+            requestAnimationFrame(scrollToNewRow);
+            setTimeout(scrollToNewRow, 60);
             </script>
             """,
             height=0,
