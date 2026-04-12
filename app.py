@@ -749,20 +749,51 @@ def mark_comparison_clean():
     st.session_state["comparison_dirty"] = False
 
 
+def comparison_has_meaningful_content():
+    if st.session_state.get("current_comparison_id"):
+        return True
+
+    if len(st.session_state.get("row_ids", [])) > 1:
+        return True
+
+    if st.session_state.get("comparison_company_selection", []):
+        return True
+
+    if st.session_state.get("comparison_name_input", "").strip():
+        return True
+
+    for key, value in st.session_state.items():
+        if key.startswith("row_") and key.endswith("_product") and str(value).strip():
+            return True
+
+        if key.startswith("row_") and "_disc_" in key:
+            try:
+                if float(value or 0) != 0:
+                    return True
+            except Exception:
+                pass
+
+    return False
+
+
 def has_unsaved_comparison_changes():
+    if not comparison_has_meaningful_content():
+        return False
+
+    if st.session_state.get("comparison_dirty"):
+        return True
+
     saved = st.session_state.get("comparison_saved_signature", "")
     current = get_comparison_state_signature()
+
     if not saved:
-        return bool(
-            st.session_state.get("comparison_name_input", "").strip()
-            or st.session_state.get("current_comparison_id")
-            or len(st.session_state.get("row_ids", [])) > 1
-        )
+        return False
+
     return current != saved
 
 
 def mark_comparison_dirty():
-    st.session_state["comparison_dirty"] = has_unsaved_comparison_changes()
+    st.session_state["comparison_dirty"] = comparison_has_meaningful_content()
 
 
 @st.cache_data(show_spinner=False)
@@ -2738,6 +2769,7 @@ if st.session_state.get("show_leave_prompt"):
             st.rerun()
     with ask_c2:
         if st.button("No", key="leave_prompt_no", use_container_width=True):
+            st.session_state["leave_prompt_step"] = ""
             mark_comparison_clean()
             execute_pending_leave_action()
             st.rerun()
@@ -2753,7 +2785,10 @@ if st.session_state.get("show_leave_prompt"):
         ]
 
         if not selected_codes_for_save:
-            st.info("This comparison cannot be saved yet because no companies are selected. Choose No to leave without saving, or stay on Comparisons and complete the setup.")
+            if st.session_state.get("current_comparison_id"):
+                st.info("No active comparison fields are selected right now, so there is nothing new to save. Choose No to continue leaving this section.")
+            else:
+                st.info("This empty untitled comparison has nothing to save yet. Choose No to continue leaving this section.")
         else:
             save_c1, save_c2 = st.columns(2)
             with save_c1:
