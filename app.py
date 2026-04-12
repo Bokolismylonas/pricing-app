@@ -450,6 +450,41 @@ st.markdown(
     hr {
         border-color: rgba(255,255,255,0.08);
     }
+
+    .hero-logo-wrap {
+        margin-bottom: 14px;
+        animation: fadeInLogo 0.8s ease forwards;
+    }
+
+    .hero-logo-wrap img {
+        height: 88px;
+        width: auto;
+        max-width: 100%;
+        display: inline-block;
+        transition: transform 0.25s ease, filter 0.25s ease;
+    }
+
+    .hero-logo-wrap img:hover {
+        transform: scale(1.04);
+        filter: drop-shadow(0 6px 18px rgba(59,130,246,0.35));
+    }
+
+    @keyframes fadeInLogo {
+        from {
+            opacity: 0;
+            transform: translateY(6px);
+        }
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+
+    @media (max-width: 768px) {
+        .hero-logo-wrap img {
+            height: 58px;
+        }
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -2064,6 +2099,11 @@ def add_comparison_row(selected_codes, insert_after_row_id=None):
             st.session_state[disc_key] = float(value)
 
 
+def focus_existing_row(target_row_id):
+    if target_row_id in st.session_state.get("row_ids", []):
+        st.session_state["pending_focus_row_id"] = target_row_id
+
+
 def apply_specific_discount_to_all_rows(selected_codes, target_code, disc_index, disc_value):
     if target_code not in selected_codes:
         return
@@ -2392,7 +2432,7 @@ with st.sidebar:
 hero_logo_html = ""
 if FULL_LOGO_PATH.exists():
     hero_logo_b64 = base64.b64encode(FULL_LOGO_PATH.read_bytes()).decode("utf-8")
-    hero_logo_html = f'<div style="margin-bottom:14px;"><img src="data:image/svg+xml;base64,{hero_logo_b64}" style="height:52px;width:auto;" /></div>'
+    hero_logo_html = f'<div class="hero-logo-wrap"><img src="data:image/svg+xml;base64,{hero_logo_b64}" /></div>'
 
 st.markdown(
     f"""
@@ -3136,6 +3176,60 @@ def render_comparisons():
                     ):
                         add_comparison_row(selected_codes, insert_after_row_id=row_id)
                         st.rerun()
+
+                    nav_shell_left, nav_shell_mid, nav_shell_right = st.columns([0.12, 0.76, 0.12])
+                    with nav_shell_mid:
+                        nav_cols = st.columns([1, 1, 1, 1], gap="small")
+                        first_row_id = st.session_state.row_ids[0] if st.session_state.row_ids else None
+                        last_row_id = st.session_state.row_ids[-1] if st.session_state.row_ids else None
+                        prev_row_id = (
+                            st.session_state.row_ids[visible_index - 1]
+                            if visible_index > 0 else None
+                        )
+                        next_row_id = (
+                            st.session_state.row_ids[visible_index + 1]
+                            if visible_index < len(st.session_state.row_ids) - 1 else None
+                        )
+
+                        with nav_cols[0]:
+                            if st.button(
+                                "⏮",
+                                key=f"nav_first_{row_id}",
+                                help="First record",
+                                disabled=visible_index == 0,
+                            ):
+                                focus_existing_row(first_row_id)
+                                st.rerun()
+
+                        with nav_cols[1]:
+                            if st.button(
+                                "◀",
+                                key=f"nav_prev_{row_id}",
+                                help="Previous record",
+                                disabled=prev_row_id is None,
+                            ):
+                                focus_existing_row(prev_row_id)
+                                st.rerun()
+
+                        with nav_cols[2]:
+                            if st.button(
+                                "▶",
+                                key=f"nav_next_{row_id}",
+                                help="Next record",
+                                disabled=next_row_id is None,
+                            ):
+                                focus_existing_row(next_row_id)
+                                st.rerun()
+
+                        with nav_cols[3]:
+                            if st.button(
+                                "⏭",
+                                key=f"nav_last_{row_id}",
+                                help="Last record",
+                                disabled=visible_index == len(st.session_state.row_ids) - 1,
+                            ):
+                                focus_existing_row(last_row_id)
+                                st.rerun()
 
                 with action_cols[2]:
                     st.write("")
