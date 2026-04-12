@@ -2287,6 +2287,53 @@ def save_or_update_current_comparison(selected_codes):
     return True, "Comparison saved successfully."
 
 
+def save_current_comparison_from_state(force_new: bool = False, override_name: str | None = None):
+    selected_codes = get_current_selected_codes_from_state()
+    if not selected_codes:
+        return False, "Please select companies first."
+
+    comparison_name = (override_name or st.session_state.get("comparison_name_input", "")).strip()
+    if not comparison_name:
+        comparison_name = auto_comparison_name(selected_codes)
+
+    comparison_file = get_current_user_comparisons_file()
+    current_id = None if force_new else st.session_state.get("current_comparison_id")
+    payload_state = collect_comparison_state_payload(selected_codes)
+    payload_companies = [get_company_label(code) for code in selected_codes]
+    payload_sources = build_source_files_map(selected_codes)
+
+    if current_id:
+        ok = update_comparison(
+            comparison_file,
+            comparison_id=current_id,
+            owner_sub=get_current_user_id(),
+            owner_email=get_current_user_email(),
+            name=comparison_name,
+            companies=payload_companies,
+            source_files=payload_sources,
+            state=payload_state,
+        )
+        if ok:
+            st.session_state["comparison_name_input"] = comparison_name
+            st.session_state["active_comparison_label"] = comparison_name
+            return True, "Comparison updated successfully."
+        return False, "This comparison no longer exists. Save it again as new."
+
+    comparison_id = save_new_comparison(
+        comparison_file,
+        owner_sub=get_current_user_id(),
+        owner_email=get_current_user_email(),
+        name=comparison_name,
+        companies=payload_companies,
+        source_files=payload_sources,
+        state=payload_state,
+    )
+    st.session_state["current_comparison_id"] = comparison_id
+    st.session_state["comparison_name_input"] = comparison_name
+    st.session_state["active_comparison_label"] = comparison_name
+    return True, "Comparison saved successfully."
+
+
 def get_previous_row_discounts(current_row_id, code):
     row_ids = st.session_state.get("row_ids", [])
     try:
@@ -2903,8 +2950,9 @@ if st.session_state.get("show_leave_prompt"):
             save_c1, save_c2 = st.columns(2)
             with save_c1:
                 if st.button("Save", key="leave_prompt_save", use_container_width=True):
-                    ok, msg = save_or_update_current_comparison(selected_codes_for_save)
+                    ok, msg = save_current_comparison_from_state(force_new=False)
                     if ok:
+                        st.session_state["comparison_dirty"] = False
                         mark_comparison_clean()
                         execute_pending_leave_action()
                         st.rerun()
@@ -2917,10 +2965,9 @@ if st.session_state.get("show_leave_prompt"):
                     if not new_name:
                         st.warning("Please enter a new name for Save As.")
                     else:
-                        st.session_state["comparison_name_input"] = new_name
-                        st.session_state["current_comparison_id"] = None
-                        ok, msg = save_or_update_current_comparison(selected_codes_for_save)
+                        ok, msg = save_current_comparison_from_state(force_new=True, override_name=new_name)
                         if ok:
+                            st.session_state["comparison_dirty"] = False
                             mark_comparison_clean()
                             execute_pending_leave_action()
                             st.rerun()
