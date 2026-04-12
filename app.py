@@ -773,16 +773,35 @@ def get_comparison_state_signature():
     return json.dumps(relevant, sort_keys=True, ensure_ascii=False, default=str)
 
 
+
+def get_current_selected_codes_from_state():
+    company_options_for_state = {
+        f"{row['name']} ({row['code']})": row["code"] for _, row in companies_df.iterrows()
+    }
+    return [
+        company_options_for_state[x]
+        for x in st.session_state.get("comparison_company_selection", [])
+        if x in company_options_for_state
+    ]
+
+
+def get_comparison_payload_signature_from_state():
+    selected_codes = get_current_selected_codes_from_state()
+    payload = collect_comparison_state_payload(selected_codes)
+
+    filtered = {}
+    for key, value in payload.items():
+        if key == "next_row_id":
+            continue
+        filtered[key] = value
+
+    return json.dumps(filtered, sort_keys=True, ensure_ascii=False, default=str)
+
+
 def mark_comparison_clean():
     st.session_state["comparison_saved_signature"] = get_comparison_state_signature()
+    st.session_state["comparison_baseline_state_json"] = get_comparison_payload_signature_from_state()
     st.session_state["comparison_dirty"] = False
-
-def refresh_comparison_dirty_state():
-    saved = st.session_state.get("comparison_saved_signature", "")
-    if not saved or not comparison_has_meaningful_content():
-        st.session_state["comparison_dirty"] = False
-        return
-    st.session_state["comparison_dirty"] = (get_comparison_state_signature() != saved)
 
 
 def comparison_has_meaningful_content():
@@ -812,27 +831,27 @@ def comparison_has_meaningful_content():
     return False
 
 
+def refresh_comparison_dirty_state():
+    if not comparison_has_meaningful_content():
+        st.session_state["comparison_dirty"] = False
+        return
+
+    baseline = st.session_state.get("comparison_baseline_state_json", "")
+    if not baseline:
+        st.session_state["comparison_dirty"] = False
+        return
+
+    current = get_comparison_payload_signature_from_state()
+    st.session_state["comparison_dirty"] = (current != baseline)
+
+
 def has_unsaved_comparison_changes():
     refresh_comparison_dirty_state()
-
-    if not comparison_has_meaningful_content():
-        return False
-
     return bool(st.session_state.get("comparison_dirty", False))
 
 
 def mark_comparison_dirty():
-    if not comparison_has_meaningful_content():
-        st.session_state["comparison_dirty"] = False
-        return
-
-    saved = st.session_state.get("comparison_saved_signature", "")
-    if not saved:
-        st.session_state["comparison_dirty"] = False
-        return
-
-    current = get_comparison_state_signature()
-    st.session_state["comparison_dirty"] = current != saved
+    refresh_comparison_dirty_state()
 
 
 @st.cache_data(show_spinner=False)
@@ -2158,6 +2177,8 @@ def clear_current_comparison_state():
     st.session_state["comparison_company_selection"] = []
     st.session_state["comparison_name_input"] = ""
     st.session_state["active_comparison_label"] = ""
+    st.session_state["comparison_loaded_from_record"] = False
+    st.session_state["comparison_baseline_state_json"] = ""
     st.session_state["current_comparison_id"] = None
     st.session_state["show_saved_comparisons"] = False
     st.session_state["show_new_comparison_confirm"] = False
@@ -2179,6 +2200,7 @@ def load_selected_comparison_record(selected_record):
     st.session_state["pending_loaded_comparison_id"] = selected_record.get("id")
     st.session_state["pending_loaded_comparison_name"] = selected_record.get("name", "")
     st.session_state["active_comparison_label"] = selected_record.get("name", "")
+    st.session_state["comparison_loaded_from_record"] = True
     st.session_state["show_saved_comparisons"] = False
     return True, ""
 
@@ -2508,6 +2530,12 @@ if "save_as_exit_name" not in st.session_state:
 if "active_comparison_label" not in st.session_state:
     st.session_state["active_comparison_label"] = ""
 
+if "comparison_baseline_state_json" not in st.session_state:
+    st.session_state["comparison_baseline_state_json"] = ""
+
+if "comparison_loaded_from_record" not in st.session_state:
+    st.session_state["comparison_loaded_from_record"] = False
+
 
 # -------------------------------------------------
 # APP FLOW
@@ -2630,6 +2658,7 @@ if st.session_state.get("pending_load_payload") is not None:
     st.session_state["current_comparison_id"] = st.session_state.get("pending_loaded_comparison_id")
     st.session_state["comparison_name_input"] = st.session_state.get("pending_loaded_comparison_name", "")
     st.session_state["active_comparison_label"] = st.session_state.get("pending_loaded_comparison_name", "")
+    st.session_state["comparison_loaded_from_record"] = True
     st.session_state["pending_load_payload"] = None
     st.session_state["pending_loaded_comparison_id"] = None
     st.session_state["pending_loaded_comparison_name"] = ""
@@ -2815,7 +2844,7 @@ if st.session_state.get("show_leave_prompt"):
     with ask_c2:
         if st.button("No", key="leave_prompt_no", use_container_width=True):
             st.session_state["leave_prompt_step"] = ""
-            mark_comparison_clean()
+            refresh_comparison_dirty_state()
             execute_pending_leave_action()
             st.rerun()
 
@@ -3193,6 +3222,7 @@ def render_comparisons():
 
                 st.session_state["current_comparison_id"] = comparison_id
                 st.session_state["active_comparison_label"] = st.session_state.get("comparison_name_input", "").strip()
+                st.session_state["comparison_loaded_from_record"] = True
                 st.success("Comparison saved successfully.")
                 mark_comparison_clean()
 
@@ -3224,6 +3254,7 @@ def render_comparisons():
 
                 if ok:
                     st.session_state["active_comparison_label"] = st.session_state.get("comparison_name_input", "").strip()
+                    st.session_state["comparison_loaded_from_record"] = True
                     st.success("Comparison updated successfully.")
                     mark_comparison_clean()
                 else:
@@ -3252,6 +3283,7 @@ def render_comparisons():
 
                 st.session_state["current_comparison_id"] = comparison_id
                 st.session_state["active_comparison_label"] = st.session_state.get("comparison_name_input", "").strip()
+                st.session_state["comparison_loaded_from_record"] = True
                 st.success("Saved as new comparison.")
                 mark_comparison_clean()
 
@@ -3636,6 +3668,7 @@ def render_comparisons():
                         ok, msg = save_or_update_current_comparison(selected_codes)
                         if ok:
                             st.session_state["active_comparison_label"] = st.session_state.get("comparison_name_input", "").strip()
+                            st.session_state["comparison_loaded_from_record"] = True
                             st.success("Comparison saved successfully.")
                             mark_comparison_clean()
                         else:
