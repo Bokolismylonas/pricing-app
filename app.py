@@ -786,16 +786,35 @@ def get_current_selected_codes_from_state():
 
 
 def get_comparison_payload_signature_from_state():
+    selected_displays = list(st.session_state.get("comparison_company_selection", []))
     selected_codes = get_current_selected_codes_from_state()
-    payload = collect_comparison_state_payload(selected_codes)
+    row_ids = list(st.session_state.get("row_ids", []))
 
-    filtered = {}
-    for key, value in payload.items():
-        if key == "next_row_id":
-            continue
-        filtered[key] = value
+    stable_payload = {
+        "row_ids": row_ids,
+        "comparison_company_selection": selected_displays,
+        "comparison_name_input": st.session_state.get("comparison_name_input", ""),
+        "current_comparison_id": st.session_state.get("current_comparison_id"),
+        "selected_export_fields": list(st.session_state.get("selected_export_fields", [])),
+    }
 
-    return json.dumps(filtered, sort_keys=True, ensure_ascii=False, default=str)
+    for code in selected_codes:
+        stable_payload[f"select_{code}"] = st.session_state.get(f"select_{code}", "")
+        stable_payload[f"carry_forward_{code}"] = bool(st.session_state.get(f"carry_forward_{code}", False))
+
+    for row_id in row_ids:
+        for code in selected_codes:
+            stable_payload[f"row_{row_id}_{code}_product"] = st.session_state.get(
+                f"row_{row_id}_{code}_product", ""
+            )
+            for j in range(1, 6):
+                disc_key = f"row_{row_id}_{code}_disc_{j}"
+                try:
+                    stable_payload[disc_key] = float(st.session_state.get(disc_key, 0.0) or 0.0)
+                except Exception:
+                    stable_payload[disc_key] = 0.0
+
+    return json.dumps(stable_payload, sort_keys=True, ensure_ascii=False, default=str)
 
 
 def mark_comparison_clean():
@@ -3156,6 +3175,8 @@ def render_sources():
 
 def render_comparisons():
     refresh_comparison_dirty_state()
+    if st.session_state.get("comparison_loaded_success_message"):
+        mark_comparison_clean()
     st.markdown('<div class="app-card">', unsafe_allow_html=True)
     st.markdown("## Comparisons")
 
