@@ -3539,23 +3539,11 @@ def render_comparisons():
     current_selected_displays = st.session_state.get("comparison_company_selection", [])
     current_selected_codes = [company_options[x] for x in current_selected_displays if x in company_options]
 
-    topbar_c1, topbar_c2 = st.columns([1, 5])
-    with topbar_c1:
-        if st.button("⬅ Menu", use_container_width=True, key="comparison_back_to_menu_2"):
-            if has_unsaved_comparison_changes():
-                st.session_state["show_leave_prompt"] = True
-                st.session_state["leave_prompt_step"] = ""
-                st.session_state["pending_action_type"] = "switch_view"
-                st.session_state["pending_target_view"] = "Comparisons"
-                st.session_state["comparison_mode"] = "menu"
-                st.session_state["show_saved_comparisons"] = False
-                st.rerun()
-            else:
-                st.session_state["comparison_mode"] = "menu"
-                st.session_state["show_saved_comparisons"] = False
-                st.rerun()
+    active_bar_c1, active_bar_c2 = st.columns([1, 5])
+    with active_bar_c1:
+        st.empty()
 
-    with topbar_c2:
+    with active_bar_c2:
         active_label = st.session_state.get("active_comparison_label", "").strip()
         if active_label:
             st.info(f'📄 Active comparison: {active_label}')
@@ -3813,6 +3801,25 @@ def render_comparisons():
                 row_save_cols = st.columns([3.2, 1.2, 1.2])
 
                 with row_save_cols[1]:
+                    if st.button(
+                        "⬅ Menu",
+                        key=f"row_menu_back_{row_id}",
+                        use_container_width=True,
+                    ):
+                        if has_unsaved_comparison_changes():
+                            st.session_state["show_leave_prompt"] = True
+                            st.session_state["leave_prompt_step"] = ""
+                            st.session_state["pending_action_type"] = "switch_view"
+                            st.session_state["pending_target_view"] = "Comparisons"
+                            st.session_state["comparison_mode"] = "menu"
+                            st.session_state["show_saved_comparisons"] = False
+                            st.rerun()
+                        else:
+                            st.session_state["comparison_mode"] = "menu"
+                            st.session_state["show_saved_comparisons"] = False
+                            st.rerun()
+
+                with row_save_cols[2]:
                     if st.button(
                         "Save",
                         key=f"save_complete_{row_id}",
