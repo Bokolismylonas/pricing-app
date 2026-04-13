@@ -495,14 +495,15 @@ st.markdown(
         flex-wrap: nowrap;
     }
 
-    .row-nav-btn {
+    .row-nav-btn,
+    .row-nav-link {
         width: 40px;
         height: 40px;
         min-width: 40px;
         border-radius: 10px;
         border: 1px solid rgba(148,163,184,0.35);
         background: #ffffff;
-        color: #111827;
+        color: #111827 !important;
         font-size: 18px;
         font-weight: 700;
         line-height: 1;
@@ -512,17 +513,27 @@ st.markdown(
         box-shadow: 0 4px 12px rgba(0,0,0,0.08);
         cursor: pointer;
         transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
+        text-decoration: none !important;
     }
 
-    .row-nav-btn:hover {
+    .row-nav-btn:hover,
+    .row-nav-link:hover {
         transform: translateY(-1px);
         box-shadow: 0 6px 14px rgba(59,130,246,0.16);
+        text-decoration: none !important;
     }
 
-    .row-nav-btn:disabled {
+    .row-nav-btn:disabled,
+    .row-nav-link.disabled {
         opacity: 0.38;
         cursor: default;
         box-shadow: none;
+        pointer-events: none;
+    }
+
+    .row-anchor {
+        position: relative;
+        top: -8px;
     }
 
     @media (max-width: 768px) {
@@ -2541,49 +2552,20 @@ def render_row_navigation_buttons(current_row_id, visible_index):
     prev_row_id = row_ids[visible_index - 1] if visible_index > 0 else None
     next_row_id = row_ids[visible_index + 1] if visible_index < len(row_ids) - 1 else None
 
-    nav_c1, nav_c2, nav_c3, nav_c4 = st.columns([1, 1, 1, 1])
+    def make_link(symbol, target_row_id=None, disabled=False):
+        if disabled or not target_row_id:
+            return f'<span class="row-nav-link disabled">{symbol}</span>'
+        return f'<a class="row-nav-link" href="#row-anchor-{target_row_id}">{symbol}</a>'
 
-    with nav_c1:
-        if st.button(
-            "⏮",
-            key=f"nav_first_{current_row_id}",
-            use_container_width=True,
-            disabled=(visible_index == 0),
-        ):
-            focus_existing_row(first_row_id)
-            st.rerun()
-
-    with nav_c2:
-        if st.button(
-            "◀",
-            key=f"nav_prev_{current_row_id}",
-            use_container_width=True,
-            disabled=(prev_row_id is None),
-        ):
-            if prev_row_id is not None:
-                focus_existing_row(prev_row_id)
-                st.rerun()
-
-    with nav_c3:
-        if st.button(
-            "▶",
-            key=f"nav_next_{current_row_id}",
-            use_container_width=True,
-            disabled=(next_row_id is None),
-        ):
-            if next_row_id is not None:
-                focus_existing_row(next_row_id)
-                st.rerun()
-
-    with nav_c4:
-        if st.button(
-            "⏭",
-            key=f"nav_last_{current_row_id}",
-            use_container_width=True,
-            disabled=(visible_index == len(row_ids) - 1),
-        ):
-            focus_existing_row(last_row_id)
-            st.rerun()
+    nav_html = f"""
+    <div class="row-nav-wrap">
+        {make_link("⏮", first_row_id, visible_index == 0)}
+        {make_link("◀", prev_row_id, prev_row_id is None)}
+        {make_link("▶", next_row_id, next_row_id is None)}
+        {make_link("⏭", last_row_id, visible_index == len(row_ids) - 1)}
+    </div>
+    """
+    st.markdown(nav_html, unsafe_allow_html=True)
 
 
 def apply_specific_discount_to_all_rows(selected_codes, target_code, disc_index, disc_value):
@@ -3755,7 +3737,7 @@ def render_comparisons():
 
         for visible_index, row_id in enumerate(st.session_state.row_ids):
             ensure_discount_defaults_for_row(row_id, selected_codes)
-            st.markdown(f'<div id="row-anchor-{row_id}"></div>', unsafe_allow_html=True)
+            st.markdown(f'<div id="row-anchor-{row_id}" class="row-anchor"></div>', unsafe_allow_html=True)
             st.markdown(f"#### Row {visible_index + 1}")
 
             row_final_prices = {}
