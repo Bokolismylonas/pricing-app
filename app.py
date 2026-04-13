@@ -2501,10 +2501,13 @@ def execute_pending_leave_action():
     st.session_state["pending_action_type"] = None
     st.session_state["pending_target_view"] = None
     st.session_state["pending_action_payload"] = None
-    st.session_state["save_as_exit_name"] = ""
+    st.session_state["pending_save_as_exit_name"] = ""
 
     if action_type == "switch_view" and target_view:
         st.session_state["committed_view"] = target_view
+        if target_view == "Comparisons":
+            st.session_state["comparison_mode"] = "menu"
+            st.session_state["show_saved_comparisons"] = False
     elif action_type == "logout":
         logout_current_user()
     elif action_type == "clear_comparison":
@@ -2690,7 +2693,10 @@ if "pending_action_payload" not in st.session_state:
     st.session_state["pending_action_payload"] = None
 
 if "save_as_exit_name" not in st.session_state:
-    st.session_state["save_as_exit_name"] = ""
+    st.session_state["pending_save_as_exit_name"] = ""
+
+if "pending_save_as_exit_name" not in st.session_state:
+    st.session_state["pending_save_as_exit_name"] = None
 
 if "active_comparison_label" not in st.session_state:
     st.session_state["active_comparison_label"] = ""
@@ -2929,6 +2935,9 @@ with st.sidebar:
         st.rerun()
     elif not st.session_state.get("show_leave_prompt"):
         st.session_state["committed_view"] = current_view_ui
+        if current_view_ui == "Comparisons":
+            st.session_state["comparison_mode"] = "menu"
+            st.session_state["show_saved_comparisons"] = False
         current_view = current_view_ui
 
     st.markdown("---")
@@ -3355,6 +3364,11 @@ def render_comparisons():
         st.session_state["comparison_name_input"] = pending_name
         st.session_state["pending_comparison_name_input"] = None
 
+    pending_leave_name = st.session_state.get("pending_save_as_exit_name")
+    if pending_leave_name is not None:
+        st.session_state["save_as_exit_name"] = pending_leave_name
+        st.session_state["pending_save_as_exit_name"] = None
+
     pending_inline_name = st.session_state.get("pending_inline_save_as_name")
     if pending_inline_name is not None:
         st.session_state["inline_save_as_name"] = pending_inline_name
@@ -3438,6 +3452,7 @@ def render_comparisons():
                                     if ok:
                                         st.session_state["show_inline_save_options"] = False
                                         st.session_state["pending_inline_save_as_name"] = ""
+                                        st.session_state["pending_save_as_exit_name"] = ""
                                         st.session_state["show_saved_comparisons"] = False
                                         st.session_state["comparison_mode"] = "edit"
                                         mark_comparison_clean()
@@ -3468,6 +3483,7 @@ def render_comparisons():
                 clear_current_comparison_state()
                 st.session_state["show_inline_save_options"] = False
                 st.session_state["pending_inline_save_as_name"] = ""
+                st.session_state["pending_save_as_exit_name"] = ""
                 st.session_state["comparison_mode"] = "edit"
                 st.rerun()
 
