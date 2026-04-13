@@ -9,6 +9,8 @@ from datetime import date, datetime, timedelta, timezone
 import streamlit as st
 st.write("APP STARTED")
 st.stop()
+import streamlit as st
+raise Exception("TEST APP.PY IS BEING EXECUTED")
 
 import pandas as pd
 import streamlit as st
