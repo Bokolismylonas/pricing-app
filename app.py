@@ -2714,7 +2714,10 @@ if "show_inline_save_options" not in st.session_state:
     st.session_state["show_inline_save_options"] = False
 
 if "inline_save_as_name" not in st.session_state:
-    st.session_state["inline_save_as_name"] = ""
+    st.session_state["pending_inline_save_as_name"] = ""
+
+if "pending_inline_save_as_name" not in st.session_state:
+    st.session_state["pending_inline_save_as_name"] = None
 
 if "row_action_message" not in st.session_state:
     st.session_state["row_action_message"] = ""
@@ -3352,10 +3355,109 @@ def render_comparisons():
         st.session_state["comparison_name_input"] = pending_name
         st.session_state["pending_comparison_name_input"] = None
 
+    pending_inline_name = st.session_state.get("pending_inline_save_as_name")
+    if pending_inline_name is not None:
+        st.session_state["inline_save_as_name"] = pending_inline_name
+        st.session_state["pending_inline_save_as_name"] = None
+
     st.markdown('<div class="app-card">', unsafe_allow_html=True)
     st.markdown("## Comparisons")
 
     mode = st.session_state.get("comparison_mode", "menu")
+
+    if mode == "load":
+        st.markdown("### Load Comparison")
+
+        comparison_file = get_current_user_comparisons_file()
+        saved_records = list_comparisons(comparison_file)
+
+        if not saved_records:
+            st.info("You have no saved comparisons yet.")
+        else:
+            company_options = {
+                f"{row['name']} ({row['code']})": row["code"] for _, row in companies_df.iterrows()
+            }
+
+            saved_options = {
+                build_display_label(record): record["id"]
+                for record in saved_records
+            }
+
+            selected_saved_label = st.selectbox(
+                "Your saved comparisons",
+                [""] + list(saved_options.keys()),
+                key="selected_saved_comparison_label_menu",
+            )
+
+            action_c1, action_c2, action_c3 = st.columns([1, 1, 1])
+
+            with action_c3:
+                if st.button("⬅ Back", use_container_width=True, key="comparison_menu_back"):
+                    st.session_state["show_saved_comparisons"] = False
+                    st.session_state["comparison_mode"] = "menu"
+                    st.rerun()
+
+            if selected_saved_label:
+                selected_saved_id = saved_options[selected_saved_label]
+                selected_record = get_comparison(comparison_file, selected_saved_id)
+
+                if selected_record:
+                    source_line = ", ".join(
+                        [
+                            f"{k}: {v}"
+                            for k, v in selected_record.get("source_files", {}).items()
+                            if v
+                        ]
+                    )
+                    if source_line:
+                        st.caption("Source files: " + source_line)
+
+                    with action_c1:
+                        if st.button("Load Selected", use_container_width=True, key="load_selected_comparison_btn_menu"):
+                            state_payload = selected_record.get("state", {}) or {}
+                            missing_companies = comparison_has_missing_companies(state_payload, company_options)
+
+                            if missing_companies:
+                                st.warning(
+                                    "This comparison cannot be loaded because some companies were deleted: "
+                                    + ", ".join(missing_companies)
+                                )
+                            else:
+                                if has_real_changes_against_loaded_baseline():
+                                    st.session_state["show_leave_prompt"] = True
+                                    st.session_state["leave_prompt_step"] = ""
+                                    st.session_state["pending_action_type"] = "load_comparison"
+                                    st.session_state["pending_action_payload"] = {
+                                        "state_payload": selected_record.get("state", {}) or {},
+                                        "comparison_id": selected_record.get("id"),
+                                        "comparison_name": selected_record.get("name", ""),
+                                    }
+                                    st.rerun()
+                                else:
+                                    ok, msg = load_selected_comparison_record(selected_record)
+                                    if ok:
+                                        st.session_state["show_inline_save_options"] = False
+                                        st.session_state["pending_inline_save_as_name"] = ""
+                                        st.session_state["show_saved_comparisons"] = False
+                                        st.session_state["comparison_mode"] = "edit"
+                                        mark_comparison_clean()
+                                        st.rerun()
+                                    else:
+                                        st.warning(msg)
+
+                    with action_c2:
+                        if st.button("🗑️ Delete", use_container_width=True, key="delete_selected_comparison_btn_menu"):
+                            ok = delete_comparison(comparison_file, selected_record.get("id"))
+                            if ok:
+                                if st.session_state.get("current_comparison_id") == selected_record.get("id"):
+                                    st.session_state["current_comparison_id"] = None
+                                st.success("Comparison deleted successfully.")
+                                st.rerun()
+                            else:
+                                st.warning("Could not delete comparison.")
+
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
 
     if mode == "menu":
         st.markdown("### Start")
@@ -3365,7 +3467,7 @@ def render_comparisons():
             if st.button("➕ New Comparison", use_container_width=True, key="comparison_menu_new"):
                 clear_current_comparison_state()
                 st.session_state["show_inline_save_options"] = False
-                st.session_state["inline_save_as_name"] = ""
+                st.session_state["pending_inline_save_as_name"] = ""
                 st.session_state["comparison_mode"] = "edit"
                 st.rerun()
 
@@ -3373,97 +3475,8 @@ def render_comparisons():
             if st.button("📂 Load Comparison", use_container_width=True, key="comparison_menu_load"):
                 st.session_state["show_saved_comparisons"] = True
                 st.session_state["comparison_mode"] = "load"
+                st.session_state["selected_saved_comparison_label_menu"] = ""
                 st.rerun()
-
-        if st.session_state.get("show_saved_comparisons") or mode == "load":
-            st.markdown("---")
-            st.markdown("### Load Comparison")
-
-            comparison_file = get_current_user_comparisons_file()
-            saved_records = list_comparisons(comparison_file)
-
-            if not saved_records:
-                st.info("You have no saved comparisons yet.")
-            else:
-                company_options = {
-                    f"{row['name']} ({row['code']})": row["code"] for _, row in companies_df.iterrows()
-                }
-
-                saved_options = {
-                    build_display_label(record): record["id"]
-                    for record in saved_records
-                }
-
-                selected_saved_label = st.selectbox(
-                    "Your saved comparisons",
-                    [""] + list(saved_options.keys()),
-                    key="selected_saved_comparison_label_menu",
-                )
-
-                action_c1, action_c2, action_c3 = st.columns([1, 1, 1])
-
-                with action_c3:
-                    if st.button("⬅ Back", use_container_width=True, key="comparison_menu_back"):
-                        st.session_state["show_saved_comparisons"] = False
-                        st.session_state["comparison_mode"] = "menu"
-                        st.rerun()
-
-                if selected_saved_label:
-                    selected_saved_id = saved_options[selected_saved_label]
-                    selected_record = get_comparison(comparison_file, selected_saved_id)
-
-                    if selected_record:
-                        source_line = ", ".join(
-                            [
-                                f"{k}: {v}"
-                                for k, v in selected_record.get("source_files", {}).items()
-                                if v
-                            ]
-                        )
-                        if source_line:
-                            st.caption("Source files: " + source_line)
-
-                        with action_c1:
-                            if st.button("Load Selected", use_container_width=True, key="load_selected_comparison_btn_menu"):
-                                state_payload = selected_record.get("state", {}) or {}
-                                missing_companies = comparison_has_missing_companies(state_payload, company_options)
-
-                                if missing_companies:
-                                    st.warning(
-                                        "This comparison cannot be loaded because some companies were deleted: "
-                                        + ", ".join(missing_companies)
-                                    )
-                                else:
-                                    if has_real_changes_against_loaded_baseline():
-                                        st.session_state["show_leave_prompt"] = True
-                                        st.session_state["leave_prompt_step"] = ""
-                                        st.session_state["pending_action_type"] = "load_comparison"
-                                        st.session_state["pending_action_payload"] = {
-                                            "state_payload": selected_record.get("state", {}) or {},
-                                            "comparison_id": selected_record.get("id"),
-                                            "comparison_name": selected_record.get("name", ""),
-                                        }
-                                        st.rerun()
-                                    else:
-                                        ok, msg = load_selected_comparison_record(selected_record)
-                                        if ok:
-                                            st.session_state["show_inline_save_options"] = False
-                                            st.session_state["inline_save_as_name"] = ""
-                                            mark_comparison_clean()
-                                            st.rerun()
-                                        else:
-                                            st.warning(msg)
-
-                        with action_c2:
-                            if st.button("🗑️ Delete", use_container_width=True, key="delete_selected_comparison_btn_menu"):
-                                ok = delete_comparison(comparison_file, selected_record.get("id"))
-                                if ok:
-                                    if st.session_state.get("current_comparison_id") == selected_record.get("id"):
-                                        st.session_state["current_comparison_id"] = None
-                                    st.success("Comparison deleted successfully.")
-                                    st.rerun()
-                                else:
-                                    st.warning("Could not delete comparison.")
 
         st.markdown("</div>", unsafe_allow_html=True)
         return
@@ -3531,9 +3544,11 @@ def render_comparisons():
                 st.session_state["pending_action_type"] = "switch_view"
                 st.session_state["pending_target_view"] = "Comparisons"
                 st.session_state["comparison_mode"] = "menu"
+                st.session_state["show_saved_comparisons"] = False
                 st.rerun()
             else:
                 st.session_state["comparison_mode"] = "menu"
+                st.session_state["show_saved_comparisons"] = False
                 st.rerun()
 
     with topbar_c2:
@@ -3853,7 +3868,7 @@ def render_comparisons():
                         st.session_state["show_inline_save_options"] = False
                         st.session_state["comparison_dirty"] = False
                         st.session_state["comparison_user_modified"] = False
-                        st.session_state["inline_save_as_name"] = ""
+                        st.session_state["pending_inline_save_as_name"] = ""
                         mark_comparison_clean()
                         st.success("Saved as new comparison.")
                     else:
