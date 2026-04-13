@@ -2509,6 +2509,7 @@ def execute_pending_leave_action():
             st.session_state["comparison_mode"] = "menu"
             st.session_state["show_saved_comparisons"] = False
             st.session_state["show_inline_save_options"] = False
+            st.session_state["inline_save_mode"] = "menu"
             st.session_state["pending_inline_save_as_name"] = ""
             st.session_state["pending_save_as_exit_name"] = ""
     elif action_type == "logout":
@@ -2722,6 +2723,9 @@ if "comparison_mode" not in st.session_state:
 if "show_inline_save_options" not in st.session_state:
     st.session_state["show_inline_save_options"] = False
 
+if "inline_save_mode" not in st.session_state:
+    st.session_state["inline_save_mode"] = "menu"
+
 if "inline_save_as_name" not in st.session_state:
     st.session_state["inline_save_as_name"] = ""
 
@@ -2908,44 +2912,38 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("🧭 Navigation")
 
-    nav_options = [
-        "Company Manager",
-        "Sources",
-        "Comparisons",
-    ]
+    nav_buttons = ["Company Manager", "Sources", "Comparisons"]
     if is_admin_user():
-        nav_options.append("Admin Panel")
+        nav_buttons.append("Admin Panel")
 
-    current_view_ui = st.radio(
-        "Go to",
-        nav_options,
-        key="sidebar_navigation",
-        label_visibility="collapsed",
-    )
+    current_view = st.session_state.get("committed_view", "Comparisons")
 
-    current_view = st.session_state.get("committed_view", current_view_ui)
-
-    if (
-        current_view_ui != current_view
-        and current_view == "Comparisons"
-        and has_unsaved_comparison_changes()
-        and not st.session_state.get("show_leave_prompt")
-    ):
-        st.session_state["show_leave_prompt"] = True
-        st.session_state["leave_prompt_step"] = ""
-        st.session_state["pending_target_view"] = current_view_ui
-        st.session_state["pending_action_type"] = "switch_view"
-        st.rerun()
-    elif not st.session_state.get("show_leave_prompt"):
-        previous_committed_view = st.session_state.get("committed_view", current_view_ui)
-        st.session_state["committed_view"] = current_view_ui
-        if current_view_ui == "Comparisons" and previous_committed_view != "Comparisons":
-            st.session_state["comparison_mode"] = "menu"
-            st.session_state["show_saved_comparisons"] = False
-            st.session_state["show_inline_save_options"] = False
-            st.session_state["pending_inline_save_as_name"] = ""
-            st.session_state["pending_save_as_exit_name"] = ""
-        current_view = current_view_ui
+    for nav_label in nav_buttons:
+        button_label = f"• {nav_label}" if current_view == nav_label else nav_label
+        if st.button(button_label, use_container_width=True, key=f"sidebar_nav_btn_{nav_label}"):
+            current_view_ui = nav_label
+            if (
+                current_view_ui != current_view
+                and current_view == "Comparisons"
+                and has_unsaved_comparison_changes()
+                and not st.session_state.get("show_leave_prompt")
+            ):
+                st.session_state["show_leave_prompt"] = True
+                st.session_state["leave_prompt_step"] = ""
+                st.session_state["pending_target_view"] = current_view_ui
+                st.session_state["pending_action_type"] = "switch_view"
+                st.rerun()
+            else:
+                previous_committed_view = st.session_state.get("committed_view", current_view_ui)
+                st.session_state["committed_view"] = current_view_ui
+                if current_view_ui == "Comparisons" and previous_committed_view != "Comparisons":
+                    st.session_state["comparison_mode"] = "menu"
+                    st.session_state["show_saved_comparisons"] = False
+                    st.session_state["show_inline_save_options"] = False
+                    st.session_state["inline_save_mode"] = "menu"
+                    st.session_state["pending_inline_save_as_name"] = ""
+                    st.session_state["pending_save_as_exit_name"] = ""
+                st.rerun()
 
     st.markdown("---")
     st.subheader("💳 Billing")
@@ -3461,6 +3459,7 @@ def render_comparisons():
                                     ok, msg = load_selected_comparison_record(selected_record)
                                     if ok:
                                         st.session_state["show_inline_save_options"] = False
+                                        st.session_state["inline_save_mode"] = "menu"
                                         st.session_state["pending_inline_save_as_name"] = ""
                                         st.session_state["pending_save_as_exit_name"] = ""
                                         st.session_state["show_saved_comparisons"] = False
@@ -3492,6 +3491,7 @@ def render_comparisons():
             if st.button("➕ New Comparison", use_container_width=True, key="comparison_menu_new"):
                 clear_current_comparison_state()
                 st.session_state["show_inline_save_options"] = False
+                st.session_state["inline_save_mode"] = "menu"
                 st.session_state["pending_inline_save_as_name"] = ""
                 st.session_state["pending_save_as_exit_name"] = ""
                 st.session_state["comparison_mode"] = "edit"
@@ -3823,6 +3823,7 @@ def render_comparisons():
                         use_container_width=True,
                     ):
                         st.session_state["show_inline_save_options"] = True
+                        st.session_state["inline_save_mode"] = "menu"
                         st.rerun()
 
                 comparison_summaries = build_comparison_summary(
@@ -3845,27 +3846,44 @@ def render_comparisons():
         st.markdown('<div class="save-panel-card">', unsafe_allow_html=True)
         st.markdown("### Save Comparison")
 
-        save_inline_c1, save_inline_c2 = st.columns(2)
+        save_mode = st.session_state.get("inline_save_mode", "menu")
 
-        with save_inline_c1:
-            if st.button("Save", use_container_width=True, key="inline_save_existing_btn"):
-                current_name = st.session_state.get("active_comparison_label", "").strip() or st.session_state.get("comparison_name_input", "").strip()
-                if not st.session_state.get("current_comparison_id"):
-                    st.warning("This comparison has not been saved before. Use Save As.")
-                elif not current_name:
-                    st.warning("No active comparison name found. Use Save As.")
-                else:
-                    ok, msg = save_current_comparison_from_state(force_new=False, override_name=current_name)
-                    if ok:
-                        st.session_state["show_inline_save_options"] = False
-                        st.session_state["comparison_dirty"] = False
-                        st.session_state["comparison_user_modified"] = False
-                        mark_comparison_clean()
-                        st.success("Comparison saved successfully.")
+        if save_mode == "menu":
+            menu_save_c1, menu_save_c2 = st.columns(2)
+
+            with menu_save_c1:
+                if st.button("Save", use_container_width=True, key="inline_save_menu_save"):
+                    current_name = st.session_state.get("active_comparison_label", "").strip() or st.session_state.get("comparison_name_input", "").strip()
+                    if not st.session_state.get("current_comparison_id"):
+                        st.warning("This comparison has not been saved before. Use Save As.")
+                    elif not current_name:
+                        st.warning("No active comparison name found. Use Save As.")
                     else:
-                        st.warning(msg)
+                        ok, msg = save_current_comparison_from_state(force_new=False, override_name=current_name)
+                        if ok:
+                            st.session_state["show_inline_save_options"] = False
+                            st.session_state["inline_save_mode"] = "menu"
+                            st.session_state["comparison_dirty"] = False
+                            st.session_state["comparison_user_modified"] = False
+                            mark_comparison_clean()
+                            st.success("Comparison saved successfully.")
+                        else:
+                            st.warning(msg)
 
-        with save_inline_c2:
+            with menu_save_c2:
+                if st.button("Save As", use_container_width=True, key="inline_save_menu_save_as"):
+                    st.session_state["inline_save_mode"] = "save_as"
+                    st.rerun()
+
+        else:
+            back_c1, back_c2 = st.columns([1, 5])
+            with back_c1:
+                if st.button("⬅ Back", use_container_width=True, key="inline_save_as_back"):
+                    st.session_state["inline_save_mode"] = "menu"
+                    st.rerun()
+            with back_c2:
+                st.empty()
+
             st.text_input("New name for Save As", key="inline_save_as_name")
             if st.button("Save As", use_container_width=True, key="inline_save_as_btn"):
                 new_name = st.session_state.get("inline_save_as_name", "").strip()
@@ -3875,6 +3893,7 @@ def render_comparisons():
                     ok, msg = save_current_comparison_from_state(force_new=True, override_name=new_name)
                     if ok:
                         st.session_state["show_inline_save_options"] = False
+                        st.session_state["inline_save_mode"] = "menu"
                         st.session_state["comparison_dirty"] = False
                         st.session_state["comparison_user_modified"] = False
                         st.session_state["pending_inline_save_as_name"] = ""
