@@ -2541,27 +2541,49 @@ def render_row_navigation_buttons(current_row_id, visible_index):
     prev_row_id = row_ids[visible_index - 1] if visible_index > 0 else None
     next_row_id = row_ids[visible_index + 1] if visible_index < len(row_ids) - 1 else None
 
-    def make_button_html(symbol, target_row_id, disabled=False):
-        disabled_attr = "disabled" if disabled or not target_row_id else ""
-        onclick = ""
-        if target_row_id and not disabled:
-            onclick = (
-                "onclick=\"(function(){"
-                f"const el = window.parent.document.getElementById('row-anchor-{target_row_id}');"
-                "if (el) { el.scrollIntoView({behavior: 'auto', block: 'start'}); }"
-                "})()\""
-            )
-        return f'<button type="button" class="row-nav-btn" {disabled_attr} {onclick}>{symbol}</button>'
+    nav_c1, nav_c2, nav_c3, nav_c4 = st.columns([1, 1, 1, 1])
 
-    nav_html = f'''
-        <div class="row-nav-wrap">
-            {make_button_html("⏮", first_row_id, visible_index == 0)}
-            {make_button_html("◀", prev_row_id, prev_row_id is None)}
-            {make_button_html("▶", next_row_id, next_row_id is None)}
-            {make_button_html("⏭", last_row_id, visible_index == len(row_ids) - 1)}
-        </div>
-    '''
-    components.html(nav_html, height=58)
+    with nav_c1:
+        if st.button(
+            "⏮",
+            key=f"nav_first_{current_row_id}",
+            use_container_width=True,
+            disabled=(visible_index == 0),
+        ):
+            focus_existing_row(first_row_id)
+            st.rerun()
+
+    with nav_c2:
+        if st.button(
+            "◀",
+            key=f"nav_prev_{current_row_id}",
+            use_container_width=True,
+            disabled=(prev_row_id is None),
+        ):
+            if prev_row_id is not None:
+                focus_existing_row(prev_row_id)
+                st.rerun()
+
+    with nav_c3:
+        if st.button(
+            "▶",
+            key=f"nav_next_{current_row_id}",
+            use_container_width=True,
+            disabled=(next_row_id is None),
+        ):
+            if next_row_id is not None:
+                focus_existing_row(next_row_id)
+                st.rerun()
+
+    with nav_c4:
+        if st.button(
+            "⏭",
+            key=f"nav_last_{current_row_id}",
+            use_container_width=True,
+            disabled=(visible_index == len(row_ids) - 1),
+        ):
+            focus_existing_row(last_row_id)
+            st.rerun()
 
 
 def apply_specific_discount_to_all_rows(selected_codes, target_code, disc_index, disc_value):
