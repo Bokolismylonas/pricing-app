@@ -3524,7 +3524,7 @@ def render_comparisons():
 
     topbar_c1, topbar_c2 = st.columns([1, 5])
     with topbar_c1:
-        if st.button("⬅ Menu", use_container_width=True, key="comparison_back_to_menu"):
+        if st.button("⬅ Menu", use_container_width=True, key="comparison_back_to_menu_2"):
             if has_unsaved_comparison_changes():
                 st.session_state["show_leave_prompt"] = True
                 st.session_state["leave_prompt_step"] = ""
