@@ -2228,7 +2228,7 @@ def collect_merged_comparison_state_payload(selected_codes):
 def restore_comparison_state_payload(payload: dict):
     keys_to_clear = [
         key for key in list(st.session_state.keys())
-        if key.startswith("row_") or key.startswith("select_") or key.startswith("carry_forward_")
+        if key.startswith("row_") or key.startswith("select_") or key.startswith("carry_forward_") or key.startswith("widget_row_")
     ]
 
     for key in keys_to_clear:
@@ -2254,7 +2254,7 @@ def restore_comparison_state_payload(payload: dict):
 def clear_current_comparison_state():
     keys_to_clear = [
         key for key in list(st.session_state.keys())
-        if key.startswith("row_") or key.startswith("select_") or key.startswith("carry_forward_")
+        if key.startswith("row_") or key.startswith("select_") or key.startswith("carry_forward_") or key.startswith("widget_row_")
     ]
 
     for key in keys_to_clear:
@@ -2345,6 +2345,12 @@ def save_or_update_current_comparison(selected_codes):
 
 def save_current_comparison_from_state(force_new: bool = False, override_name: str | None = None):
     selected_codes = get_current_selected_codes_from_state()
+
+    for row_id in st.session_state.get("row_ids", []):
+        for code in selected_codes:
+            sync_product_widget_to_data(row_id, code)
+            for disc_number in range(1, 6):
+                sync_discount_widget_to_data(row_id, code, disc_number)
     if not selected_codes:
         return False, "Please select companies first."
 
@@ -2356,7 +2362,7 @@ def save_current_comparison_from_state(force_new: bool = False, override_name: s
     current_id = None if force_new else st.session_state.get("current_comparison_id")
     payload_state = (
         collect_merged_comparison_state_payload(selected_codes)
-        if st.session_state.get("comparison_loaded_from_record")
+        if st.session_state.get("comparison_loaded_from_record") or st.session_state.get("active_loaded_state_payload")
         else collect_comparison_state_payload(selected_codes)
     )
     payload_companies = [get_company_label(code) for code in selected_codes]
@@ -2609,6 +2615,24 @@ def mirror_discount_data_to_widget(row_id, code, disc_number):
     st.session_state[widget_key] = value
 
 
+def get_product_widget_key(row_id, code):
+    return f"widget_row_{row_id}_{code}_product"
+
+
+def sync_product_widget_to_data(row_id, code):
+    data_key = f"row_{row_id}_{code}_product"
+    widget_key = get_product_widget_key(row_id, code)
+    st.session_state[data_key] = st.session_state.get(widget_key, "")
+
+
+def mirror_product_data_to_widget(row_id, code):
+    data_key = f"row_{row_id}_{code}_product"
+    widget_key = get_product_widget_key(row_id, code)
+    data_value = st.session_state.get(data_key, "")
+    if st.session_state.get(widget_key) != data_value:
+        st.session_state[widget_key] = data_value
+
+
 
 # -------------------------------------------------
 # SESSION STATE
@@ -2738,6 +2762,9 @@ if "comparison_baseline_state_json" not in st.session_state:
 
 if "comparison_loaded_from_record" not in st.session_state:
     st.session_state["comparison_loaded_from_record"] = False
+
+if "skip_export_preview_once" not in st.session_state:
+    st.session_state["skip_export_preview_once"] = False
 
 
 # -------------------------------------------------
@@ -2920,6 +2947,25 @@ with st.sidebar:
         button_label = f"• {nav_label}" if current_view == nav_label else nav_label
         if st.button(button_label, use_container_width=True, key=f"sidebar_nav_btn_{nav_label}"):
             current_view_ui = nav_label
+
+            if current_view_ui == "Comparisons" and current_view == "Comparisons":
+                if has_unsaved_comparison_changes() and not st.session_state.get("show_leave_prompt"):
+                    st.session_state["show_leave_prompt"] = True
+                    st.session_state["leave_prompt_step"] = ""
+                    st.session_state["pending_target_view"] = "Comparisons"
+                    st.session_state["pending_action_type"] = "switch_view"
+                    st.rerun()
+                else:
+                    st.session_state["committed_view"] = "Comparisons"
+                    st.session_state["comparison_mode"] = "menu"
+                    st.session_state["show_saved_comparisons"] = False
+                    st.session_state["show_inline_save_options"] = False
+                    st.session_state["inline_save_mode"] = "menu"
+                    st.session_state["active_save_row_id"] = None
+                    st.session_state["pending_inline_save_as_name"] = ""
+                    st.session_state["pending_save_as_exit_name"] = ""
+                    st.rerun()
+
             if (
                 current_view_ui != current_view
                 and current_view == "Comparisons"
@@ -2939,6 +2985,7 @@ with st.sidebar:
                     st.session_state["show_saved_comparisons"] = False
                     st.session_state["show_inline_save_options"] = False
                     st.session_state["inline_save_mode"] = "menu"
+                    st.session_state["active_save_row_id"] = None
                     st.session_state["pending_inline_save_as_name"] = ""
                     st.session_state["pending_save_as_exit_name"] = ""
                 st.rerun()
@@ -3495,6 +3542,7 @@ def render_comparisons():
                 st.session_state["pending_inline_save_as_name"] = ""
                 st.session_state["pending_save_as_exit_name"] = ""
                 st.session_state["comparison_mode"] = "edit"
+                st.session_state["skip_export_preview_once"] = False
                 st.rerun()
 
         with menu_c2:
@@ -3502,6 +3550,7 @@ def render_comparisons():
                 st.session_state["show_saved_comparisons"] = True
                 st.session_state["comparison_mode"] = "load"
                 st.session_state["selected_saved_comparison_label_menu"] = ""
+                st.session_state["skip_export_preview_once"] = False
                 st.rerun()
 
         st.markdown("</div>", unsafe_allow_html=True)
@@ -3703,12 +3752,15 @@ def render_comparisons():
                         df = catalogs.get(code)
                         if df is not None and not df.empty:
                             options = [""] + df["DISPLAY"].tolist()
-                            selected_product = st.selectbox(
+                            product_widget_key = get_product_widget_key(row_id, code)
+                            mirror_product_data_to_widget(row_id, code)
+                            st.selectbox(
                                 f"{label} product",
                                 options,
-                                key=f"row_{row_id}_{code}_product",
-                                on_change=mark_comparison_dirty,
+                                key=product_widget_key,
+                                on_change=lambda r=row_id, c=code: (sync_product_widget_to_data(r, c), mark_comparison_dirty()),
                             )
+                            selected_product = st.session_state.get(f"row_{row_id}_{code}_product", "")
                             row = get_catalog_row(df, selected_product)
 
                             if row is not None:
@@ -3779,6 +3831,7 @@ def render_comparisons():
                         add_comparison_row(selected_codes, insert_after_row_id=row_id)
                         st.session_state["comparison_dirty"] = True
                         st.session_state["comparison_user_modified"] = True
+                        st.session_state["skip_export_preview_once"] = True
                         st.rerun()
 
                     render_row_navigation_buttons(row_id, visible_index)
@@ -3937,6 +3990,11 @@ def render_comparisons():
 def render_export_inside_comparisons(catalogs, selected_codes):
     st.markdown("---")
     st.markdown("### 7. Export Excel Report")
+
+    if st.session_state.get("skip_export_preview_once"):
+        st.session_state["skip_export_preview_once"] = False
+        st.info("Export preview will refresh on the next interaction.")
+        return
 
     full_export_df = build_export_dataframe(
         st.session_state.row_ids, catalogs, selected_codes
