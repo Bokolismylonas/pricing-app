@@ -2510,6 +2510,7 @@ def execute_pending_leave_action():
             st.session_state["show_saved_comparisons"] = False
             st.session_state["show_inline_save_options"] = False
             st.session_state["inline_save_mode"] = "menu"
+            st.session_state["active_save_row_id"] = None
             st.session_state["pending_inline_save_as_name"] = ""
             st.session_state["pending_save_as_exit_name"] = ""
     elif action_type == "logout":
@@ -2731,9 +2732,6 @@ if "inline_save_as_name" not in st.session_state:
 
 if "pending_inline_save_as_name" not in st.session_state:
     st.session_state["pending_inline_save_as_name"] = None
-
-if "row_action_message" not in st.session_state:
-    st.session_state["row_action_message"] = ""
 
 if "comparison_baseline_state_json" not in st.session_state:
     st.session_state["comparison_baseline_state_json"] = ""
@@ -3460,6 +3458,7 @@ def render_comparisons():
                                     if ok:
                                         st.session_state["show_inline_save_options"] = False
                                         st.session_state["inline_save_mode"] = "menu"
+                                        st.session_state["active_save_row_id"] = None
                                         st.session_state["pending_inline_save_as_name"] = ""
                                         st.session_state["pending_save_as_exit_name"] = ""
                                         st.session_state["show_saved_comparisons"] = False
@@ -3492,6 +3491,7 @@ def render_comparisons():
                 clear_current_comparison_state()
                 st.session_state["show_inline_save_options"] = False
                 st.session_state["inline_save_mode"] = "menu"
+                st.session_state["active_save_row_id"] = None
                 st.session_state["pending_inline_save_as_name"] = ""
                 st.session_state["pending_save_as_exit_name"] = ""
                 st.session_state["comparison_mode"] = "edit"
@@ -3520,11 +3520,6 @@ def render_comparisons():
     if post_save_msg:
         st.success(post_save_msg)
         st.session_state["post_save_success_message"] = ""
-
-    row_action_msg = st.session_state.get("row_action_message", "")
-    if row_action_msg:
-        st.info(row_action_msg)
-        st.session_state["row_action_message"] = ""
 
     company_options = {
         f"{row['name']} ({row['code']})": row["code"] for _, row in companies_df.iterrows()
@@ -3793,9 +3788,9 @@ def render_comparisons():
                         key=f"add_row_after_{row_id}",
                         use_container_width=True,
                     ):
-                        st.session_state["row_action_message"] = "Adding new row..."
                         add_comparison_row(selected_codes, insert_after_row_id=row_id)
-                        mark_comparison_dirty()
+                        st.session_state["comparison_dirty"] = True
+                        st.session_state["comparison_user_modified"] = True
                         st.rerun()
 
                     render_row_navigation_buttons(row_id, visible_index)
@@ -3811,12 +3806,13 @@ def render_comparisons():
                         st.session_state.row_ids = [
                             r for r in st.session_state.row_ids if r != row_id
                         ]
-                        mark_comparison_dirty()
+                        st.session_state["comparison_dirty"] = True
+                        st.session_state["comparison_user_modified"] = True
                         st.rerun()
 
-                save_complete_left, save_complete_mid, save_complete_right = st.columns([3.2, 1.2, 1.2])
+                row_save_cols = st.columns([3.2, 1.2, 1.2])
 
-                with save_complete_right:
+                with row_save_cols[1]:
                     if st.button(
                         "Save",
                         key=f"save_complete_{row_id}",
@@ -3824,6 +3820,7 @@ def render_comparisons():
                     ):
                         st.session_state["show_inline_save_options"] = True
                         st.session_state["inline_save_mode"] = "menu"
+                        st.session_state["active_save_row_id"] = row_id
                         st.rerun()
 
                 comparison_summaries = build_comparison_summary(
@@ -3841,8 +3838,10 @@ def render_comparisons():
 
             st.markdown("---")
 
-    if st.session_state.get("show_inline_save_options"):
+    active_save_row_id = st.session_state.get("active_save_row_id")
+    if st.session_state.get("show_inline_save_options") and active_save_row_id in st.session_state.get("row_ids", []):
         st.markdown("---")
+        st.markdown(f'<div id="save-panel-anchor-{active_save_row_id}"></div>', unsafe_allow_html=True)
         st.markdown('<div class="save-panel-card">', unsafe_allow_html=True)
         st.markdown("### Save Comparison")
 
@@ -3852,7 +3851,7 @@ def render_comparisons():
             menu_save_c1, menu_save_c2 = st.columns(2)
 
             with menu_save_c1:
-                if st.button("Save", use_container_width=True, key="inline_save_menu_save"):
+                if st.button("Save", use_container_width=True, key=f"inline_save_menu_save_{active_save_row_id}"):
                     current_name = st.session_state.get("active_comparison_label", "").strip() or st.session_state.get("comparison_name_input", "").strip()
                     if not st.session_state.get("current_comparison_id"):
                         st.warning("This comparison has not been saved before. Use Save As.")
@@ -3863,6 +3862,7 @@ def render_comparisons():
                         if ok:
                             st.session_state["show_inline_save_options"] = False
                             st.session_state["inline_save_mode"] = "menu"
+                            st.session_state["active_save_row_id"] = None
                             st.session_state["comparison_dirty"] = False
                             st.session_state["comparison_user_modified"] = False
                             mark_comparison_clean()
@@ -3871,21 +3871,21 @@ def render_comparisons():
                             st.warning(msg)
 
             with menu_save_c2:
-                if st.button("Save As", use_container_width=True, key="inline_save_menu_save_as"):
+                if st.button("Save As", use_container_width=True, key=f"inline_save_menu_save_as_{active_save_row_id}"):
                     st.session_state["inline_save_mode"] = "save_as"
                     st.rerun()
 
         else:
             back_c1, back_c2 = st.columns([1, 5])
             with back_c1:
-                if st.button("⬅ Back", use_container_width=True, key="inline_save_as_back"):
+                if st.button("⬅ Back", use_container_width=True, key=f"inline_save_as_back_{active_save_row_id}"):
                     st.session_state["inline_save_mode"] = "menu"
                     st.rerun()
             with back_c2:
                 st.empty()
 
             st.text_input("New name for Save As", key="inline_save_as_name")
-            if st.button("Save As", use_container_width=True, key="inline_save_as_btn"):
+            if st.button("Save As", use_container_width=True, key=f"inline_save_as_btn_{active_save_row_id}"):
                 new_name = st.session_state.get("inline_save_as_name", "").strip()
                 if not new_name:
                     st.warning("Please enter a new name.")
@@ -3894,6 +3894,7 @@ def render_comparisons():
                     if ok:
                         st.session_state["show_inline_save_options"] = False
                         st.session_state["inline_save_mode"] = "menu"
+                        st.session_state["active_save_row_id"] = None
                         st.session_state["comparison_dirty"] = False
                         st.session_state["comparison_user_modified"] = False
                         st.session_state["pending_inline_save_as_name"] = ""
