@@ -2937,8 +2937,9 @@ with st.sidebar:
         st.session_state["pending_action_type"] = "switch_view"
         st.rerun()
     elif not st.session_state.get("show_leave_prompt"):
+        previous_committed_view = st.session_state.get("committed_view", current_view_ui)
         st.session_state["committed_view"] = current_view_ui
-        if current_view_ui == "Comparisons":
+        if current_view_ui == "Comparisons" and previous_committed_view != "Comparisons":
             st.session_state["comparison_mode"] = "menu"
             st.session_state["show_saved_comparisons"] = False
             st.session_state["show_inline_save_options"] = False
