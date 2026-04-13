@@ -6,6 +6,9 @@ import re
 import uuid
 from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
+import streamlit as st
+st.write("APP STARTED")
+st.stop()
 
 import pandas as pd
 import streamlit as st
