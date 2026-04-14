@@ -2613,6 +2613,8 @@ def get_discount_widget_key(row_id, code, disc_number):
 def sync_discount_widget_to_data(row_id, code, disc_number):
     data_key = f"row_{row_id}_{code}_disc_{disc_number}"
     widget_key = get_discount_widget_key(row_id, code, disc_number)
+    if widget_key not in st.session_state:
+        return
     try:
         st.session_state[data_key] = float(st.session_state.get(widget_key, 0.0) or 0.0)
     except Exception:
@@ -2636,6 +2638,8 @@ def get_product_widget_key(row_id, code):
 def sync_product_widget_to_data(row_id, code):
     data_key = f"row_{row_id}_{code}_product"
     widget_key = get_product_widget_key(row_id, code)
+    if widget_key not in st.session_state:
+        return
     st.session_state[data_key] = st.session_state.get(widget_key, "")
 
 
@@ -3557,6 +3561,7 @@ def render_comparisons():
                 st.session_state["show_inline_save_options"] = False
                 st.session_state["inline_save_mode"] = "menu"
                 st.session_state["active_save_row_id"] = None
+                st.session_state["pending_scroll_to_save_panel"] = False
                 st.session_state["pending_inline_save_as_name"] = ""
                 st.session_state["pending_save_as_exit_name"] = ""
                 st.session_state["comparison_mode"] = "edit"
@@ -3978,6 +3983,7 @@ def render_comparisons():
                             st.session_state["show_inline_save_options"] = False
                             st.session_state["inline_save_mode"] = "menu"
                             st.session_state["active_save_row_id"] = None
+                            st.session_state["pending_scroll_to_save_panel"] = False
                             st.session_state["comparison_dirty"] = False
                             st.session_state["comparison_user_modified"] = False
                             st.session_state["pending_inline_save_as_name"] = ""
