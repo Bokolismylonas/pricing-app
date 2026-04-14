@@ -495,14 +495,15 @@ st.markdown(
         flex-wrap: nowrap;
     }
 
-    .row-nav-btn {
+    .row-nav-btn,
+    .row-nav-link {
         width: 40px;
         height: 40px;
         min-width: 40px;
         border-radius: 10px;
         border: 1px solid rgba(148,163,184,0.35);
         background: #ffffff;
-        color: #111827;
+        color: #111827 !important;
         font-size: 18px;
         font-weight: 700;
         line-height: 1;
@@ -512,17 +513,27 @@ st.markdown(
         box-shadow: 0 4px 12px rgba(0,0,0,0.08);
         cursor: pointer;
         transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
+        text-decoration: none !important;
     }
 
-    .row-nav-btn:hover {
+    .row-nav-btn:hover,
+    .row-nav-link:hover {
         transform: translateY(-1px);
         box-shadow: 0 6px 14px rgba(59,130,246,0.16);
+        text-decoration: none !important;
     }
 
-    .row-nav-btn:disabled {
+    .row-nav-btn:disabled,
+    .row-nav-link.disabled {
         opacity: 0.38;
         cursor: default;
         box-shadow: none;
+        pointer-events: none;
+    }
+
+    .row-anchor {
+        position: relative;
+        top: -8px;
     }
 
     @media (max-width: 768px) {
@@ -1904,25 +1915,6 @@ def get_catalog_row(df, display_value):
     return rows.iloc[0]
 
 
-
-def get_row_summary_text(row_id, selected_codes, catalogs):
-    parts = []
-    for code in selected_codes:
-        selected_product = str(st.session_state.get(f"row_{row_id}_{code}_product", "") or "").strip()
-        if selected_product:
-            row = get_catalog_row(catalogs.get(code), selected_product)
-            if row is not None:
-                parts.append(f"{get_company_label(code)}: {row['Product']}")
-            else:
-                parts.append(f"{get_company_label(code)}: selected")
-    if parts:
-        summary = " | ".join(parts[:2])
-        if len(parts) > 2:
-            summary += f" +{len(parts)-2} more"
-        return summary
-    return "Empty row"
-
-
 def row_result_dict(visible_index, row_id, catalogs, selected_codes):
     result = {"Row": visible_index + 1}
     final_prices = {}
@@ -2281,7 +2273,6 @@ def clear_current_comparison_state():
             del st.session_state[key]
 
     st.session_state["row_ids"] = [1]
-    st.session_state["active_row_id"] = 1
     st.session_state["next_row_id"] = 2
     st.session_state["comparison_company_selection"] = []
     st.session_state["comparison_name_input"] = ""
@@ -2498,7 +2489,6 @@ def add_comparison_row(selected_codes, insert_after_row_id=None):
 
     st.session_state.row_ids = current_rows
     st.session_state["pending_focus_row_id"] = new_row_id
-    st.session_state["active_row_id"] = new_row_id
 
     for code in selected_codes:
         product_key = f"row_{new_row_id}_{code}_product"
@@ -2516,7 +2506,6 @@ def add_comparison_row(selected_codes, insert_after_row_id=None):
 def focus_existing_row(target_row_id):
     if target_row_id in st.session_state.get("row_ids", []):
         st.session_state["pending_focus_row_id"] = target_row_id
-        st.session_state["active_row_id"] = target_row_id
 
 
 def execute_pending_leave_action():
@@ -2563,29 +2552,20 @@ def render_row_navigation_buttons(current_row_id, visible_index):
     prev_row_id = row_ids[visible_index - 1] if visible_index > 0 else None
     next_row_id = row_ids[visible_index + 1] if visible_index < len(row_ids) - 1 else None
 
-    nav_c1, nav_c2, nav_c3, nav_c4 = st.columns([1, 1, 1, 1])
+    def make_link(symbol, target_row_id=None, disabled=False):
+        if disabled or not target_row_id:
+            return f'<span class="row-nav-link disabled">{symbol}</span>'
+        return f'<a class="row-nav-link" href="#row-anchor-{target_row_id}">{symbol}</a>'
 
-    with nav_c1:
-        if st.button("⏮", key=f"nav_first_{current_row_id}", use_container_width=True, disabled=(visible_index == 0)):
-            focus_existing_row(first_row_id)
-            st.rerun()
-
-    with nav_c2:
-        if st.button("◀", key=f"nav_prev_{current_row_id}", use_container_width=True, disabled=(prev_row_id is None)):
-            if prev_row_id is not None:
-                focus_existing_row(prev_row_id)
-                st.rerun()
-
-    with nav_c3:
-        if st.button("▶", key=f"nav_next_{current_row_id}", use_container_width=True, disabled=(next_row_id is None)):
-            if next_row_id is not None:
-                focus_existing_row(next_row_id)
-                st.rerun()
-
-    with nav_c4:
-        if st.button("⏭", key=f"nav_last_{current_row_id}", use_container_width=True, disabled=(visible_index == len(row_ids) - 1)):
-            focus_existing_row(last_row_id)
-            st.rerun()
+    nav_html = f"""
+    <div class="row-nav-wrap">
+        {make_link("⏮", first_row_id, visible_index == 0)}
+        {make_link("◀", prev_row_id, prev_row_id is None)}
+        {make_link("▶", next_row_id, next_row_id is None)}
+        {make_link("⏭", last_row_id, visible_index == len(row_ids) - 1)}
+    </div>
+    """
+    st.markdown(nav_html, unsafe_allow_html=True)
 
 
 def apply_specific_discount_to_all_rows(selected_codes, target_code, disc_index, disc_value):
@@ -2714,9 +2694,6 @@ if "pending_company_delete_display" not in st.session_state:
 
 if "pending_focus_row_id" not in st.session_state:
     st.session_state["pending_focus_row_id"] = None
-
-if "active_row_id" not in st.session_state:
-    st.session_state["active_row_id"] = 1
 
 if "bulk_discount_success_message" not in st.session_state:
     st.session_state["bulk_discount_success_message"] = ""
@@ -3760,16 +3737,10 @@ def render_comparisons():
 
         for visible_index, row_id in enumerate(st.session_state.row_ids):
             ensure_discount_defaults_for_row(row_id, selected_codes)
-            st.markdown(f'<div id="row-anchor-{row_id}"></div>', unsafe_allow_html=True)
+            st.markdown(f'<div id="row-anchor-{row_id}" class="row-anchor"></div>', unsafe_allow_html=True)
+            st.markdown(f"#### Row {visible_index + 1}")
 
-            row_summary = get_row_summary_text(row_id, selected_codes, catalogs)
-            is_open = row_id == st.session_state.get("active_row_id", st.session_state.get("row_ids", [1])[0])
-
-            with st.expander(f"Row {visible_index + 1} — {row_summary}", expanded=is_open):
-                if st.session_state.get("active_row_id") != row_id and is_open:
-                    st.session_state["active_row_id"] = row_id
-
-                row_final_prices = {}
+            row_final_prices = {}
             comparison_cols_per_row = 2 if len(selected_codes) >= 4 else len(selected_codes)
 
             for start_idx in range(0, len(selected_codes), comparison_cols_per_row):
@@ -3880,48 +3851,41 @@ def render_comparisons():
                         st.session_state.row_ids = [
                             r for r in st.session_state.row_ids if r != row_id
                         ]
-                        remaining_rows = st.session_state.get("row_ids", [])
-                        if remaining_rows:
-                            if st.session_state.get("active_row_id") == row_id:
-                                st.session_state["active_row_id"] = remaining_rows[min(visible_index, len(remaining_rows)-1)]
-                        else:
-                            st.session_state["active_row_id"] = 1
                         st.session_state["comparison_dirty"] = True
                         st.session_state["comparison_user_modified"] = True
                         st.rerun()
 
-                if visible_index == len(st.session_state.get("row_ids", [])) - 1:
-                    row_save_cols = st.columns([3.2, 1.2, 1.2])
+                row_save_cols = st.columns([3.2, 1.2, 1.2])
 
-                    with row_save_cols[1]:
-                        if st.button(
-                            "⬅ Menu",
-                            key=f"row_menu_back_{row_id}",
-                            use_container_width=True,
-                        ):
-                            if has_unsaved_comparison_changes():
-                                st.session_state["show_leave_prompt"] = True
-                                st.session_state["leave_prompt_step"] = ""
-                                st.session_state["pending_action_type"] = "switch_view"
-                                st.session_state["pending_target_view"] = "Comparisons"
-                                st.session_state["comparison_mode"] = "menu"
-                                st.session_state["show_saved_comparisons"] = False
-                                st.rerun()
-                            else:
-                                st.session_state["comparison_mode"] = "menu"
-                                st.session_state["show_saved_comparisons"] = False
-                                st.rerun()
-
-                    with row_save_cols[2]:
-                        if st.button(
-                            "Save",
-                            key=f"save_complete_{row_id}",
-                            use_container_width=True,
-                        ):
-                            st.session_state["show_inline_save_options"] = True
-                            st.session_state["inline_save_mode"] = "menu"
-                            st.session_state["active_save_row_id"] = row_id
+                with row_save_cols[1]:
+                    if st.button(
+                        "⬅ Menu",
+                        key=f"row_menu_back_{row_id}",
+                        use_container_width=True,
+                    ):
+                        if has_unsaved_comparison_changes():
+                            st.session_state["show_leave_prompt"] = True
+                            st.session_state["leave_prompt_step"] = ""
+                            st.session_state["pending_action_type"] = "switch_view"
+                            st.session_state["pending_target_view"] = "Comparisons"
+                            st.session_state["comparison_mode"] = "menu"
+                            st.session_state["show_saved_comparisons"] = False
                             st.rerun()
+                        else:
+                            st.session_state["comparison_mode"] = "menu"
+                            st.session_state["show_saved_comparisons"] = False
+                            st.rerun()
+
+                with row_save_cols[2]:
+                    if st.button(
+                        "Save",
+                        key=f"save_complete_{row_id}",
+                        use_container_width=True,
+                    ):
+                        st.session_state["show_inline_save_options"] = True
+                        st.session_state["inline_save_mode"] = "menu"
+                        st.session_state["active_save_row_id"] = row_id
+                        st.rerun()
 
                 comparison_summaries = build_comparison_summary(
                     row_final_prices, selected_codes
@@ -4017,7 +3981,7 @@ def render_comparisons():
                 }}
             }};
             requestAnimationFrame(scrollToNewRow);
-            setTimeout(scrollToNewRow, 25);
+            setTimeout(scrollToNewRow, 60);
             </script>
             """,
             height=0,
