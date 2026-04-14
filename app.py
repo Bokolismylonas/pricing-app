@@ -2685,6 +2685,9 @@ if "pending_load_payload" not in st.session_state:
 if "pending_clear_comparison" not in st.session_state:
     st.session_state.pending_clear_comparison = False
 
+if "show_export_preview" not in st.session_state:
+    st.session_state["show_export_preview"] = False
+
 if "pending_loaded_comparison_id" not in st.session_state:
     st.session_state.pending_loaded_comparison_id = None
 
@@ -3472,6 +3475,7 @@ def render_comparisons():
                 st.session_state["pending_inline_save_as_name"] = ""
                 st.session_state["pending_save_as_exit_name"] = ""
                 st.session_state["comparison_mode"] = "edit"
+                st.session_state["show_export_preview"] = False
                 st.session_state["skip_export_preview_once"] = False
                 st.rerun()
 
@@ -3539,6 +3543,7 @@ def render_comparisons():
                                                 st.session_state["pending_inline_save_as_name"] = ""
                                                 st.session_state["pending_save_as_exit_name"] = ""
                                                 st.session_state["comparison_mode"] = "edit"
+                                                st.session_state["show_export_preview"] = False
                                                 mark_comparison_clean()
                                                 st.rerun()
                                             else:
@@ -3895,8 +3900,8 @@ def render_comparisons():
                                             if ok:
                                                 st.session_state["comparison_dirty"] = False
                                                 st.session_state["comparison_user_modified"] = False
+                                                st.session_state["post_save_success_message"] = "Comparison saved successfully."
                                                 mark_comparison_clean()
-                                                st.success("Comparison saved successfully.")
                                                 st.rerun()
                                             else:
                                                 st.warning(msg)
@@ -3912,8 +3917,8 @@ def render_comparisons():
                                             if ok:
                                                 st.session_state["comparison_dirty"] = False
                                                 st.session_state["comparison_user_modified"] = False
+                                                st.session_state["post_save_success_message"] = "Saved as new comparison."
                                                 mark_comparison_clean()
-                                                st.success("Saved as new comparison.")
                                                 st.rerun()
                                             else:
                                                 st.warning(msg)
@@ -4027,9 +4032,18 @@ def render_export_inside_comparisons(catalogs, selected_codes):
     st.markdown("---")
     st.markdown("### 7. Export Excel Report")
 
-    if st.session_state.get("skip_export_preview_once"):
-        st.session_state["skip_export_preview_once"] = False
-        st.info("Export preview will refresh on the next interaction.")
+    exp_c1, exp_c2 = st.columns([1, 1])
+    with exp_c1:
+        if st.button("Show Export Preview", use_container_width=True, key="show_export_preview_btn"):
+            st.session_state["show_export_preview"] = True
+            st.rerun()
+    with exp_c2:
+        if st.session_state.get("show_export_preview"):
+            if st.button("Hide Export Preview", use_container_width=True, key="hide_export_preview_btn"):
+                st.session_state["show_export_preview"] = False
+                st.rerun()
+
+    if not st.session_state.get("show_export_preview"):
         return
 
     full_export_df = build_export_dataframe(
