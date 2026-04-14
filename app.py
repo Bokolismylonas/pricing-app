@@ -2280,7 +2280,7 @@ def clear_current_comparison_state():
             del st.session_state[key]
 
     st.session_state["row_ids"] = [1]
-    st.session_state["active_row_id"] = 1
+    st.session_state["active_row_id"] = None
     st.session_state["next_row_id"] = 2
     st.session_state["comparison_company_selection"] = []
     st.session_state["comparison_name_input"] = ""
@@ -2925,7 +2925,7 @@ if st.session_state.get("pending_load_payload") is not None:
     st.session_state["pending_loaded_comparison_id"] = None
     st.session_state["pending_loaded_comparison_name"] = ""
     st.session_state["comparison_loaded_success_message"] = "Comparison loaded successfully."
-    st.session_state["active_row_id"] = st.session_state.get("row_ids", [1])[0]
+    st.session_state["active_row_id"] = None
     st.session_state["comparison_mode"] = "edit"
     st.session_state["comparison_dirty"] = False
     st.session_state["comparison_clean_generation"] = st.session_state.get("comparison_edit_generation", 0)
@@ -3758,7 +3758,7 @@ def render_comparisons():
             row_summary = get_row_summary_text(row_id, selected_codes, catalogs)
             row_ids_list = list(st.session_state.get("row_ids", []))
             last_row_id = row_ids_list[-1] if row_ids_list else row_id
-            is_active = row_id == st.session_state.get("active_row_id", last_row_id)
+            is_active = row_id == st.session_state.get("active_row_id")
 
             if not is_active:
                 summary_c1, summary_c2, summary_c3, summary_c4 = st.columns([4.0, 1.1, 1.3, 1.1])
@@ -3794,7 +3794,7 @@ def render_comparisons():
                         else:
                             st.session_state["row_ids"] = [1]
                             st.session_state["next_row_id"] = max(int(st.session_state.get("next_row_id", 2)), 2)
-                            st.session_state["active_row_id"] = 1
+                            st.session_state["active_row_id"] = None
                         st.session_state["comparison_dirty"] = True
                         st.session_state["comparison_user_modified"] = True
                         st.rerun()
