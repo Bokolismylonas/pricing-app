@@ -2562,29 +2562,20 @@ def render_row_navigation_buttons(current_row_id, visible_index):
     prev_row_id = row_ids[visible_index - 1] if visible_index > 0 else None
     next_row_id = row_ids[visible_index + 1] if visible_index < len(row_ids) - 1 else None
 
-    nav_c1, nav_c2, nav_c3, nav_c4 = st.columns([1, 1, 1, 1])
+    def make_btn(symbol, target, disabled=False):
+        if disabled or not target:
+            return f'<span style="font-size:30px;opacity:0.3;margin:6px;">{symbol}</span>'
+        return f'<a href="#row-anchor-{target}" style="font-size:30px;margin:6px;text-decoration:none;">{symbol}</a>'
 
-    with nav_c1:
-        if st.button("⏮", key=f"nav_first_{current_row_id}", use_container_width=True, disabled=(visible_index == 0)):
-            focus_existing_row(first_row_id)
-            st.rerun()
-
-    with nav_c2:
-        if st.button("◀", key=f"nav_prev_{current_row_id}", use_container_width=True, disabled=(prev_row_id is None)):
-            if prev_row_id is not None:
-                focus_existing_row(prev_row_id)
-                st.rerun()
-
-    with nav_c3:
-        if st.button("▶", key=f"nav_next_{current_row_id}", use_container_width=True, disabled=(next_row_id is None)):
-            if next_row_id is not None:
-                focus_existing_row(next_row_id)
-                st.rerun()
-
-    with nav_c4:
-        if st.button("⏭", key=f"nav_last_{current_row_id}", use_container_width=True, disabled=(visible_index == len(row_ids) - 1)):
-            focus_existing_row(last_row_id)
-            st.rerun()
+    nav_html = f"""
+    <div style="display:flex;gap:12px;align-items:center;">
+        {make_btn("⏮", first_row_id, visible_index==0)}
+        {make_btn("◀", prev_row_id, prev_row_id is None)}
+        {make_btn("▶", next_row_id, next_row_id is None)}
+        {make_btn("⏭", last_row_id, visible_index==len(row_ids)-1)}
+    </div>
+    """
+    st.markdown(nav_html, unsafe_allow_html=True)
 
 
 def apply_specific_discount_to_all_rows(selected_codes, target_code, disc_index, disc_value):
