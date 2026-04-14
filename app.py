@@ -2294,6 +2294,9 @@ def clear_current_comparison_state():
     st.session_state["comparison_edit_generation"] = 0
     st.session_state["comparison_clean_generation"] = 0
     st.session_state["current_comparison_id"] = None
+    st.session_state["export_preview_cache_signature"] = ""
+    st.session_state["export_preview_cache_df"] = None
+    st.session_state["export_preview_cache_excel_bytes"] = None
     st.session_state["show_saved_comparisons"] = False
     st.session_state["show_new_comparison_confirm"] = False
     st.session_state["comparison_mode"] = "menu"
@@ -2790,6 +2793,15 @@ if "comparison_loaded_from_record" not in st.session_state:
 if "skip_export_preview_once" not in st.session_state:
     st.session_state["skip_export_preview_once"] = False
 
+if "export_preview_cache_signature" not in st.session_state:
+    st.session_state["export_preview_cache_signature"] = ""
+
+if "export_preview_cache_df" not in st.session_state:
+    st.session_state["export_preview_cache_df"] = None
+
+if "export_preview_cache_excel_bytes" not in st.session_state:
+    st.session_state["export_preview_cache_excel_bytes"] = None
+
 
 # -------------------------------------------------
 # APP FLOW
@@ -2925,6 +2937,7 @@ if st.session_state.get("pending_load_payload") is not None:
     st.session_state["pending_loaded_comparison_id"] = None
     st.session_state["pending_loaded_comparison_name"] = ""
     st.session_state["comparison_loaded_success_message"] = "Comparison loaded successfully."
+    st.session_state["export_preview_cache_signature"] = ""
     st.session_state["active_row_id"] = st.session_state.get("row_ids", [1])[0]
     st.session_state["comparison_mode"] = "edit"
     st.session_state["comparison_dirty"] = False
@@ -3483,6 +3496,7 @@ def render_comparisons():
                 st.session_state["pending_inline_save_as_name"] = ""
                 st.session_state["pending_save_as_exit_name"] = ""
                 st.session_state["comparison_mode"] = "edit"
+                st.session_state["export_preview_cache_signature"] = ""
                 st.session_state["show_export_preview"] = False
                 st.session_state["skip_export_preview_once"] = False
                 st.rerun()
@@ -3551,6 +3565,7 @@ def render_comparisons():
                                                 st.session_state["pending_inline_save_as_name"] = ""
                                                 st.session_state["pending_save_as_exit_name"] = ""
                                                 st.session_state["comparison_mode"] = "edit"
+                                                st.session_state["export_preview_cache_signature"] = ""
                                                 st.session_state["show_export_preview"] = False
                                                 mark_comparison_clean()
                                                 st.rerun()
@@ -3851,6 +3866,7 @@ def render_comparisons():
                             st.session_state["comparison_dirty"] = True
                             st.session_state["comparison_user_modified"] = True
                             st.session_state["skip_export_preview_once"] = True
+                            st.session_state["export_preview_cache_signature"] = ""
                             st.rerun()
 
                         render_row_navigation_buttons(row_id, visible_index)
@@ -3868,6 +3884,7 @@ def render_comparisons():
                             ]
                             st.session_state["comparison_dirty"] = True
                             st.session_state["comparison_user_modified"] = True
+                            st.session_state["export_preview_cache_signature"] = ""
                             st.rerun()
 
                     if visible_index == len(st.session_state.get("row_ids", [])) - 1:
@@ -4036,13 +4053,48 @@ def render_comparisons():
     render_export_inside_comparisons(catalogs, selected_codes)
     st.markdown("</div>", unsafe_allow_html=True)
 
-def render_export_inside_comparisons(catalogs, selected_codes):
-    st.markdown("---")
-    st.markdown("### 7. Export Excel Report")
+
+def build_or_get_export_preview(catalogs, selected_codes):
+    export_signature = get_comparison_payload_signature_from_state()
+
+    cached_signature = st.session_state.get("export_preview_cache_signature", "")
+    cached_df = st.session_state.get("export_preview_cache_df")
+    cached_excel_bytes = st.session_state.get("export_preview_cache_excel_bytes")
+
+    if (
+        cached_signature == export_signature
+        and cached_df is not None
+        and cached_excel_bytes is not None
+    ):
+        return cached_df, cached_excel_bytes
 
     full_export_df = build_export_dataframe(
         st.session_state.row_ids, catalogs, selected_codes
     )
+
+    selected_export_fields = st.session_state.get("selected_export_fields", [])
+    if not selected_export_fields:
+        export_df = full_export_df.iloc[0:0].copy()
+        excel_bytes = b""
+    else:
+        export_df = filter_export_dataframe(
+            full_export_df,
+            selected_codes,
+            selected_export_fields,
+            companies_df,
+        )
+        excel_bytes = to_excel_bytes(export_df) if not export_df.empty else b""
+
+    st.session_state["export_preview_cache_signature"] = export_signature
+    st.session_state["export_preview_cache_df"] = export_df
+    st.session_state["export_preview_cache_excel_bytes"] = excel_bytes
+
+    return export_df, excel_bytes
+
+
+def render_export_inside_comparisons(catalogs, selected_codes):
+    st.markdown("---")
+    st.markdown("### 7. Export Excel Report")
 
     selected_export_fields = st.multiselect(
         "Choose columns for Excel export",
@@ -4054,17 +4106,14 @@ def render_export_inside_comparisons(catalogs, selected_codes):
         st.warning("Please select at least one export field.")
         return
 
-    export_df = filter_export_dataframe(
-        full_export_df,
-        selected_codes,
-        selected_export_fields,
-        companies_df,
-    )
+    if st.session_state.get("skip_export_preview_once"):
+        st.session_state["skip_export_preview_once"] = False
 
-    if not export_df.empty:
+    export_df, excel_bytes = build_or_get_export_preview(catalogs, selected_codes)
+
+    if export_df is not None and not export_df.empty:
         st.dataframe(export_df, use_container_width=True, hide_index=True)
 
-        excel_bytes = to_excel_bytes(export_df)
         st.download_button(
             "Download Excel Report",
             data=excel_bytes,
