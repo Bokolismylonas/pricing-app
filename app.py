@@ -1922,7 +1922,6 @@ def get_row_summary_text(row_id, selected_codes, catalogs):
         return summary
     return "Empty row"
 
-
 def row_result_dict(visible_index, row_id, catalogs, selected_codes):
     result = {"Row": visible_index + 1}
     final_prices = {}
@@ -2920,6 +2919,7 @@ if st.session_state.get("pending_load_payload") is not None:
     st.session_state["pending_loaded_comparison_id"] = None
     st.session_state["pending_loaded_comparison_name"] = ""
     st.session_state["comparison_loaded_success_message"] = "Comparison loaded successfully."
+    st.session_state["active_row_id"] = st.session_state.get("row_ids", [1])[0]
     st.session_state["comparison_mode"] = "edit"
     st.session_state["comparison_dirty"] = False
     st.session_state["comparison_clean_generation"] = st.session_state.get("comparison_edit_generation", 0)
@@ -3766,244 +3766,236 @@ def render_comparisons():
             is_open = row_id == st.session_state.get("active_row_id", st.session_state.get("row_ids", [1])[0])
 
             with st.expander(f"Row {visible_index + 1} — {row_summary}", expanded=is_open):
-                if st.session_state.get("active_row_id") != row_id and is_open:
-                    st.session_state["active_row_id"] = row_id
-
+                st.session_state["active_row_id"] = row_id if is_open else st.session_state.get("active_row_id", row_id)
                 row_final_prices = {}
-            comparison_cols_per_row = 2 if len(selected_codes) >= 4 else len(selected_codes)
+                comparison_cols_per_row = 2 if len(selected_codes) >= 4 else len(selected_codes)
 
-            for start_idx in range(0, len(selected_codes), comparison_cols_per_row):
-                chunk = selected_codes[start_idx:start_idx + comparison_cols_per_row]
-                row_cols = st.columns(len(chunk))
+                for start_idx in range(0, len(selected_codes), comparison_cols_per_row):
+                    chunk = selected_codes[start_idx:start_idx + comparison_cols_per_row]
+                    row_cols = st.columns(len(chunk))
 
-                for col_idx, code in enumerate(chunk):
-                    with row_cols[col_idx]:
-                        label = get_company_label(code)
+                    for col_idx, code in enumerate(chunk):
+                        with row_cols[col_idx]:
+                            label = get_company_label(code)
 
-                        st.write(f"**{label}**")
+                            st.write(f"**{label}**")
 
-                        df = catalogs.get(code)
-                        if df is not None and not df.empty:
-                            options = [""] + df["DISPLAY"].tolist()
-                            product_widget_key = get_product_widget_key(row_id, code)
-                            mirror_product_data_to_widget(row_id, code)
-                            st.selectbox(
-                                f"{label} product",
-                                options,
-                                key=product_widget_key,
-                                on_change=lambda r=row_id, c=code: (sync_product_widget_to_data(r, c), mark_comparison_dirty()),
-                            )
-                            selected_product = st.session_state.get(f"row_{row_id}_{code}_product", "")
-                            row = get_catalog_row(df, selected_product)
+                            df = catalogs.get(code)
+                            if df is not None and not df.empty:
+                                options = [""] + df["DISPLAY"].tolist()
+                                product_widget_key = get_product_widget_key(row_id, code)
+                                mirror_product_data_to_widget(row_id, code)
+                                st.selectbox(
+                                    f"{label} product",
+                                    options,
+                                    key=product_widget_key,
+                                    on_change=lambda r=row_id, c=code: (sync_product_widget_to_data(r, c), mark_comparison_dirty()),
+                                )
+                                selected_product = st.session_state.get(f"row_{row_id}_{code}_product", "")
+                                row = get_catalog_row(df, selected_product)
 
-                            if row is not None:
-                                st.write("SAP:", row["SAP"])
-                                st.write("MM:", row["MM"])
-                                st.write("Package:", row["Package"])
-                                st.write("Base Price:", round(float(row["Price"]), 2))
+                                if row is not None:
+                                    st.write("SAP:", row["SAP"])
+                                    st.write("MM:", row["MM"])
+                                    st.write("Package:", row["Package"])
+                                    st.write("Base Price:", round(float(row["Price"]), 2))
 
-                                discs = []
-                                for j in range(1, 6):
-                                    data_key = f"row_{row_id}_{code}_disc_{j}"
-                                    widget_key = get_discount_widget_key(row_id, code, j)
-                                    mirror_discount_data_to_widget(row_id, code, j)
-                                    disc_val = st.number_input(
-                                        f"{label} Disc {j}",
-                                        min_value=0.0,
-                                        max_value=100.0,
-                                        step=0.1,
-                                        key=widget_key,
-                                        on_change=lambda r=row_id, c=code, d=j: (sync_discount_widget_to_data(r, c, d), mark_comparison_dirty()),
-                                    )
-                                    st.session_state[data_key] = float(disc_val)
-                                    discs.append(disc_val)
+                                    discs = []
+                                    for j in range(1, 6):
+                                        data_key = f"row_{row_id}_{code}_disc_{j}"
+                                        widget_key = get_discount_widget_key(row_id, code, j)
+                                        mirror_discount_data_to_widget(row_id, code, j)
+                                        disc_val = st.number_input(
+                                            f"{label} Disc {j}",
+                                            min_value=0.0,
+                                            max_value=100.0,
+                                            step=0.1,
+                                            key=widget_key,
+                                            on_change=lambda r=row_id, c=code, d=j: (sync_discount_widget_to_data(r, c, d), mark_comparison_dirty()),
+                                        )
+                                        st.session_state[data_key] = float(disc_val)
+                                        discs.append(disc_val)
 
-                                final = apply_discounts(row["Price"], discs)
-                                row_final_prices[code] = final
-                                st.success(f"Final Price: {final}")
+                                    final = apply_discounts(row["Price"], discs)
+                                    row_final_prices[code] = final
+                                    st.success(f"Final Price: {final}")
+                                else:
+                                    for j in range(1, 6):
+                                        widget_key = get_discount_widget_key(row_id, code, j)
+                                        mirror_discount_data_to_widget(row_id, code, j)
+                                        disc_val = st.number_input(
+                                            f"{label} Disc {j}",
+                                            min_value=0.0,
+                                            max_value=100.0,
+                                            step=0.1,
+                                            key=widget_key,
+                                            on_change=lambda r=row_id, c=code, d=j: (sync_discount_widget_to_data(r, c, d), mark_comparison_dirty()),
+                                        )
+                                        st.session_state[f"row_{row_id}_{code}_disc_{j}"] = float(disc_val)
+                                    row_final_prices[code] = None
+                                    st.info("No product selected")
                             else:
-                                for j in range(1, 6):
-                                    widget_key = get_discount_widget_key(row_id, code, j)
-                                    mirror_discount_data_to_widget(row_id, code, j)
-                                    disc_val = st.number_input(
-                                        f"{label} Disc {j}",
-                                        min_value=0.0,
-                                        max_value=100.0,
-                                        step=0.1,
-                                        key=widget_key,
-                                        on_change=lambda r=row_id, c=code, d=j: (sync_discount_widget_to_data(r, c, d), mark_comparison_dirty()),
-                                    )
-                                    st.session_state[f"row_{row_id}_{code}_disc_{j}"] = float(disc_val)
                                 row_final_prices[code] = None
-                                st.info("No product selected")
-                        else:
-                            row_final_prices[code] = None
-                            st.info("No data")
+                                st.info("No data")
 
-            if row_final_prices:
-                valid = {k: v for k, v in row_final_prices.items() if v is not None}
-                if valid:
-                    best_code = min(valid, key=valid.get)
-                    best_label = get_company_label(best_code)
-                else:
-                    best_label = "-"
+                if row_final_prices:
+                    valid = {k: v for k, v in row_final_prices.items() if v is not None}
+                    if valid:
+                        best_code = min(valid, key=valid.get)
+                        best_label = get_company_label(best_code)
+                    else:
+                        best_label = "-"
 
-                action_cols = st.columns([3.2, 1.2, 1.2])
+                    action_cols = st.columns([3.2, 1.2, 1.2])
 
-                with action_cols[0]:
-                    st.metric(f"Row {visible_index + 1} Best Price", best_label)
+                    with action_cols[0]:
+                        st.metric(f"Row {visible_index + 1} Best Price", best_label)
 
-                with action_cols[1]:
-                    st.write("")
-                    st.write("")
-                    if st.button(
-                        "Add Row Below",
-                        key=f"add_row_after_{row_id}",
-                        use_container_width=True,
-                    ):
-                        add_comparison_row(selected_codes, insert_after_row_id=row_id)
-                        st.session_state["comparison_dirty"] = True
-                        st.session_state["comparison_user_modified"] = True
-                        st.session_state["skip_export_preview_once"] = True
-                        st.rerun()
-
-                    render_row_navigation_buttons(row_id, visible_index)
-
-                with action_cols[2]:
-                    st.write("")
-                    st.write("")
-                    if st.button(
-                        "Delete This Row",
-                        key=f"delete_row_{row_id}",
-                        use_container_width=True,
-                    ):
-                        st.session_state.row_ids = [
-                            r for r in st.session_state.row_ids if r != row_id
-                        ]
-                        remaining_rows = st.session_state.get("row_ids", [])
-                        if remaining_rows:
-                            if st.session_state.get("active_row_id") == row_id:
-                                st.session_state["active_row_id"] = remaining_rows[min(visible_index, len(remaining_rows)-1)]
-                        else:
-                            st.session_state["active_row_id"] = 1
-                        st.session_state["comparison_dirty"] = True
-                        st.session_state["comparison_user_modified"] = True
-                        st.rerun()
-
-                if visible_index == len(st.session_state.get("row_ids", [])) - 1:
-                    row_save_cols = st.columns([3.2, 1.2, 1.2])
-
-                    with row_save_cols[1]:
+                    with action_cols[1]:
+                        st.write("")
+                        st.write("")
                         if st.button(
-                            "⬅ Menu",
-                            key=f"row_menu_back_{row_id}",
+                            "Add Row Below",
+                            key=f"add_row_after_{row_id}",
                             use_container_width=True,
                         ):
-                            if has_unsaved_comparison_changes():
-                                st.session_state["show_leave_prompt"] = True
-                                st.session_state["leave_prompt_step"] = ""
-                                st.session_state["pending_action_type"] = "switch_view"
-                                st.session_state["pending_target_view"] = "Comparisons"
-                                st.session_state["comparison_mode"] = "menu"
-                                st.session_state["show_saved_comparisons"] = False
-                                st.rerun()
-                            else:
-                                st.session_state["comparison_mode"] = "menu"
-                                st.session_state["show_saved_comparisons"] = False
-                                st.rerun()
-
-                    with row_save_cols[2]:
-                        if st.button(
-                            "Save",
-                            key=f"save_complete_{row_id}",
-                            use_container_width=True,
-                        ):
-                            st.session_state["show_inline_save_options"] = True
-                            st.session_state["inline_save_mode"] = "menu"
-                            st.session_state["active_save_row_id"] = row_id
+                            add_comparison_row(selected_codes, insert_after_row_id=row_id)
+                            st.session_state["comparison_dirty"] = True
+                            st.session_state["comparison_user_modified"] = True
+                            st.session_state["skip_export_preview_once"] = True
                             st.rerun()
 
-                comparison_summaries = build_comparison_summary(
-                    row_final_prices, selected_codes
-                )
+                        render_row_navigation_buttons(row_id, visible_index)
 
-                has_comparisons = any(v for v in comparison_summaries.values())
-                if has_comparisons:
-                    st.markdown("**Price Difference %**")
-                    for code in selected_codes:
-                        label = get_company_label(code)
-                        summary = comparison_summaries.get(code, "")
-                        if summary:
-                            st.write(f"**{label}:** {summary}")
+                    with action_cols[2]:
+                        st.write("")
+                        st.write("")
+                        if st.button(
+                            "Delete This Row",
+                            key=f"delete_row_{row_id}",
+                            use_container_width=True,
+                        ):
+                            st.session_state.row_ids = [
+                                r for r in st.session_state.row_ids if r != row_id
+                            ]
+                            st.session_state["comparison_dirty"] = True
+                            st.session_state["comparison_user_modified"] = True
+                            st.rerun()
 
+                    if visible_index == len(st.session_state.get("row_ids", [])) - 1:
+                        row_save_cols = st.columns([3.2, 1.2, 1.2])
+
+                        with row_save_cols[1]:
+                            if st.button(
+                                "⬅ Menu",
+                                key=f"row_menu_back_{row_id}",
+                                use_container_width=True,
+                            ):
+                                if has_unsaved_comparison_changes():
+                                    st.session_state["show_leave_prompt"] = True
+                                    st.session_state["leave_prompt_step"] = ""
+                                    st.session_state["pending_action_type"] = "switch_view"
+                                    st.session_state["pending_target_view"] = "Comparisons"
+                                    st.session_state["comparison_mode"] = "menu"
+                                    st.session_state["show_saved_comparisons"] = False
+                                    st.rerun()
+                                else:
+                                    st.session_state["comparison_mode"] = "menu"
+                                    st.session_state["show_saved_comparisons"] = False
+                                    st.rerun()
+
+                        with row_save_cols[2]:
+                            if st.button(
+                                "Save",
+                                key=f"save_complete_{row_id}",
+                                use_container_width=True,
+                            ):
+                                st.session_state["show_inline_save_options"] = True
+                                st.session_state["inline_save_mode"] = "menu"
+                                st.session_state["active_save_row_id"] = row_id
+                                st.rerun()
+
+                    comparison_summaries = build_comparison_summary(
+                        row_final_prices, selected_codes
+                    )
+
+                    has_comparisons = any(v for v in comparison_summaries.values())
+                    if has_comparisons:
+                        st.markdown("**Price Difference %**")
+                        for code in selected_codes:
+                            label = get_company_label(code)
+                            summary = comparison_summaries.get(code, "")
+                            if summary:
+                                st.write(f"**{label}:** {summary}")
+
+                st.markdown("---")
+
+        active_save_row_id = st.session_state.get("active_save_row_id")
+        if st.session_state.get("show_inline_save_options") and active_save_row_id in st.session_state.get("row_ids", []):
             st.markdown("---")
+            st.markdown(f'<div id="save-panel-anchor-{active_save_row_id}"></div>', unsafe_allow_html=True)
+            st.markdown('<div class="save-panel-card">', unsafe_allow_html=True)
+            st.markdown("### Save Comparison")
 
-    active_save_row_id = st.session_state.get("active_save_row_id")
-    if st.session_state.get("show_inline_save_options") and active_save_row_id in st.session_state.get("row_ids", []):
-        st.markdown("---")
-        st.markdown(f'<div id="save-panel-anchor-{active_save_row_id}"></div>', unsafe_allow_html=True)
-        st.markdown('<div class="save-panel-card">', unsafe_allow_html=True)
-        st.markdown("### Save Comparison")
+            save_mode = st.session_state.get("inline_save_mode", "menu")
 
-        save_mode = st.session_state.get("inline_save_mode", "menu")
+            if save_mode == "menu":
+                menu_save_c1, menu_save_c2 = st.columns(2)
 
-        if save_mode == "menu":
-            menu_save_c1, menu_save_c2 = st.columns(2)
+                with menu_save_c1:
+                    if st.button("Save", use_container_width=True, key=f"inline_save_menu_save_{active_save_row_id}"):
+                        current_name = st.session_state.get("active_comparison_label", "").strip() or st.session_state.get("comparison_name_input", "").strip()
+                        if not st.session_state.get("current_comparison_id"):
+                            st.warning("This comparison has not been saved before. Use Save As.")
+                        elif not current_name:
+                            st.warning("No active comparison name found. Use Save As.")
+                        else:
+                            ok, msg = save_current_comparison_from_state(force_new=False, override_name=current_name)
+                            if ok:
+                                st.session_state["show_inline_save_options"] = False
+                                st.session_state["inline_save_mode"] = "menu"
+                                st.session_state["active_save_row_id"] = None
+                                st.session_state["comparison_dirty"] = False
+                                st.session_state["comparison_user_modified"] = False
+                                mark_comparison_clean()
+                                st.success("Comparison saved successfully.")
+                            else:
+                                st.warning(msg)
 
-            with menu_save_c1:
-                if st.button("Save", use_container_width=True, key=f"inline_save_menu_save_{active_save_row_id}"):
-                    current_name = st.session_state.get("active_comparison_label", "").strip() or st.session_state.get("comparison_name_input", "").strip()
-                    if not st.session_state.get("current_comparison_id"):
-                        st.warning("This comparison has not been saved before. Use Save As.")
-                    elif not current_name:
-                        st.warning("No active comparison name found. Use Save As.")
+                with menu_save_c2:
+                    if st.button("Save As", use_container_width=True, key=f"inline_save_menu_save_as_{active_save_row_id}"):
+                        st.session_state["inline_save_mode"] = "save_as"
+                        st.rerun()
+
+            else:
+                back_c1, back_c2 = st.columns([1, 5])
+                with back_c1:
+                    if st.button("⬅ Back", use_container_width=True, key=f"inline_save_as_back_{active_save_row_id}"):
+                        st.session_state["inline_save_mode"] = "menu"
+                        st.rerun()
+                with back_c2:
+                    st.empty()
+
+                st.text_input("New name for Save As", key="inline_save_as_name")
+                if st.button("Save As", use_container_width=True, key=f"inline_save_as_btn_{active_save_row_id}"):
+                    new_name = st.session_state.get("inline_save_as_name", "").strip()
+                    if not new_name:
+                        st.warning("Please enter a new name.")
                     else:
-                        ok, msg = save_current_comparison_from_state(force_new=False, override_name=current_name)
+                        ok, msg = save_current_comparison_from_state(force_new=True, override_name=new_name)
                         if ok:
                             st.session_state["show_inline_save_options"] = False
                             st.session_state["inline_save_mode"] = "menu"
                             st.session_state["active_save_row_id"] = None
                             st.session_state["comparison_dirty"] = False
                             st.session_state["comparison_user_modified"] = False
+                            st.session_state["pending_inline_save_as_name"] = ""
                             mark_comparison_clean()
-                            st.success("Comparison saved successfully.")
+                            st.success("Saved as new comparison.")
                         else:
                             st.warning(msg)
 
-            with menu_save_c2:
-                if st.button("Save As", use_container_width=True, key=f"inline_save_menu_save_as_{active_save_row_id}"):
-                    st.session_state["inline_save_mode"] = "save_as"
-                    st.rerun()
-
-        else:
-            back_c1, back_c2 = st.columns([1, 5])
-            with back_c1:
-                if st.button("⬅ Back", use_container_width=True, key=f"inline_save_as_back_{active_save_row_id}"):
-                    st.session_state["inline_save_mode"] = "menu"
-                    st.rerun()
-            with back_c2:
-                st.empty()
-
-            st.text_input("New name for Save As", key="inline_save_as_name")
-            if st.button("Save As", use_container_width=True, key=f"inline_save_as_btn_{active_save_row_id}"):
-                new_name = st.session_state.get("inline_save_as_name", "").strip()
-                if not new_name:
-                    st.warning("Please enter a new name.")
-                else:
-                    ok, msg = save_current_comparison_from_state(force_new=True, override_name=new_name)
-                    if ok:
-                        st.session_state["show_inline_save_options"] = False
-                        st.session_state["inline_save_mode"] = "menu"
-                        st.session_state["active_save_row_id"] = None
-                        st.session_state["comparison_dirty"] = False
-                        st.session_state["comparison_user_modified"] = False
-                        st.session_state["pending_inline_save_as_name"] = ""
-                        mark_comparison_clean()
-                        st.success("Saved as new comparison.")
-                    else:
-                        st.warning(msg)
-
-        st.markdown("</div>", unsafe_allow_html=True)
+            st.markdown("</div>", unsafe_allow_html=True)
 
     target_row_id = st.session_state.get("pending_focus_row_id")
     if target_row_id is not None:
@@ -4017,7 +4009,7 @@ def render_comparisons():
                 }}
             }};
             requestAnimationFrame(scrollToNewRow);
-            setTimeout(scrollToNewRow, 25);
+            setTimeout(scrollToNewRow, 60);
             </script>
             """,
             height=0,
