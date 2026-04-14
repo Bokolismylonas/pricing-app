@@ -2713,7 +2713,7 @@ if "pending_focus_row_id" not in st.session_state:
     st.session_state["pending_focus_row_id"] = None
 
 if "active_row_id" not in st.session_state:
-    st.session_state["active_row_id"] = 1
+    st.session_state["active_row_id"] = None
 
 if "bulk_discount_success_message" not in st.session_state:
     st.session_state["bulk_discount_success_message"] = ""
@@ -3775,6 +3775,7 @@ def render_comparisons():
                 with summary_c3:
                     if st.button("Add Row Below", key=f"add_row_after_summary_{row_id}", use_container_width=True):
                         add_comparison_row(selected_codes, insert_after_row_id=row_id)
+                        st.session_state["active_row_id"] = st.session_state["row_ids"][-1]
                         st.session_state["comparison_dirty"] = True
                         st.session_state["comparison_user_modified"] = True
                         st.session_state["export_preview_cache_signature"] = ""
@@ -3798,6 +3799,7 @@ def render_comparisons():
                         st.session_state["comparison_user_modified"] = True
                         st.rerun()
 
+                render_row_navigation_buttons(row_id, visible_index)
                 st.markdown("---")
                 continue
 
@@ -3895,6 +3897,7 @@ def render_comparisons():
                         use_container_width=True,
                     ):
                         add_comparison_row(selected_codes, insert_after_row_id=row_id)
+                        st.session_state["active_row_id"] = st.session_state["row_ids"][-1]
                         st.session_state["comparison_dirty"] = True
                         st.session_state["comparison_user_modified"] = True
                         st.session_state["skip_export_preview_once"] = True
