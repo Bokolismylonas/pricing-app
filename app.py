@@ -2909,6 +2909,14 @@ if (not is_admin_user()) and (not current_user_has_access()):
 # -------------------------------------------------
 if st.session_state.get("pending_load_payload") is not None:
     restore_comparison_state_payload(st.session_state["pending_load_payload"])
+    if "selected_export_fields" not in st.session_state or not st.session_state.get("selected_export_fields"):
+        st.session_state["selected_export_fields"] = [
+            "Product",
+            "Total Discounts",
+            "Final Price",
+            "Comparison %",
+            "Best Price",
+        ]
     st.session_state["current_comparison_id"] = st.session_state.get("pending_loaded_comparison_id")
     st.session_state["comparison_name_input"] = st.session_state.get("pending_loaded_comparison_name", "")
     st.session_state["active_comparison_label"] = st.session_state.get("pending_loaded_comparison_name", "")
@@ -4031,20 +4039,6 @@ def render_comparisons():
 def render_export_inside_comparisons(catalogs, selected_codes):
     st.markdown("---")
     st.markdown("### 7. Export Excel Report")
-
-    exp_c1, exp_c2 = st.columns([1, 1])
-    with exp_c1:
-        if st.button("Show Export Preview", use_container_width=True, key="show_export_preview_btn"):
-            st.session_state["show_export_preview"] = True
-            st.rerun()
-    with exp_c2:
-        if st.session_state.get("show_export_preview"):
-            if st.button("Hide Export Preview", use_container_width=True, key="hide_export_preview_btn"):
-                st.session_state["show_export_preview"] = False
-                st.rerun()
-
-    if not st.session_state.get("show_export_preview"):
-        return
 
     full_export_df = build_export_dataframe(
         st.session_state.row_ids, catalogs, selected_codes
