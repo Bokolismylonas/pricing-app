@@ -4,7 +4,6 @@ import base64
 import json
 import re
 import uuid
-import shutil
 from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
 
@@ -1612,13 +1611,6 @@ WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 COMPARISONS_DIR.mkdir(parents=True, exist_ok=True)
 
-TRASH_DIR = WORKSPACE_DIR / "_trash"
-TRASH_SOURCES_DIR = TRASH_DIR / "sources"
-TRASH_COMPARISONS_DIR = TRASH_DIR / "comparisons"
-TRASH_DIR.mkdir(parents=True, exist_ok=True)
-TRASH_SOURCES_DIR.mkdir(parents=True, exist_ok=True)
-TRASH_COMPARISONS_DIR.mkdir(parents=True, exist_ok=True)
-
 
 def get_current_user_comparisons_file():
     raw_user = get_current_user_id() or get_current_user_email() or "anonymous"
@@ -1680,6 +1672,10 @@ for _, row in companies_df.iterrows():
     (UPLOADS_DIR / row["code"]).mkdir(parents=True, exist_ok=True)
 
 
+def refresh_source_file_views():
+    return None
+
+
 # -------------------------------------------------
 # FILE / CATALOG HELPERS
 # -------------------------------------------------
@@ -1712,7 +1708,6 @@ def get_next_version_filename(company, dt, original_name):
     return f"{company}_{yyyy}_{mm}_{dd}_v{max_v + 1}{ext}"
 
 
-@st.cache_data(show_spinner=False)
 def get_company_files(code):
     folder = get_company_folder(code)
     files = []
@@ -3425,48 +3420,14 @@ def render_source_library(show_title=True):
             if not delete_source_display:
                 st.error("Please select a source.")
             else:
-                st.session_state["pending_source_delete_display"] = delete_source_display
-
-    pending_delete_display = st.session_state.get("pending_source_delete_display", "")
-    if pending_delete_display:
-        pending_path = Path(source_delete_options.get(pending_delete_display, "")) if pending_delete_display in source_delete_options else None
-        if pending_path and pending_path.exists():
-            impacted = _find_comparisons_using_source(pending_path.name)
-            impacted_names = [item["record"].get("name", "Untitled comparison") for item in impacted]
-
-            st.warning(
-                f"Soft delete will move the selected source to Trash and also remove {len(impacted)} comparison(s) that use it from the active list."
-            )
-            if impacted_names:
-                st.caption("Affected comparisons: " + " • ".join(impacted_names[:8]))
-
-            confirm_delete = st.checkbox(
-                "I understand that the source and its related comparisons will be moved out of the active workspace.",
-                key="confirm_soft_delete_source",
-            )
-
-            confirm_c1, confirm_c2 = st.columns([1, 1])
-            with confirm_c1:
-                if st.button("Confirm Soft Delete", key="confirm_soft_delete_button", use_container_width=True):
-                    if not confirm_delete:
-                        st.error("Please confirm before continuing.")
-                    else:
-                        result = _soft_delete_source_and_related_comparisons(pending_path)
-                        st.session_state.pop("pending_source_delete_display", None)
-                        st.session_state.pop("confirm_soft_delete_source", None)
-                        st.success(
-                            f"Moved source to Trash: {pending_path.name}. "
-                            f"Soft-deleted {result['deleted_comparisons_count']} related comparison(s)."
-                        )
-                        st.rerun()
-
-            with confirm_c2:
-                if st.button("Cancel", key="cancel_soft_delete_button", use_container_width=True):
-                    st.session_state.pop("pending_source_delete_display", None)
-                    st.session_state.pop("confirm_soft_delete_source", None)
+                full_path = Path(source_delete_options[delete_source_display])
+                if full_path.exists():
+                    full_path.unlink()
+                    st.success(f"Source deleted: {full_path.name}")
+                    refresh_source_file_views()
                     st.rerun()
-        else:
-            st.session_state.pop("pending_source_delete_display", None)
+                else:
+                    st.error("File not found.")
 
 
 
@@ -4403,92 +4364,6 @@ def _default_manual_mapping(columns):
 
 
 
-
-def _make_soft_delete_name(path_obj: Path) -> str:
-    stamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    return f"{stamp}__{path_obj.name}"
-
-
-def _comparison_uses_source(record: dict, source_filename: str) -> bool:
-    if not isinstance(record, dict):
-        return False
-
-    source_filename = str(source_filename).strip()
-    if not source_filename:
-        return False
-
-    source_files = record.get("source_files", {}) or {}
-    for _, value in source_files.items():
-        if str(value).strip() == source_filename:
-            return True
-
-    state = record.get("state", {}) or {}
-    if isinstance(state, dict):
-        for key, value in state.items():
-            if str(key).startswith("select_") and str(value).strip() == source_filename:
-                return True
-
-    text_blob = json.dumps(record, ensure_ascii=False, default=str)
-    return source_filename in text_blob
-
-
-def _find_comparisons_using_source(source_filename: str):
-    matches = []
-    for comparison_file in sorted(COMPARISONS_DIR.glob("*.json")):
-        try:
-            records = list_comparisons(comparison_file)
-        except Exception:
-            continue
-
-        for record in records:
-            if _comparison_uses_source(record, source_filename):
-                matches.append({
-                    "comparison_file": comparison_file,
-                    "record": record,
-                })
-    return matches
-
-
-def _soft_delete_source_and_related_comparisons(source_path: Path):
-    source_path = Path(source_path)
-    source_filename = source_path.name
-
-    matches = _find_comparisons_using_source(source_filename)
-    archived_comparisons = []
-
-    for item in matches:
-        comparison_file = item["comparison_file"]
-        record = item["record"]
-        archived_record = {
-            "deleted_at": now_iso(),
-            "reason": f"Source soft-deleted: {source_filename}",
-            "source_filename": source_filename,
-            "from_comparison_file": comparison_file.name,
-            "record": record,
-        }
-        archived_comparisons.append(archived_record)
-
-        try:
-            delete_comparison(comparison_file, record.get("id"))
-        except Exception:
-            pass
-
-    archive_name = _make_soft_delete_name(source_path).replace(".xlsx", "").replace(".xlsm", "") + "__comparisons.json"
-    archive_path = TRASH_COMPARISONS_DIR / archive_name
-    archive_path.write_text(
-        json.dumps(archived_comparisons, ensure_ascii=False, indent=2, default=str),
-        encoding="utf-8",
-    )
-
-    trashed_source_path = TRASH_SOURCES_DIR / _make_soft_delete_name(source_path)
-    shutil.move(str(source_path), str(trashed_source_path))
-
-    return {
-        "deleted_comparisons_count": len(archived_comparisons),
-        "trashed_source_path": str(trashed_source_path),
-        "comparisons_archive_path": str(archive_path),
-    }
-
 def render_sources():
     st.markdown('<div class="app-card">', unsafe_allow_html=True)
     st.markdown("## Sources")
@@ -4560,54 +4435,62 @@ def render_sources():
                 st.warning("Skipped sheets: " + ", ".join(conversion_stats["skipped_sheets"][:12]))
 
             st.markdown("#### Review and Edit Before Save")
+
+            if "generated_source_working_df" not in st.session_state:
+                st.session_state["generated_source_working_df"] = _ensure_preview_row_id(source_df)
+            else:
+                existing_generated = st.session_state["generated_source_working_df"]
+                if isinstance(existing_generated, pd.DataFrame) and len(existing_generated) != len(source_df):
+                    st.session_state["generated_source_working_df"] = _ensure_preview_row_id(source_df)
+
             editable_df = st.data_editor(
-                source_df,
+                _preview_display_df(st.session_state["generated_source_working_df"]),
                 use_container_width=True,
                 num_rows="dynamic",
                 key="generated_source_editor",
                 column_config={
+                    "Row": st.column_config.NumberColumn("Row", disabled=True),
                     "SAP": st.column_config.TextColumn("SAP"),
                     "Product": st.column_config.TextColumn("Product", width="large"),
                     "Base Price": st.column_config.NumberColumn("Base Price", format="%.4f"),
                     "Increase %": st.column_config.NumberColumn("Increase %", format="%.4f"),
-                    "Price": st.column_config.NumberColumn("Price", format="%.4f"),
+                    "Price": st.column_config.NumberColumn("Price", format="%.4f", disabled=True),
                     "MM": st.column_config.TextColumn("MM"),
                     "Package": st.column_config.TextColumn("Package"),
                     "Category": st.column_config.TextColumn("Category"),
                 },
             )
 
-            edited_df = pd.DataFrame(editable_df).copy()
-            expected_cols = _source_generator_output_columns()
-            for col in expected_cols:
-                if col not in edited_df.columns:
-                    edited_df[col] = ""
+            edited_df = _normalize_preview_editor_output(pd.DataFrame(editable_df))
+            st.session_state["generated_source_working_df"] = edited_df
 
-            edited_df = edited_df[expected_cols].copy()
-            edited_df["Base Price"] = pd.to_numeric(edited_df["Base Price"], errors="coerce")
-            edited_df["Increase %"] = pd.to_numeric(edited_df["Increase %"], errors="coerce").fillna(0.0)
-            edited_df["Price"] = edited_df.apply(
-                lambda r: round(r["Base Price"] * (1 + r["Increase %"]), 4) if pd.notna(r["Base Price"]) else None,
-                axis=1,
-            )
-            edited_df["SAP"] = edited_df["SAP"].fillna("").astype(str).str.strip()
-            edited_df["Product"] = edited_df["Product"].fillna("").astype(str).str.strip()
-            edited_df["MM"] = edited_df["MM"].fillna("").astype(str).str.strip()
-            edited_df["Package"] = edited_df["Package"].fillna("").astype(str).str.strip()
-            edited_df["Category"] = edited_df["Category"].fillna("").astype(str).str.strip()
-            edited_df = edited_df[
-                ~(
-                    edited_df["SAP"].eq("")
-                    & edited_df["Product"].eq("")
-                    & edited_df["Base Price"].isna()
+            delete_options = edited_df["__row_id"].astype(int).tolist()
+            del_c1, del_c2 = st.columns([3, 1])
+            with del_c1:
+                selected_delete_rows = st.multiselect(
+                    "Select preview rows to delete",
+                    delete_options,
+                    format_func=lambda x: f"Row {x}",
+                    key="generated_source_delete_rows",
                 )
-            ].reset_index(drop=True)
+            with del_c2:
+                st.write("")
+                st.write("")
+                if st.button("Delete selected rows", key="delete_generated_preview_rows", use_container_width=True):
+                    deleted_count = _delete_selected_preview_rows_from_state("generated_source_working_df", selected_delete_rows)
+                    st.session_state["generated_source_delete_rows"] = []
+                    if deleted_count:
+                        st.success(f"Deleted {deleted_count} row(s) from the preview.")
+                    st.rerun()
+
+            edited_df = st.session_state["generated_source_working_df"].copy()
+            export_edited_df = edited_df.drop(columns=["__row_id"], errors="ignore").copy()
 
             preview_c1, preview_c2 = st.columns([1, 1])
             with preview_c1:
                 st.download_button(
                     "Download Generated Source",
-                    data=_source_dataframe_to_excel_bytes(edited_df),
+                    data=_source_dataframe_to_excel_bytes(export_edited_df),
                     file_name=f"{generator_company_code}_generated_source_preview.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key="download_generated_source_preview",
@@ -4615,13 +4498,13 @@ def render_sources():
                 )
             with preview_c2:
                 if st.button("Save Generated Source", key="save_generated_source_button", use_container_width=True):
-                    if edited_df.empty:
+                    if export_edited_df.empty:
                         st.error("There are no rows to save.")
                     else:
                         name = get_next_version_filename(generator_company_code, generator_date_val, uploaded_supplier_file.name)
                         path = get_company_folder(generator_company_code) / name
                         with open(path, "wb") as f:
-                            f.write(_source_dataframe_to_excel_bytes(edited_df))
+                            f.write(_source_dataframe_to_excel_bytes(export_edited_df))
                         st.success(f"Generated source saved as: {name}")
                         st.rerun()
 
@@ -4715,50 +4598,59 @@ def render_sources():
                             else:
                                 st.success(f"Manual mapping generated {len(manual_source_df)} rows.")
                                 st.session_state["manual_source_df"] = manual_source_df.to_dict(orient="records")
+                                st.session_state["manual_source_working_df"] = _ensure_preview_row_id(manual_source_df)
 
                 if st.session_state.get("manual_source_df"):
                     st.markdown("##### Manual mapping preview")
-                    manual_preview_df = pd.DataFrame(st.session_state["manual_source_df"])
+                    if "manual_source_working_df" not in st.session_state:
+                        st.session_state["manual_source_working_df"] = _ensure_preview_row_id(pd.DataFrame(st.session_state["manual_source_df"]))
                     manual_preview_df = st.data_editor(
-                        manual_preview_df,
+                        _preview_display_df(st.session_state["manual_source_working_df"]),
                         use_container_width=True,
                         num_rows="dynamic",
                         key="manual_generated_source_editor",
                         column_config={
+                            "Row": st.column_config.NumberColumn("Row", disabled=True),
                             "SAP": st.column_config.TextColumn("SAP"),
                             "Product": st.column_config.TextColumn("Product", width="large"),
                             "Base Price": st.column_config.NumberColumn("Base Price", format="%.4f"),
                             "Increase %": st.column_config.NumberColumn("Increase %", format="%.4f"),
-                            "Price": st.column_config.NumberColumn("Price", format="%.4f"),
+                            "Price": st.column_config.NumberColumn("Price", format="%.4f", disabled=True),
                             "MM": st.column_config.TextColumn("MM"),
                             "Package": st.column_config.TextColumn("Package"),
                             "Category": st.column_config.TextColumn("Category"),
                         },
                     )
 
-                    manual_preview_df = pd.DataFrame(manual_preview_df)
-                    for col in _source_generator_output_columns():
-                        if col not in manual_preview_df.columns:
-                            manual_preview_df[col] = "" if col not in ["Base Price", "Increase %", "Price"] else None
-                    manual_preview_df = manual_preview_df[_source_generator_output_columns()].copy()
-                    manual_preview_df["Base Price"] = pd.to_numeric(manual_preview_df["Base Price"], errors="coerce")
-                    manual_preview_df["Increase %"] = pd.to_numeric(manual_preview_df["Increase %"], errors="coerce").fillna(0.0)
-                    manual_preview_df["Price"] = manual_preview_df.apply(
-                        lambda r: round(r["Base Price"] * (1 + r["Increase %"]), 4) if pd.notna(r["Base Price"]) else None,
-                        axis=1,
-                    )
-                    manual_preview_df = manual_preview_df[
-                        ~(
-                            manual_preview_df["Product"].fillna("").astype(str).str.strip().eq("")
-                            & manual_preview_df["Base Price"].isna()
+                    manual_preview_df = _normalize_preview_editor_output(pd.DataFrame(manual_preview_df))
+                    st.session_state["manual_source_working_df"] = manual_preview_df
+
+                    man_del_c1, man_del_c2 = st.columns([3, 1])
+                    with man_del_c1:
+                        selected_manual_delete_rows = st.multiselect(
+                            "Select manual preview rows to delete",
+                            manual_preview_df["__row_id"].astype(int).tolist(),
+                            format_func=lambda x: f"Row {x}",
+                            key="manual_source_delete_rows",
                         )
-                    ].reset_index(drop=True)
+                    with man_del_c2:
+                        st.write("")
+                        st.write("")
+                        if st.button("Delete selected manual rows", key="delete_manual_preview_rows", use_container_width=True):
+                            deleted_count = _delete_selected_preview_rows_from_state("manual_source_working_df", selected_manual_delete_rows)
+                            st.session_state["manual_source_delete_rows"] = []
+                            if deleted_count:
+                                st.success(f"Deleted {deleted_count} row(s) from the manual preview.")
+                            st.rerun()
+
+                    manual_preview_df = st.session_state["manual_source_working_df"].copy()
+                    export_manual_preview_df = manual_preview_df.drop(columns=["__row_id"], errors="ignore").copy()
 
                     man_save_c1, man_save_c2 = st.columns(2)
                     with man_save_c1:
                         st.download_button(
                             "Download Manual Source",
-                            data=_source_dataframe_to_excel_bytes(manual_preview_df),
+                            data=_source_dataframe_to_excel_bytes(export_manual_preview_df),
                             file_name=f"{generator_company_code}_manual_source_preview.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             key="download_manual_source_preview",
@@ -4766,14 +4658,15 @@ def render_sources():
                         )
                     with man_save_c2:
                         if st.button("Save Manual Source", key="save_manual_source_button", use_container_width=True):
-                            if manual_preview_df.empty:
+                            if export_manual_preview_df.empty:
                                 st.error("There are no rows to save.")
                             else:
                                 manual_name = get_next_version_filename(generator_company_code, generator_date_val, uploaded_supplier_file.name)
                                 manual_path = get_company_folder(generator_company_code) / manual_name
                                 with open(manual_path, "wb") as f:
-                                    f.write(_source_dataframe_to_excel_bytes(manual_preview_df))
+                                    f.write(_source_dataframe_to_excel_bytes(export_manual_preview_df))
                                 st.success(f"Manual source saved as: {manual_name}")
+                                refresh_source_file_views()
                                 st.rerun()
 
     st.markdown("---")
@@ -4803,6 +4696,7 @@ def render_sources():
             with open(path, "wb") as f:
                 f.write(file.getbuffer())
             st.success(f"Saved as: {name}")
+            refresh_source_file_views()
             st.rerun()
 
     st.info(
