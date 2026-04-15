@@ -21,7 +21,6 @@ from storage import (
     get_comparison,
     delete_comparison,
     build_display_label,
-)
 
 
 BASE_DIR = Path(__file__).parent
@@ -51,7 +50,6 @@ st.set_page_config(
     page_title="Pricing Tool – Compare Products & Export Excel Reports",
     page_icon=PAGE_ICON,
     layout="wide",
-)
 
 st.markdown(
     """
@@ -60,7 +58,6 @@ st.markdown(
     <link rel="canonical" href="https://www.pricingtool.gr/">
     """,
     unsafe_allow_html=True,
-)
 
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 
@@ -124,7 +121,6 @@ server_metadata_url = "{_escape_toml(ms_server_metadata_url)}"
         content = content.replace(
             os.getenv("MS_SERVER_METADATA_URL", ""),
             _escape_toml(ms_server_metadata_url),
-        )
 
     SECRETS_FILE.write_text(content, encoding="utf-8")
 
@@ -552,7 +548,6 @@ st.markdown(
     </style>
     """,
     unsafe_allow_html=True,
-)
 
 
 # -------------------------------------------------
@@ -607,7 +602,6 @@ def show_login_screen():
                 '<div class="login-header-logo">'
                 f'<img src="data:image/svg+xml;base64,{login_logo_b64}" alt="Pricing Tool logo" />'
                 '</div>'
-            )
 
         st.markdown(
             f"""
@@ -628,7 +622,6 @@ def show_login_screen():
             </div>
             """,
             unsafe_allow_html=True,
-        )
 
     btn_left, btn_mid, btn_right = st.columns([1.1, 2.2, 1.1])
 
@@ -661,7 +654,6 @@ def show_login_screen():
             <div class="login-actions-label">Use the buttons below to continue</div>
             """,
             unsafe_allow_html=True,
-        )
 
         if st.button(
             "Continue with Google",
@@ -682,7 +674,6 @@ def show_login_screen():
         st.markdown(
             '<div class="login-note">Secure login • No passwords stored • Existing app flow unchanged</div>',
             unsafe_allow_html=True,
-        )
 
 
 # -------------------------------------------------
@@ -693,7 +684,6 @@ def get_supabase() -> Client:
     return create_client(
         st.secrets["SUPABASE_URL"],
         st.secrets["SUPABASE_KEY"],
-    )
 
 
 # -------------------------------------------------
@@ -806,7 +796,6 @@ def get_current_selected_codes_from_state():
         has_row_key = any(
             key.startswith("row_") and f"_{code}_" in key
             for key in st.session_state.keys()
-        )
 
         if has_select_key or has_carry_key or has_row_key:
             inferred_codes.append(code)
@@ -835,7 +824,6 @@ def get_comparison_payload_signature_from_state():
         for code in selected_codes:
             stable_payload[f"row_{row_id}_{code}_product"] = st.session_state.get(
                 f"row_{row_id}_{code}_product", ""
-            )
             for j in range(1, 6):
                 disc_key = f"row_{row_id}_{code}_disc_{j}"
                 try:
@@ -899,14 +887,12 @@ def has_real_changes_against_loaded_baseline():
     return bool(
         st.session_state.get("comparison_user_modified", False)
         and comparison_has_meaningful_content()
-    )
 
 
 def has_unsaved_comparison_changes():
     return bool(
         st.session_state.get("comparison_user_modified", False)
         and comparison_has_meaningful_content()
-    )
 
 
 def mark_comparison_dirty():
@@ -969,7 +955,6 @@ def save_users_registry(data):
     USERS_REGISTRY_FILE.write_text(
         json.dumps(data, ensure_ascii=False, indent=2),
         encoding="utf-8",
-    )
 
 
 def load_companies_registry():
@@ -985,7 +970,6 @@ def save_companies_registry(data):
     COMPANIES_REGISTRY_FILE.write_text(
         json.dumps(data, ensure_ascii=False, indent=2),
         encoding="utf-8",
-    )
 
 
 # -------------------------------------------------
@@ -1415,7 +1399,6 @@ def ensure_current_user_in_registry():
                 "company_name": None,
                 "role": "member",
             }
-        )
     else:
         users[idx]["name"] = name
         users[idx]["last_login"] = now_iso()
@@ -1597,7 +1580,6 @@ def get_storage_slug_for_current_user():
             .replace(".", "_")
             .replace("/", "_")
             .replace("\\", "_")
-        )
     return slug
 
 
@@ -1628,7 +1610,6 @@ def load_companies_safe():
             {"code": "KNAUF", "name": "Knauf"},
             {"code": "SAINT_GOBAIN", "name": "Saint-Gobain"},
         ]
-    )
 
     if not COMPANIES_FILE.exists():
         default.to_csv(COMPANIES_FILE, index=False)
@@ -1733,14 +1714,12 @@ def list_saved_sources():
                         "Full Path": str(f),
                         "Modified": pd.to_datetime(f.stat().st_mtime, unit="s"),
                     }
-                )
 
     if rows:
         return (
             pd.DataFrame(rows)
             .sort_values("Modified", ascending=False)
             .reset_index(drop=True)
-        )
 
     return pd.DataFrame(
         columns=[
@@ -1751,7 +1730,6 @@ def list_saved_sources():
             "Full Path",
             "Modified",
         ]
-    )
 
 
 def company_has_files(code):
@@ -2009,7 +1987,6 @@ def row_result_dict(visible_index, row_id, catalogs, selected_codes):
             for i in range(1, 6):
                 result[f"{label} Disc{i}"] = st.session_state.get(
                     f"row_{row_id}_{code}_disc_{i}", 0.0
-                )
 
             result[f"{label} Final Price"] = ""
 
@@ -2387,7 +2364,6 @@ def save_or_update_current_comparison(selected_codes):
             companies=[get_company_label(code) for code in selected_codes],
             source_files=build_source_files_map(selected_codes),
             state=collect_comparison_state_payload(selected_codes),
-        )
         if ok:
             return True, "Comparison updated successfully."
         return False, "This comparison no longer exists. Save it again as new."
@@ -2400,7 +2376,6 @@ def save_or_update_current_comparison(selected_codes):
         companies=[get_company_label(code) for code in selected_codes],
         source_files=build_source_files_map(selected_codes),
         state=collect_comparison_state_payload(selected_codes),
-    )
     st.session_state["current_comparison_id"] = comparison_id
     return True, "Comparison saved successfully."
 
@@ -2426,7 +2401,6 @@ def save_current_comparison_from_state(force_new: bool = False, override_name: s
         collect_merged_comparison_state_payload(selected_codes)
         if st.session_state.get("comparison_loaded_from_record") or st.session_state.get("active_loaded_state_payload")
         else collect_comparison_state_payload(selected_codes)
-    )
     payload_companies = [get_company_label(code) for code in selected_codes]
     payload_sources = build_source_files_map(selected_codes)
 
@@ -2440,7 +2414,6 @@ def save_current_comparison_from_state(force_new: bool = False, override_name: s
             companies=payload_companies,
             source_files=payload_sources,
             state=payload_state,
-        )
         if ok:
             st.session_state["pending_comparison_name_input"] = comparison_name
             st.session_state["active_comparison_label"] = comparison_name
@@ -2460,7 +2433,6 @@ def save_current_comparison_from_state(force_new: bool = False, override_name: s
         companies=payload_companies,
         source_files=payload_sources,
         state=payload_state,
-    )
     st.session_state["current_comparison_id"] = comparison_id
     st.session_state["pending_comparison_name_input"] = comparison_name
     st.session_state["active_comparison_label"] = comparison_name
@@ -2859,19 +2831,16 @@ if company_result["status"] == "full":
         </div>
         """,
         unsafe_allow_html=True,
-    )
 
     c1, c2, c3 = st.columns([1, 1.6, 1])
     with c2:
         st.warning(
             f"{company.get('name', 'This company')} is using all seats ({format_company_seats(company)})."
-        )
         st.button(
             "Logout",
             on_click=logout_current_user,
             use_container_width=True,
             key="company_full_logout",
-        )
     st.stop()
 
 if current_user_is_blocked():
@@ -2881,7 +2850,6 @@ if current_user_is_blocked():
         on_click=logout_current_user,
         use_container_width=True,
         key="blocked_logout",
-    )
     st.stop()
 
 if not is_admin_user():
@@ -2898,13 +2866,11 @@ if not is_admin_user():
             </div>
             """,
             unsafe_allow_html=True,
-        )
         st.button(
             "Logout",
             on_click=logout_current_user,
             use_container_width=True,
             key="device_limit_logout",
-        )
         st.stop()
     else:
         touch_current_session()
@@ -2927,7 +2893,6 @@ if (not is_admin_user()) and (not current_user_has_access()):
         </div>
         """,
         unsafe_allow_html=True,
-    )
 
     days_left = trial_days_left(user_row.get("trial_end")) if user_row else 0
     if days_left > 0:
@@ -2943,7 +2908,6 @@ if (not is_admin_user()) and (not current_user_has_access()):
         on_click=logout_current_user,
         use_container_width=True,
         key="locked_logout",
-    )
     st.stop()
 
 
@@ -3084,7 +3048,6 @@ with st.sidebar:
                     "Individual €10/month",
                     checkout_url,
                     use_container_width=True,
-                )
 
     st.markdown("---")
 
@@ -3108,7 +3071,6 @@ with st.sidebar:
         st.warning("⚠️ Please logout before closing the app to free your session.")
         st.caption(
             f"Active sessions: {active_sessions_count}/{MAX_ACTIVE_SESSIONS} • Remaining available: {remaining_sessions}"
-        )
 
 
 # -------------------------------------------------
@@ -3129,7 +3091,6 @@ st.markdown(
     </div>
     """,
     unsafe_allow_html=True,
-)
 
 if st.query_params.get("payment") == "success":
     st.success("Payment completed successfully. Refreshing access may take a few seconds.")
@@ -3161,7 +3122,6 @@ if st.session_state.get("show_leave_prompt"):
         </script>
         """,
         height=0,
-    )
 
     st.warning(prompt_text)
     if note_map.get(action_type):
@@ -3263,11 +3223,9 @@ def render_company_manager():
     with add_c1:
         new_code = st.text_input(
             "Code", key="new_company_code", placeholder="TECHNOGIPS"
-        )
     with add_c2:
         new_name = st.text_input(
             "Name", key="new_company_name", placeholder="Technogips"
-        )
     with add_c3:
         st.write("")
         st.write("")
@@ -3285,7 +3243,6 @@ def render_company_manager():
                 updated_df = pd.concat(
                     [companies_df, pd.DataFrame([{"code": code, "name": name}])],
                     ignore_index=True,
-                )
                 save_companies(updated_df)
                 get_company_folder(code)
                 st.success(f"Company {name} was added successfully.")
@@ -3305,7 +3262,6 @@ def render_company_manager():
             "Select Company to Delete",
             [""] + list(company_delete_options.keys()),
             key="delete_company_display",
-        )
     with del_c2:
         st.write("")
         st.write("")
@@ -3335,11 +3291,9 @@ def render_company_manager():
             comparison_file,
             pending_company_delete_code,
             pending_company_name,
-        )
 
         warning_text = (
             f"Deleting {pending_company_name} ({pending_company_delete_code}) may make saved comparisons that include this company unloadable."
-        )
         if has_linked_comparisons:
             warning_text += " Some of your saved comparisons reference this company."
 
@@ -3389,7 +3343,6 @@ def render_source_library(show_title=True):
             saved_df.drop(columns=["Full Path"]),
             use_container_width=True,
             hide_index=True,
-        )
     else:
         st.info("No saved source files yet.")
 
@@ -3407,7 +3360,6 @@ def render_source_library(show_title=True):
             "Select Source to Delete",
             [""] + list(source_delete_options.keys()),
             key="delete_source_display",
-        )
     with src_d2:
         st.write("")
         st.write("")
@@ -3823,7 +3775,6 @@ def convert_supplier_pricelist_to_source(uploaded_file):
             ~(
                 out["Product"].astype(str).str.strip().str.lower().isin(["", "nan", "none"])
                 & out["Base Price"].isna()
-            )
         ].copy()
 
         if out.empty:
@@ -3850,7 +3801,6 @@ def convert_supplier_pricelist_to_source(uploaded_file):
     source_df["Price"] = source_df.apply(
         lambda r: round(r["Base Price"] * (1 + r["Increase %"]), 4) if pd.notna(r["Base Price"]) else None,
         axis=1,
-    )
     source_df = source_df.reset_index(drop=True)
 
     stats = {
@@ -3863,4 +3813,3 @@ def convert_supplier_pricelist_to_source(uploaded_file):
         "total_rows": len(source_df),
     }
     return source_df, stats
-)
