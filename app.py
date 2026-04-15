@@ -1764,7 +1764,7 @@ def company_has_files(code):
 
 def load_data(file):
     try:
-        df = pd.read_excel(file, sheet_name="PRICELIST")
+        df = pd.read_excel(file, sheet_name="PRICELIST", engine="openpyxl")
         df.columns = [str(c).strip() for c in df.columns]
         return df
     except Exception as e:
@@ -3385,21 +3385,27 @@ def render_source_library(show_title=True):
 
 
 
-def detect_source_header_row(raw_df):
+def _source_generator_output_columns():
+    return ["SAP", "Product", "Base Price", "Increase %", "Price", "MM", "Package", "Category"]
+
+
+def _detect_supplier_header_row(raw_df: pd.DataFrame) -> int:
     max_scan = min(len(raw_df), 20)
     best_row = 0
     best_score = -1
 
     for idx in range(max_scan):
-        values = [str(v).strip().lower() for v in raw_df.iloc[idx].tolist()]
+        values = [str(v).strip().lower() for v in raw_df.iloc[idx].tolist() if str(v).strip() not in ["", "nan", "none"]]
         score = 0
-        if any(("sap" in v) or ("code" in v) or ("item" in v) or ("sku" in v) for v in values):
+        if any(("sap" in v) or ("code" in v) or ("sku" in v) or ("article" in v) for v in values):
             score += 2
-        if any(("product" in v) or ("description" in v) or ("name" in v) for v in values):
+        if any(("description" in v) or ("product" in v) or ("name" in v) or ("item" in v) for v in values):
             score += 2
-        if any("price" in v for v in values):
+        if any("price" in v or "τιμή" in v for v in values):
             score += 3
         if any(("unit" in v) or (v == "mm") or ("μον" in v) for v in values):
+            score += 1
+        if any(("pack" in v) or ("package" in v) or ("συσκ" in v) for v in values):
             score += 1
         if score > best_score:
             best_score = score
@@ -3408,46 +3414,46 @@ def detect_source_header_row(raw_df):
     return best_row
 
 
-def normalize_source_column_name(column_name: str):
-    c = str(column_name).strip().lower()
-    compact = re.sub(r"\s+", " ", c)
+def _normalize_supplier_column_name(col_name: str) -> str:
+    c = str(col_name).strip().lower()
 
-    if any(token in compact for token in ["sap", "sku", "article code", "product code", "item code", "item no", "κωδικ", "code"]):
+    if any(token in c for token in ["sap", "item code", "item no", "product code", "article", "sku", "κωδικ", "code"]):
         return "SAP"
-    if any(token in compact for token in ["description", "product description", "product", "item description", "material", "name", "περιγραφ"]):
+    if any(token in c for token in ["description", "product", "item description", "product description", "name", "material", "περιγραφ"]):
         return "Product"
-    if any(token in compact for token in ["increase %", "increase", "diff%", "markup", "delta %", "adjustment %"]):
+    if any(token in c for token in ["increase %", "increase", "diff%", "markup", "adjustment %", "delta %"]):
         return "Increase %"
-    if any(token in compact for token in ["unit of measure", "uom", "μον. μετρ", "μονάδα", "unit", " mm", "mm "]) or compact == "mm":
-        return "MM"
-    if any(token in compact for token in ["package", "pack", "packing", "minimum order", "min order", "pallet", "box", "συσκευ"]):
-        return "Package"
-    if any(token in compact for token in ["category", "group", "family", "range", "segment", "κατηγορ"]):
-        return "Category"
-    if any(token in compact for token in ["price", "list price", "net price", "base price", "catalog price", "pricelist", "unit price", "τιμή"]):
+    if any(token in c for token in ["base price", "list price", "net price", "catalog price", "price", "τιμή", "pricelist", "unit price"]):
         return "Base Price"
-    return None
+    if any(token in c for token in ["unit of measure", "uom", "unit", " mm", "mm ", "μον", "μ.μ", "μ/μ"]) or c == "mm":
+        return "MM"
+    if any(token in c for token in ["package", "pack", "packing", "minimum order", "min order", "pallet", "box", "συσκ"]):
+        return "Package"
+    if any(token in c for token in ["category", "group", "family", "range", "line", "segment", "κατηγο"]):
+        return "Category"
+
+    return str(col_name).strip()
 
 
-def clean_numeric_value(value):
-    if pd.isna(value):
+def _to_float_or_none(value):
+    if value is None or (isinstance(value, float) and pd.isna(value)):
         return None
-    if isinstance(value, (int, float)):
+    if isinstance(value, (int, float)) and not pd.isna(value):
         return float(value)
 
     text = str(value).strip()
-    if not text:
+    if not text or text.lower() in {"nan", "none", "-", "--", "upon request", "contact us"}:
         return None
 
     text = text.replace("€", "").replace("EUR", "").replace("eur", "")
     text = text.replace(" ", "")
 
-    if "," in text and "." in text:
+    if text.count(",") > 0 and text.count(".") > 0:
         text = text.replace(".", "").replace(",", ".")
     else:
         text = text.replace(",", ".")
 
-    match = re.search(r"-?\d+(\.\d+)?", text)
+    match = re.search(r"-?\d+(?:\.\d+)?", text)
     if not match:
         return None
 
@@ -3457,103 +3463,129 @@ def clean_numeric_value(value):
         return None
 
 
-def clean_percentage_value(value):
-    number = clean_numeric_value(value)
-    if number is None:
+def _to_increase_fraction(value):
+    num = _to_float_or_none(value)
+    if num is None:
         return 0.0
-    return number / 100.0 if abs(number) > 1 else number
+    return num / 100.0 if abs(num) > 1 else num
 
 
-def convert_supplier_file_to_source(uploaded_file):
-    workbook = pd.ExcelFile(uploaded_file)
-    converted_parts = []
-    conversion_notes = []
+def convert_supplier_pricelist_to_source(uploaded_file):
+    file_bytes = uploaded_file.getvalue()
+    file_buffer = io.BytesIO(file_bytes)
+    xls = pd.ExcelFile(file_buffer, engine="openpyxl")
 
-    skip_sheet_terms = ["note", "notes", "cover", "summary", "index", "legend", "instruction", "categorie"]
+    all_rows = []
+    used_sheets = []
+    skipped_sheets = []
+    rows_missing_price = 0
+    rows_missing_sap = 0
+    rows_missing_product = 0
 
-    for sheet_name in workbook.sheet_names:
-        if any(term in str(sheet_name).strip().lower() for term in skip_sheet_terms):
+    for sheet_name in xls.sheet_names:
+        lowered_sheet = str(sheet_name).strip().lower()
+        if any(token in lowered_sheet for token in ["cover", "legend", "notes", "summary", "readme", "categorie", "lookup", "contents", "index"]):
+            skipped_sheets.append(f"{sheet_name} (helper)")
             continue
 
-        try:
-            raw = pd.read_excel(uploaded_file, sheet_name=sheet_name, header=None)
-        except Exception as exc:
-            conversion_notes.append(f"Skipped sheet '{sheet_name}': {exc}")
-            continue
-
+        raw = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, header=None, engine="openpyxl")
         if raw.empty:
+            skipped_sheets.append(f"{sheet_name} (empty)")
             continue
 
-        header_row = detect_source_header_row(raw)
-
-        try:
-            df = pd.read_excel(uploaded_file, sheet_name=sheet_name, header=header_row)
-        except Exception as exc:
-            conversion_notes.append(f"Skipped sheet '{sheet_name}' after header detection: {exc}")
-            continue
-
+        header_row = _detect_supplier_header_row(raw)
+        df = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, header=header_row, engine="openpyxl")
         if df.empty:
+            skipped_sheets.append(f"{sheet_name} (no rows)")
             continue
 
-        df.columns = [str(c).strip() for c in df.columns]
-
-        rename_map = {}
-        for col in df.columns:
-            normalized = normalize_source_column_name(col)
-            if normalized and normalized not in rename_map.values():
-                rename_map[col] = normalized
-
-        df = df.rename(columns=rename_map)
+        original_columns = [str(c).strip() for c in df.columns]
+        renamed_columns = {_col: _normalize_supplier_column_name(_col) for _col in original_columns}
+        df = df.rename(columns=renamed_columns)
 
         if "SAP" not in df.columns or "Product" not in df.columns:
-            conversion_notes.append(f"Skipped sheet '{sheet_name}': could not detect SAP/Product columns")
+            skipped_sheets.append(f"{sheet_name} (missing SAP/Product)")
             continue
 
         if "Base Price" not in df.columns:
-            conversion_notes.append(f"Skipped sheet '{sheet_name}': could not detect Base Price column")
+            skipped_sheets.append(f"{sheet_name} (missing Base Price)")
             continue
 
-        source_df = pd.DataFrame()
-        source_df["SAP"] = df["SAP"].astype(str).str.strip()
-        source_df["Product"] = df["Product"].astype(str).str.strip()
-        source_df["Base Price"] = df["Base Price"].apply(clean_numeric_value)
-        source_df["Increase %"] = df["Increase %"].apply(clean_percentage_value) if "Increase %" in df.columns else 0.0
-        source_df["Price"] = source_df.apply(
-            lambda r: None if pd.isna(r["Base Price"]) else round(float(r["Base Price"]) * (1 + float(r["Increase %"] or 0.0)), 4),
+        out = pd.DataFrame()
+        out["SAP"] = df["SAP"].astype(str).str.strip()
+        out["Product"] = df["Product"].astype(str).str.strip()
+        out["Base Price"] = df["Base Price"].apply(_to_float_or_none)
+        out["Increase %"] = df["Increase %"].apply(_to_increase_fraction) if "Increase %" in df.columns else 0.0
+        out["Price"] = out.apply(
+            lambda r: round(r["Base Price"] * (1 + r["Increase %"]), 4) if pd.notna(r["Base Price"]) and r["Base Price"] is not None else None,
             axis=1,
         )
-        source_df["MM"] = df["MM"].astype(str).str.strip() if "MM" in df.columns else ""
-        source_df["Package"] = df["Package"].astype(str).str.strip() if "Package" in df.columns else ""
+        out["MM"] = df["MM"].astype(str).str.strip() if "MM" in df.columns else ""
+        out["Package"] = df["Package"].astype(str).str.strip() if "Package" in df.columns else ""
         if "Category" in df.columns:
-            source_df["Category"] = df["Category"].astype(str).str.strip()
+            out["Category"] = df["Category"].astype(str).str.strip()
         else:
-            source_df["Category"] = str(sheet_name).strip()
+            out["Category"] = str(sheet_name).strip()
 
-        source_df = source_df.replace({"nan": "", "None": ""})
-        source_df = source_df[
-            (source_df["SAP"].astype(str).str.strip() != "") |
-            (source_df["Product"].astype(str).str.strip() != "")
-        ]
-        source_df = source_df.dropna(subset=["Base Price"], how="all")
+        out = out[_source_generator_output_columns()]
+        out = out[
+            ~(
+                out["SAP"].fillna("").astype(str).str.lower().isin(["", "nan", "none"])
+                & out["Product"].fillna("").astype(str).str.lower().isin(["", "nan", "none"])
+                & out["Base Price"].isna()
+            )
+        ].copy()
 
-        if source_df.empty:
-            conversion_notes.append(f"Skipped sheet '{sheet_name}': no usable rows found")
+        rows_missing_price += int(out["Base Price"].isna().sum())
+        rows_missing_sap += int(out["SAP"].fillna("").astype(str).str.lower().isin(["", "nan", "none"]).sum())
+        rows_missing_product += int(out["Product"].fillna("").astype(str).str.lower().isin(["", "nan", "none"]).sum())
+
+        valid_out = out[out["Base Price"].notna()].copy()
+        if valid_out.empty:
+            skipped_sheets.append(f"{sheet_name} (no valid priced rows)")
             continue
 
-        converted_parts.append(source_df.reset_index(drop=True))
+        all_rows.append(valid_out)
+        used_sheets.append(sheet_name)
 
-    if not converted_parts:
-        return None, conversion_notes
+    if not all_rows:
+        return None, {
+            "used_sheets": [],
+            "skipped_sheets": skipped_sheets,
+            "total_rows": 0,
+            "missing_price_rows": rows_missing_price,
+            "missing_sap_rows": rows_missing_sap,
+            "missing_product_rows": rows_missing_product,
+        }
 
-    final_df = pd.concat(converted_parts, ignore_index=True)
-    final_df = final_df[["SAP", "Product", "Base Price", "Increase %", "Price", "MM", "Package", "Category"]]
-    final_df = final_df.reset_index(drop=True)
-    return final_df, conversion_notes
+    result = pd.concat(all_rows, ignore_index=True)
+    result = result[_source_generator_output_columns()].copy()
+    result["SAP"] = result["SAP"].astype(str).str.strip()
+    result["Product"] = result["Product"].astype(str).str.strip()
+    result["MM"] = result["MM"].fillna("").astype(str).str.strip()
+    result["Package"] = result["Package"].fillna("").astype(str).str.strip()
+    result["Category"] = result["Category"].fillna("").astype(str).str.strip()
+    result = result[result["Product"] != ""].reset_index(drop=True)
+
+    stats = {
+        "used_sheets": used_sheets,
+        "skipped_sheets": skipped_sheets,
+        "total_rows": len(result),
+        "missing_price_rows": rows_missing_price,
+        "missing_sap_rows": rows_missing_sap,
+        "missing_product_rows": rows_missing_product,
+    }
+    return result, stats
 
 
-def save_source_dataframe_to_excel(df, output_path):
-    with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
-        df.to_excel(writer, sheet_name="PRICELIST", index=False)
+def _source_dataframe_to_excel_bytes(source_df: pd.DataFrame) -> bytes:
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        source_df.to_excel(writer, sheet_name="PRICELIST", index=False)
+    output.seek(0)
+    return output.getvalue()
+
+
 
 def render_sources():
     st.markdown('<div class="app-card">', unsafe_allow_html=True)
@@ -3564,66 +3596,122 @@ def render_sources():
     }
 
     st.markdown("### 1. Create Source from Supplier Pricelist")
-    st.caption("Upload a raw supplier pricelist Excel file, convert it automatically to Source format, then save it directly to the selected company.")
+    st.caption("Upload a supplier pricelist Excel, review the converted rows, edit anything you want, and then save it as a ready PRICELIST source file.")
 
-    raw_c1, raw_c2 = st.columns([2, 1])
-    with raw_c1:
-        raw_supplier_file = st.file_uploader(
-            "Upload Supplier Pricelist",
-            type=["xlsx", "xlsm"],
-            key="raw_supplier_file_upload",
-        )
-    with raw_c2:
-        raw_selected_company_display = st.selectbox(
-            "Save converted Source under",
+    gen_c1, gen_c2, gen_c3 = st.columns(3)
+    with gen_c1:
+        generator_company_display = st.selectbox(
+            "Company for generated Source",
             list(company_display_map.keys()),
-            key="raw_source_company",
+            key="generator_company_display",
         )
-        raw_company_code = company_display_map[raw_selected_company_display]
+        generator_company_code = company_display_map[generator_company_display]
 
-    if raw_supplier_file is not None:
-        source_df, conversion_notes = convert_supplier_file_to_source(raw_supplier_file)
+    with gen_c2:
+        generator_date_val = st.date_input(
+            "Generated Source Date",
+            value=date.today(),
+            key="generator_date",
+        )
+
+    with gen_c3:
+        uploaded_supplier_file = st.file_uploader(
+            "Upload supplier pricelist",
+            type=["xlsx", "xlsm"],
+            key="supplier_pricelist_upload",
+        )
+
+    if uploaded_supplier_file is not None:
+        source_df, conversion_stats = convert_supplier_pricelist_to_source(uploaded_supplier_file)
 
         if source_df is None or source_df.empty:
-            st.error("Could not detect a usable source structure in this supplier file.")
-            if conversion_notes:
-                for note in conversion_notes:
-                    st.warning(note)
+            st.error("Could not convert this supplier file automatically.")
+            skipped = conversion_stats.get("skipped_sheets", []) if isinstance(conversion_stats, dict) else []
+            if skipped:
+                st.warning("Skipped sheets: " + ", ".join(skipped))
         else:
-            metric_c1, metric_c2 = st.columns(2)
-            with metric_c1:
-                st.metric("Detected rows", len(source_df))
-            with metric_c2:
-                st.metric("Notes", len(conversion_notes))
+            st.success(f"Detected {len(source_df)} valid source rows from {len(conversion_stats.get('used_sheets', []))} sheet(s).")
 
-            st.dataframe(source_df.head(50), use_container_width=True, hide_index=True)
+            m1, m2, m3, m4 = st.columns(4)
+            with m1:
+                st.metric("Rows", conversion_stats.get("total_rows", len(source_df)))
+            with m2:
+                st.metric("Used Sheets", len(conversion_stats.get("used_sheets", [])))
+            with m3:
+                st.metric("Missing Prices", conversion_stats.get("missing_price_rows", 0))
+            with m4:
+                st.metric("Missing SAP/Product", conversion_stats.get("missing_sap_rows", 0) + conversion_stats.get("missing_product_rows", 0))
 
-            if conversion_notes:
-                with st.expander("Conversion notes"):
-                    for note in conversion_notes:
-                        st.write(f"• {note}")
+            if conversion_stats.get("used_sheets"):
+                st.caption("Used sheets: " + ", ".join(conversion_stats["used_sheets"]))
+            if conversion_stats.get("skipped_sheets"):
+                st.warning("Skipped sheets: " + ", ".join(conversion_stats["skipped_sheets"][:12]))
 
-            preview_buffer = io.BytesIO()
-            with pd.ExcelWriter(preview_buffer, engine="openpyxl") as writer:
-                source_df.to_excel(writer, sheet_name="PRICELIST", index=False)
-            preview_buffer.seek(0)
-
-            download_name = f"{raw_company_code}_converted_source_preview.xlsx"
-            st.download_button(
-                "Download Converted Source Preview",
-                data=preview_buffer.getvalue(),
-                file_name=download_name,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="download_converted_source_preview",
+            st.markdown("#### Review and Edit Before Save")
+            editable_df = st.data_editor(
+                source_df,
                 use_container_width=True,
+                num_rows="dynamic",
+                key="generated_source_editor",
+                column_config={
+                    "SAP": st.column_config.TextColumn("SAP"),
+                    "Product": st.column_config.TextColumn("Product", width="large"),
+                    "Base Price": st.column_config.NumberColumn("Base Price", format="%.4f"),
+                    "Increase %": st.column_config.NumberColumn("Increase %", format="%.4f"),
+                    "Price": st.column_config.NumberColumn("Price", format="%.4f"),
+                    "MM": st.column_config.TextColumn("MM"),
+                    "Package": st.column_config.TextColumn("Package"),
+                    "Category": st.column_config.TextColumn("Category"),
+                },
             )
 
-            if st.button("Save Converted Source", key="save_converted_source_button", use_container_width=True):
-                filename = get_next_version_filename(raw_company_code, datetime.utcnow(), raw_supplier_file.name)
-                output_path = get_company_folder(raw_company_code) / filename
-                save_source_dataframe_to_excel(source_df, output_path)
-                st.success(f"Converted source saved: {filename}")
-                st.rerun()
+            edited_df = pd.DataFrame(editable_df).copy()
+            expected_cols = _source_generator_output_columns()
+            for col in expected_cols:
+                if col not in edited_df.columns:
+                    edited_df[col] = ""
+
+            edited_df = edited_df[expected_cols].copy()
+            edited_df["Base Price"] = pd.to_numeric(edited_df["Base Price"], errors="coerce")
+            edited_df["Increase %"] = pd.to_numeric(edited_df["Increase %"], errors="coerce").fillna(0.0)
+            edited_df["Price"] = edited_df.apply(
+                lambda r: round(r["Base Price"] * (1 + r["Increase %"]), 4) if pd.notna(r["Base Price"]) else None,
+                axis=1,
+            )
+            edited_df["SAP"] = edited_df["SAP"].fillna("").astype(str).str.strip()
+            edited_df["Product"] = edited_df["Product"].fillna("").astype(str).str.strip()
+            edited_df["MM"] = edited_df["MM"].fillna("").astype(str).str.strip()
+            edited_df["Package"] = edited_df["Package"].fillna("").astype(str).str.strip()
+            edited_df["Category"] = edited_df["Category"].fillna("").astype(str).str.strip()
+            edited_df = edited_df[
+                ~(
+                    edited_df["SAP"].eq("")
+                    & edited_df["Product"].eq("")
+                    & edited_df["Base Price"].isna()
+                )
+            ].reset_index(drop=True)
+
+            preview_c1, preview_c2 = st.columns([1, 1])
+            with preview_c1:
+                st.download_button(
+                    "Download Generated Source",
+                    data=_source_dataframe_to_excel_bytes(edited_df),
+                    file_name=f"{generator_company_code}_generated_source_preview.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="download_generated_source_preview",
+                    use_container_width=True,
+                )
+            with preview_c2:
+                if st.button("Save Generated Source", key="save_generated_source_button", use_container_width=True):
+                    if edited_df.empty:
+                        st.error("There are no rows to save.")
+                    else:
+                        name = get_next_version_filename(generator_company_code, generator_date_val, uploaded_supplier_file.name)
+                        path = get_company_folder(generator_company_code) / name
+                        with open(path, "wb") as f:
+                            f.write(_source_dataframe_to_excel_bytes(edited_df))
+                        st.success(f"Generated source saved as: {name}")
+                        st.rerun()
 
     st.markdown("---")
     st.markdown("### 2. Save Ready Source")
@@ -3641,9 +3729,9 @@ def render_sources():
         date_val = st.date_input("Date", value=date.today(), key="save_date")
 
     with s3:
-        file = st.file_uploader("Upload Source", type=["xlsx", "xlsm"], key="save_file")
+        file = st.file_uploader("Upload Ready Source", type=["xlsx", "xlsm"], key="save_file")
 
-    if st.button("Save", key="save_source_button", use_container_width=True):
+    if st.button("Save Ready Source", key="save_source_button", use_container_width=True):
         if file is None:
             st.error("Please upload a source file first.")
         else:
@@ -3674,6 +3762,8 @@ def render_sources():
     st.markdown("---")
     render_source_library(show_title=True)
     st.markdown("</div>", unsafe_allow_html=True)
+
+
 
 def render_comparisons():
     pending_name = st.session_state.get("pending_comparison_name_input")
