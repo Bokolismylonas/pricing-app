@@ -4623,12 +4623,13 @@ def render_sources():
 
             st.markdown("#### Review and Edit Before Save")
 
-            if "generated_source_working_df" not in st.session_state:
+            current_generated_origin = f"{uploaded_supplier_file.name}|{generator_company_code}|{len(source_df)}"
+            if (
+                "generated_source_working_df" not in st.session_state
+                or st.session_state.get("generated_source_working_origin") != current_generated_origin
+            ):
                 st.session_state["generated_source_working_df"] = _ensure_preview_row_id(source_df)
-            else:
-                existing_generated = st.session_state["generated_source_working_df"]
-                if isinstance(existing_generated, pd.DataFrame) and len(existing_generated) != len(source_df):
-                    st.session_state["generated_source_working_df"] = _ensure_preview_row_id(source_df)
+                st.session_state["generated_source_working_origin"] = current_generated_origin
 
             editable_df = st.data_editor(
                 _preview_display_df(st.session_state["generated_source_working_df"]),
@@ -4787,11 +4788,17 @@ def render_sources():
                                 st.success(f"Manual mapping generated {len(manual_source_df)} rows.")
                                 st.session_state["manual_source_df"] = manual_source_df.to_dict(orient="records")
                                 st.session_state["manual_source_working_df"] = _ensure_preview_row_id(manual_source_df)
+                                st.session_state["manual_source_working_origin"] = f"{uploaded_supplier_file.name}|{generator_company_code}|manual|{len(manual_source_df)}"
 
                 if st.session_state.get("manual_source_df"):
                     st.markdown("##### Manual mapping preview")
-                    if "manual_source_working_df" not in st.session_state:
+                    current_manual_origin = f"{uploaded_supplier_file.name}|{generator_company_code}|manual|{len(st.session_state.get('manual_source_df', []))}"
+                    if (
+                        "manual_source_working_df" not in st.session_state
+                        or st.session_state.get("manual_source_working_origin") != current_manual_origin
+                    ):
                         st.session_state["manual_source_working_df"] = _ensure_preview_row_id(pd.DataFrame(st.session_state["manual_source_df"]))
+                        st.session_state["manual_source_working_origin"] = current_manual_origin
                     manual_preview_df = st.data_editor(
                         _preview_display_df(st.session_state["manual_source_working_df"]),
                         use_container_width=True,
