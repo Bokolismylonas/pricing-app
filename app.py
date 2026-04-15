@@ -1716,11 +1716,7 @@ def _normalize_preview_editor_output(edited_df: pd.DataFrame) -> pd.DataFrame:
 
     working = working[["__row_id"] + expected_cols].copy()
     working["Base Price"] = pd.to_numeric(working["Base Price"], errors="coerce")
-    working["Increase %"] = pd.to_numeric(working["Increase %"], errors="coerce").fillna(0.0)
-    working["Price"] = working.apply(
-        lambda r: round(r["Base Price"] * (1 + r["Increase %"]), 4) if pd.notna(r["Base Price"]) else None,
-        axis=1,
-    )
+    working["Price"] = working["Base Price"]
     for text_col in ["SAP", "Product", "MM", "Package", "Category"]:
         working[text_col] = working[text_col].fillna("").astype(str).str.strip()
 
@@ -3699,7 +3695,7 @@ def render_source_library(show_title=True):
             st.session_state.pop("pending_source_delete_display", None)
 
 def _source_generator_output_columns():
-    return ["SAP", "Product", "Base Price", "Increase %", "Price", "MM", "Package", "Category"]
+    return ["SAP", "Product", "Base Price", "Price", "MM", "Package", "Category"]
 
 
 def _source_dataframe_to_excel_bytes(df: pd.DataFrame) -> bytes:
@@ -3851,8 +3847,8 @@ def _parse_siniat_boards(file_bytes, sheet_name):
             "SAP": sap,
             "Product": final_product,
             "Base Price": base_price,
-            "Increase %": inc,
-            "Price": round(base_price * (1 + inc), 4) if base_price is not None else None,
+            "Increase %": 0.0,
+            "Price": base_price,
             "MM": mm,
             "Package": _build_package_from_area(mm, package_desc, width, length),
             "Category": final_category,
@@ -3886,8 +3882,8 @@ def _parse_siniat_accessories(file_bytes, sheet_name):
             "SAP": sap,
             "Product": product,
             "Base Price": base_price,
-            "Increase %": inc,
-            "Price": round(base_price * (1 + inc), 4) if base_price is not None else None,
+            "Increase %": 0.0,
+            "Price": base_price,
             "MM": mm,
             "Package": package_desc,
             "Category": category or current_category or "Accesorii",
@@ -3925,8 +3921,8 @@ def _parse_siniat_profiles(file_bytes, sheet_name):
             "SAP": sap,
             "Product": final_product,
             "Base Price": base_price,
-            "Increase %": inc,
-            "Price": round(base_price * (1 + inc), 4) if base_price is not None else None,
+            "Increase %": 0.0,
+            "Price": base_price,
             "MM": mm,
             "Package": _build_package_from_area(mm, package_desc, None, length),
             "Category": category or current_category or "Profile Nida",
@@ -4007,8 +4003,8 @@ def _parse_siniat_trape(file_bytes, sheet_name):
             "SAP": sap,
             "Product": final_product,
             "Base Price": base_price,
-            "Increase %": inc,
-            "Price": round(base_price * (1 + inc), 4) if base_price is not None else None,
+            "Increase %": 0.0,
+            "Price": base_price,
             "MM": mm,
             "Package": "1 τεμ" if mm else "",
             "Category": category or current_category or "Trape",
@@ -4034,8 +4030,8 @@ def _parse_siniat_services(file_bytes, sheet_name):
             "SAP": sap,
             "Product": product,
             "Base Price": base_price,
-            "Increase %": inc,
-            "Price": round(base_price * (1 + inc), 4) if base_price is not None else None,
+            "Increase %": 0.0,
+            "Price": base_price,
             "MM": mm,
             "Package": package,
             "Category": category,
@@ -4087,8 +4083,7 @@ def _parse_siniat_workbook(xls, file_bytes):
 
     source_df = pd.DataFrame(all_rows)
     source_df["Base Price"] = pd.to_numeric(source_df["Base Price"], errors="coerce")
-    source_df["Increase %"] = pd.to_numeric(source_df["Increase %"], errors="coerce").fillna(0.0)
-    source_df["Price"] = pd.to_numeric(source_df["Price"], errors="coerce")
+    source_df["Price"] = source_df["Base Price"]
     source_df = source_df[_source_generator_output_columns()].reset_index(drop=True)
 
     stats = {
@@ -4500,8 +4495,8 @@ def convert_supplier_pricelist_to_source(uploaded_file):
                 "SAP": sap_text,
                 "Product": product_text,
                 "Base Price": base_price,
-                "Increase %": increase_fraction,
-                "Price": round(base_price * (1 + increase_fraction), 4) if base_price is not None else None,
+                "Increase %": 0.0,
+                "Price": base_price,
                 "MM": mm_text,
                 "Package": package_text,
                 "Category": final_category,
@@ -4543,11 +4538,7 @@ def convert_supplier_pricelist_to_source(uploaded_file):
 
     source_df = pd.concat(all_rows, ignore_index=True)
     source_df["Base Price"] = pd.to_numeric(source_df["Base Price"], errors="coerce")
-    source_df["Increase %"] = pd.to_numeric(source_df["Increase %"], errors="coerce").fillna(0.0)
-    source_df["Price"] = source_df.apply(
-        lambda r: round(r["Base Price"] * (1 + r["Increase %"]), 4) if pd.notna(r["Base Price"]) else None,
-        axis=1,
-    )
+    source_df["Price"] = source_df["Base Price"]
     source_df = source_df[_source_generator_output_columns()].reset_index(drop=True)
 
     stats = {
@@ -4720,7 +4711,6 @@ def render_sources():
                     "SAP": st.column_config.TextColumn("SAP"),
                     "Product": st.column_config.TextColumn("Product", width="large"),
                     "Base Price": st.column_config.NumberColumn("Base Price", format="%.4f"),
-                    "Increase %": st.column_config.NumberColumn("Increase %", format="%.4f"),
                     "Price": st.column_config.NumberColumn("Price", format="%.4f", disabled=True),
                     "MM": st.column_config.TextColumn("MM"),
                     "Package": st.column_config.TextColumn("Package"),
@@ -4751,6 +4741,7 @@ def render_sources():
                     st.rerun()
 
             edited_df = st.session_state["generated_source_working_df"].copy()
+            edited_df["Price"] = edited_df["Base Price"]
             export_edited_df = edited_df.drop(columns=["__row_id"], errors="ignore").copy()
 
             preview_c1, preview_c2 = st.columns([1, 1])
@@ -4854,7 +4845,6 @@ def render_sources():
                                 "SAP": None if manual_sap == "— None —" else manual_sap,
                                 "Product": manual_product,
                                 "Base Price": manual_price,
-                                "Increase %": None if manual_inc == "— None —" else manual_inc,
                                 "MM": None if manual_mm == "— None —" else manual_mm,
                                 "Package": None if manual_pack == "— None —" else manual_pack,
                                 "Category": None if manual_cat == "— None —" else manual_cat,
@@ -4888,8 +4878,7 @@ def render_sources():
                             "SAP": st.column_config.TextColumn("SAP"),
                             "Product": st.column_config.TextColumn("Product", width="large"),
                             "Base Price": st.column_config.NumberColumn("Base Price", format="%.4f"),
-                            "Increase %": st.column_config.NumberColumn("Increase %", format="%.4f"),
-                            "Price": st.column_config.NumberColumn("Price", format="%.4f", disabled=True),
+                                    "Price": st.column_config.NumberColumn("Price", format="%.4f", disabled=True),
                             "MM": st.column_config.TextColumn("MM"),
                             "Package": st.column_config.TextColumn("Package"),
                             "Category": st.column_config.TextColumn("Category"),
@@ -4918,6 +4907,7 @@ def render_sources():
                             st.rerun()
 
                     manual_preview_df = st.session_state["manual_source_working_df"].copy()
+                    manual_preview_df["Price"] = manual_preview_df["Base Price"]
                     export_manual_preview_df = manual_preview_df.drop(columns=["__row_id"], errors="ignore").copy()
 
                     man_save_c1, man_save_c2 = st.columns(2)
