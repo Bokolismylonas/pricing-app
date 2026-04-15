@@ -3433,23 +3433,31 @@ def _source_generator_output_columns():
 
 
 def _detect_supplier_header_row(raw_df: pd.DataFrame) -> int:
-    max_scan = min(len(raw_df), 20)
+    max_scan = min(len(raw_df), 25)
     best_row = 0
     best_score = -1
+
+    code_tokens = ["sap", "code", "item code", "item no", "article", "article no", "sku", "reference", "ref", "material", "κωδικ", "κωδ"]
+    product_tokens = ["description", "product", "name", "item", "material description", "περιγραφ", "προϊ", "προιο", "όνομα", "ονομα"]
+    price_tokens = ["price", "list", "net price", "catalog", "unit price", "τιμή", "τιμο", "value", "αξία", "€/"]
+    unit_tokens = ["unit", "uom", "mm", "μον", "μ.μ", "μ/μ"]
+    package_tokens = ["pack", "package", "packing", "minimum", "pallet", "box", "συσκ"]
 
     for idx in range(max_scan):
         values = [str(v).strip().lower() for v in raw_df.iloc[idx].tolist() if str(v).strip() not in ["", "nan", "none"]]
         score = 0
-        if any(("sap" in v) or ("code" in v) or ("sku" in v) or ("article" in v) for v in values):
+        if any(any(token in v for token in code_tokens) for v in values):
             score += 2
-        if any(("description" in v) or ("product" in v) or ("name" in v) or ("item" in v) for v in values):
-            score += 2
-        if any("price" in v or "τιμή" in v for v in values):
+        if any(any(token in v for token in product_tokens) for v in values):
             score += 3
-        if any(("unit" in v) or (v == "mm") or ("μον" in v) for v in values):
+        if any(any(token in v for token in price_tokens) for v in values):
+            score += 4
+        if any(any(token in v for token in unit_tokens) for v in values):
             score += 1
-        if any(("pack" in v) or ("package" in v) or ("συσκ" in v) for v in values):
+        if any(any(token in v for token in package_tokens) for v in values):
             score += 1
+        if len(values) >= 3:
+            score += 0.5
         if score > best_score:
             best_score = score
             best_row = idx
@@ -3460,13 +3468,22 @@ def _detect_supplier_header_row(raw_df: pd.DataFrame) -> int:
 def _normalize_supplier_column_name(col_name: str) -> str:
     c = str(col_name).strip().lower()
 
-    if any(token in c for token in ["sap", "item code", "item no", "product code", "article", "sku", "κωδικ", "code"]):
+    if any(token in c for token in [
+        "sap", "item code", "item no", "product code", "article", "article no", "sku",
+        "reference", "ref", "material code", "material no", "κωδικ", "κωδ.", "κωδ", "code"
+    ]):
         return "SAP"
-    if any(token in c for token in ["description", "product", "item description", "product description", "name", "material", "περιγραφ"]):
+    if any(token in c for token in [
+        "description", "product", "item description", "product description", "name",
+        "material description", "material", "περιγραφ", "προϊ", "προιο", "όνομα", "ονομα"
+    ]):
         return "Product"
-    if any(token in c for token in ["increase %", "increase", "diff%", "markup", "adjustment %", "delta %"]):
+    if any(token in c for token in ["increase %", "increase", "diff%", "markup", "adjustment %", "delta %", "ανατ", "αύξη", "αυξη"]):
         return "Increase %"
-    if any(token in c for token in ["base price", "list price", "net price", "catalog price", "price", "τιμή", "pricelist", "unit price"]):
+    if any(token in c for token in [
+        "base price", "list price", "net price", "catalog price", "price", "τιμή", "τιμο",
+        "pricelist", "unit price", "value", "αξία", "€/", "eur"
+    ]):
         return "Base Price"
     if any(token in c for token in ["unit of measure", "uom", "unit", " mm", "mm ", "μον", "μ.μ", "μ/μ"]) or c == "mm":
         return "MM"
@@ -3476,6 +3493,88 @@ def _normalize_supplier_column_name(col_name: str) -> str:
         return "Category"
 
     return str(col_name).strip()
+
+
+def _guess_supplier_columns_by_values(df: pd.DataFrame) -> dict:
+    guessed = {}
+    used_columns = set()
+
+    def _sample(series):
+        vals = []
+        for val in series.tolist():
+            if val is None:
+                continue
+            sval = str(val).strip()
+            if sval.lower() in {"", "nan", "none"}:
+                continue
+            vals.append(sval)
+            if len(vals) >= 30:
+                break
+        return vals
+
+    def _numeric_ratio(values):
+        if not values:
+            return 0.0
+        ok = 0
+        for v in values:
+            if _to_float_or_none(v) is not None:
+                ok += 1
+        return ok / len(values)
+
+    def _long_text_ratio(values):
+        if not values:
+            return 0.0
+        ok = 0
+        for v in values:
+            if len(v) >= 8 and _to_float_or_none(v) is None:
+                ok += 1
+        return ok / len(values)
+
+    def _code_like_ratio(values):
+        if not values:
+            return 0.0
+        ok = 0
+        for v in values:
+            compact = v.replace(" ", "")
+            if len(compact) <= 20 and any(ch.isdigit() for ch in compact):
+                ok += 1
+        return ok / len(values)
+
+    profiles = {}
+    for col in df.columns:
+        vals = _sample(df[col])
+        profiles[col] = {
+            "numeric_ratio": _numeric_ratio(vals),
+            "long_text_ratio": _long_text_ratio(vals),
+            "code_like_ratio": _code_like_ratio(vals),
+        }
+
+    price_candidates = sorted(df.columns, key=lambda c: (profiles[c]["numeric_ratio"], "price" in str(c).lower()), reverse=True)
+    for col in price_candidates:
+        if profiles[col]["numeric_ratio"] >= 0.55:
+            guessed["Base Price"] = col
+            used_columns.add(col)
+            break
+
+    product_candidates = sorted(df.columns, key=lambda c: (profiles[c]["long_text_ratio"], len(str(c))), reverse=True)
+    for col in product_candidates:
+        if col in used_columns:
+            continue
+        if profiles[col]["long_text_ratio"] >= 0.35:
+            guessed["Product"] = col
+            used_columns.add(col)
+            break
+
+    code_candidates = sorted(df.columns, key=lambda c: (profiles[c]["code_like_ratio"], -profiles[c]["numeric_ratio"]), reverse=True)
+    for col in code_candidates:
+        if col in used_columns:
+            continue
+        if profiles[col]["code_like_ratio"] >= 0.35:
+            guessed["SAP"] = col
+            used_columns.add(col)
+            break
+
+    return guessed
 
 
 def _to_float_or_none(value):
@@ -3544,13 +3643,21 @@ def convert_supplier_pricelist_to_source(uploaded_file):
         renamed_columns = {_col: _normalize_supplier_column_name(_col) for _col in original_columns}
         df = df.rename(columns=renamed_columns)
 
-        if "SAP" not in df.columns or "Product" not in df.columns:
-            skipped_sheets.append(f"{sheet_name} (missing SAP/Product)")
+        guessed_columns = _guess_supplier_columns_by_values(df)
+        for canonical_name, original_col in guessed_columns.items():
+            if canonical_name not in df.columns and original_col in df.columns:
+                df = df.rename(columns={original_col: canonical_name})
+
+        if "Product" not in df.columns:
+            skipped_sheets.append(f"{sheet_name} (missing Product)")
             continue
 
         if "Base Price" not in df.columns:
             skipped_sheets.append(f"{sheet_name} (missing Base Price)")
             continue
+
+        if "SAP" not in df.columns:
+            df["SAP"] = ""
 
         out = pd.DataFrame()
         out["SAP"] = df["SAP"].astype(str).str.strip()
