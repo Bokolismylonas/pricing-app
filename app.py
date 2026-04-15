@@ -3501,7 +3501,11 @@ def _guess_supplier_columns_by_values(df: pd.DataFrame) -> dict:
 
     def _sample(series):
         vals = []
-        for val in series.tolist():
+        if isinstance(series, pd.DataFrame):
+            if series.shape[1] == 0:
+                return vals
+            series = series.iloc[:, 0]
+        for val in series.astype(object).tolist():
             if val is None:
                 continue
             sval = str(val).strip()
@@ -3642,6 +3646,7 @@ def convert_supplier_pricelist_to_source(uploaded_file):
         original_columns = [str(c).strip() for c in df.columns]
         renamed_columns = {_col: _normalize_supplier_column_name(_col) for _col in original_columns}
         df = df.rename(columns=renamed_columns)
+        df = df.loc[:, ~pd.Index(df.columns).duplicated(keep="first")]
 
         guessed_columns = _guess_supplier_columns_by_values(df)
         for canonical_name, original_col in guessed_columns.items():
