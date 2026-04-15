@@ -4,6 +4,7 @@ import base64
 import json
 import re
 import uuid
+import shutil
 from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
 
@@ -1611,6 +1612,12 @@ WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 COMPARISONS_DIR.mkdir(parents=True, exist_ok=True)
 
+TRASH_DIR = WORKSPACE_DIR / "_trash"
+TRASH_SOURCES_DIR = TRASH_DIR / "sources"
+TRASH_COMPARISONS_DIR = TRASH_DIR / "comparisons"
+TRASH_SOURCES_DIR.mkdir(parents=True, exist_ok=True)
+TRASH_COMPARISONS_DIR.mkdir(parents=True, exist_ok=True)
+
 
 def get_current_user_comparisons_file():
     raw_user = get_current_user_id() or get_current_user_email() or "anonymous"
@@ -1672,9 +1679,154 @@ for _, row in companies_df.iterrows():
     (UPLOADS_DIR / row["code"]).mkdir(parents=True, exist_ok=True)
 
 
+
 def refresh_source_file_views():
     return None
 
+
+def _ensure_preview_row_id(df: pd.DataFrame) -> pd.DataFrame:
+    working = pd.DataFrame(df).copy().reset_index(drop=True)
+    if "__row_id" not in working.columns:
+        working.insert(0, "__row_id", range(1, len(working) + 1))
+    else:
+        working["__row_id"] = pd.to_numeric(working["__row_id"], errors="coerce").fillna(range(1, len(working) + 1)).astype(int)
+    return working
+
+
+def _preview_display_df(df: pd.DataFrame) -> pd.DataFrame:
+    working = _ensure_preview_row_id(df)
+    out = working.copy()
+    out = out.rename(columns={"__row_id": "Row"})
+    return out
+
+
+def _normalize_preview_editor_output(edited_df: pd.DataFrame) -> pd.DataFrame:
+    working = pd.DataFrame(edited_df).copy()
+    if "Row" in working.columns and "__row_id" not in working.columns:
+        working = working.rename(columns={"Row": "__row_id"})
+    working = _ensure_preview_row_id(working)
+
+    expected_cols = _source_generator_output_columns()
+    for col in expected_cols:
+        if col not in working.columns:
+            working[col] = ""
+
+    working = working[["__row_id"] + expected_cols].copy()
+    working["Base Price"] = pd.to_numeric(working["Base Price"], errors="coerce")
+    working["Increase %"] = pd.to_numeric(working["Increase %"], errors="coerce").fillna(0.0)
+    working["Price"] = working.apply(
+        lambda r: round(r["Base Price"] * (1 + r["Increase %"]), 4) if pd.notna(r["Base Price"]) else None,
+        axis=1,
+    )
+    for text_col in ["SAP", "Product", "MM", "Package", "Category"]:
+        working[text_col] = working[text_col].fillna("").astype(str).str.strip()
+
+    working = working[
+        ~(
+            working["SAP"].eq("")
+            & working["Product"].eq("")
+            & working["Base Price"].isna()
+        )
+    ].reset_index(drop=True)
+    working = _ensure_preview_row_id(working.drop(columns=["__row_id"], errors="ignore"))
+    return working
+
+
+def _delete_selected_preview_rows_from_state(state_key: str, selected_row_ids) -> int:
+    df = st.session_state.get(state_key)
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return 0
+
+    selected_set = {int(x) for x in selected_row_ids if str(x).strip()}
+    if not selected_set:
+        return 0
+
+    working = _ensure_preview_row_id(df)
+    before = len(working)
+    working = working[~working["__row_id"].isin(selected_set)].copy().reset_index(drop=True)
+    working = _ensure_preview_row_id(working.drop(columns=["__row_id"], errors="ignore"))
+    deleted = before - len(working)
+    st.session_state[state_key] = working
+    return deleted
+
+
+def _make_soft_delete_name(path_obj: Path) -> str:
+    stamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    return f"{stamp}__{path_obj.name}"
+
+
+def _comparison_uses_source(record: dict, source_filename: str) -> bool:
+    if not isinstance(record, dict):
+        return False
+
+    source_filename = str(source_filename).strip()
+    if not source_filename:
+        return False
+
+    source_files = record.get("source_files", {}) or {}
+    for _, value in source_files.items():
+        if str(value).strip() == source_filename:
+            return True
+
+    state = record.get("state", {}) or {}
+    if isinstance(state, dict):
+        for key, value in state.items():
+            if str(key).startswith("select_") and str(value).strip() == source_filename:
+                return True
+
+    blob = json.dumps(record, ensure_ascii=False, default=str)
+    return source_filename in blob
+
+
+def _find_comparisons_using_source(source_filename: str):
+    matches = []
+    for comparison_file in sorted(COMPARISONS_DIR.glob("*.json")):
+        try:
+            records = list_comparisons(comparison_file)
+        except Exception:
+            continue
+
+        for record in records:
+            if _comparison_uses_source(record, source_filename):
+                matches.append({"comparison_file": comparison_file, "record": record})
+    return matches
+
+
+def _soft_delete_source_and_related_comparisons(source_path: Path):
+    source_path = Path(source_path)
+    source_filename = source_path.name
+
+    matches = _find_comparisons_using_source(source_filename)
+    archived_comparisons = []
+
+    for item in matches:
+        comparison_file = item["comparison_file"]
+        record = item["record"]
+        archived_record = {
+            "deleted_at": now_iso(),
+            "reason": f"Source soft-deleted: {source_filename}",
+            "source_filename": source_filename,
+            "from_comparison_file": comparison_file.name,
+            "record": record,
+        }
+        archived_comparisons.append(archived_record)
+        try:
+            delete_comparison(comparison_file, record.get("id"))
+        except Exception:
+            pass
+
+    archive_name = _make_soft_delete_name(source_path).replace(".xlsx", "").replace(".xlsm", "") + "__comparisons.json"
+    archive_path = TRASH_COMPARISONS_DIR / archive_name
+    archive_path.write_text(json.dumps(archived_comparisons, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+
+    trashed_source_path = TRASH_SOURCES_DIR / _make_soft_delete_name(source_path)
+    shutil.move(str(source_path), str(trashed_source_path))
+
+    return {
+        "deleted_comparisons_count": len(archived_comparisons),
+        "trashed_source_path": str(trashed_source_path),
+        "comparisons_archive_path": str(archive_path),
+    }
 
 # -------------------------------------------------
 # FILE / CATALOG HELPERS
@@ -3420,17 +3572,49 @@ def render_source_library(show_title=True):
             if not delete_source_display:
                 st.error("Please select a source.")
             else:
-                full_path = Path(source_delete_options[delete_source_display])
-                if full_path.exists():
-                    full_path.unlink()
-                    st.success(f"Source deleted: {full_path.name}")
-                    refresh_source_file_views()
+                st.session_state["pending_source_delete_display"] = delete_source_display
+
+    pending_delete_display = st.session_state.get("pending_source_delete_display", "")
+    if pending_delete_display:
+        pending_path = Path(source_delete_options.get(pending_delete_display, "")) if pending_delete_display in source_delete_options else None
+        if pending_path and pending_path.exists():
+            impacted = _find_comparisons_using_source(pending_path.name)
+            impacted_names = [item["record"].get("name", "Untitled comparison") for item in impacted]
+
+            st.warning(
+                f"Soft delete will move the selected source to Trash and also remove {len(impacted)} comparison(s) that use it from the active list."
+            )
+            if impacted_names:
+                st.caption("Affected comparisons: " + " • ".join(impacted_names[:8]))
+
+            confirm_delete = st.checkbox(
+                "I understand that the source and its related comparisons will be moved out of the active workspace.",
+                key="confirm_soft_delete_source",
+            )
+
+            confirm_c1, confirm_c2 = st.columns([1, 1])
+            with confirm_c1:
+                if st.button("Confirm Soft Delete", key="confirm_soft_delete_button", use_container_width=True):
+                    if not confirm_delete:
+                        st.error("Please confirm before continuing.")
+                    else:
+                        result = _soft_delete_source_and_related_comparisons(pending_path)
+                        st.session_state.pop("pending_source_delete_display", None)
+                        st.session_state.pop("confirm_soft_delete_source", None)
+                        st.success(
+                            f"Moved source to Trash: {pending_path.name}. "
+                            f"Soft-deleted {result['deleted_comparisons_count']} related comparison(s)."
+                        )
+                        refresh_source_file_views()
+                        st.rerun()
+
+            with confirm_c2:
+                if st.button("Cancel", key="cancel_soft_delete_button", use_container_width=True):
+                    st.session_state.pop("pending_source_delete_display", None)
+                    st.session_state.pop("confirm_soft_delete_source", None)
                     st.rerun()
-                else:
-                    st.error("File not found.")
-
-
-
+        else:
+            st.session_state.pop("pending_source_delete_display", None)
 
 def _source_generator_output_columns():
     return ["SAP", "Product", "Base Price", "Increase %", "Price", "MM", "Package", "Category"]
@@ -4506,6 +4690,7 @@ def render_sources():
                         with open(path, "wb") as f:
                             f.write(_source_dataframe_to_excel_bytes(export_edited_df))
                         st.success(f"Generated source saved as: {name}")
+                        refresh_source_file_views()
                         st.rerun()
 
         with st.expander("Manual column override", expanded=not auto_ok):
