@@ -2094,6 +2094,85 @@ def build_comparison_summary(final_prices, selected_codes):
     return summaries
 
 
+
+def _extract_sap_from_display_value(display_value: str) -> str:
+    text = str(display_value or "").strip()
+    if " | SAP " in text:
+        return text.split(" | SAP ", 1)[1].strip()
+    return ""
+
+
+def _extract_product_from_display_value(display_value: str) -> str:
+    text = str(display_value or "").strip()
+    if " | SAP " in text:
+        return text.split(" | SAP ", 1)[0].strip()
+    return text
+
+
+def _reconcile_selected_products_for_source_change(code, df):
+    if df is None or df.empty:
+        return
+
+    valid_displays = set(df["DISPLAY"].astype(str).tolist())
+    sap_to_display = {}
+    product_to_display = {}
+
+    for _, row in df.iterrows():
+        display = str(row.get("DISPLAY", "")).strip()
+        sap = str(row.get("SAP", "")).strip()
+        product = str(row.get("Product", "")).strip()
+
+        if display:
+            if sap and sap not in sap_to_display:
+                sap_to_display[sap] = display
+            if product and product not in product_to_display:
+                product_to_display[product] = display
+
+    for row_id in list(st.session_state.get("row_ids", [])):
+        data_key = f"row_{row_id}_{code}_product"
+        widget_key = get_product_widget_key(row_id, code)
+        selected_value = str(st.session_state.get(data_key, "") or "").strip()
+
+        if not selected_value:
+            continue
+
+        if selected_value in valid_displays:
+            st.session_state[widget_key] = selected_value
+            continue
+
+        remapped_value = ""
+        sap = _extract_sap_from_display_value(selected_value)
+        product = _extract_product_from_display_value(selected_value)
+
+        if sap and sap in sap_to_display:
+            remapped_value = sap_to_display[sap]
+        elif product and product in product_to_display:
+            remapped_value = product_to_display[product]
+
+        st.session_state[data_key] = remapped_value
+        st.session_state[widget_key] = remapped_value
+
+
+def _handle_source_selection_change(code):
+    selected_file = str(st.session_state.get(f"select_{code}", "") or "").strip()
+    tracking_key = f"_last_source_selection_{code}"
+
+    previous_file = str(st.session_state.get(tracking_key, "") or "").strip()
+    st.session_state[tracking_key] = selected_file
+
+    if not selected_file or selected_file == previous_file:
+        return
+
+    try:
+        source_path = get_company_folder(code) / selected_file
+        if not source_path.exists():
+            return
+        df = load_prepared_catalog_from_file(str(source_path), source_path.stat().st_mtime)
+        _reconcile_selected_products_for_source_change(code, df)
+    except Exception:
+        return
+
+
 def get_catalog_row(df, display_value):
     if df is None or df.empty or not display_value:
         return None
@@ -5123,7 +5202,7 @@ def render_comparisons():
                         f"{code} source file",
                         [""] + files,
                         key=f"select_{code}",
-                        on_change=mark_comparison_dirty,
+                        on_change=lambda c=code: (_handle_source_selection_change(c), mark_comparison_dirty()),
                     )
 
         for code in selected_codes:
