@@ -1689,7 +1689,10 @@ def _ensure_preview_row_id(df: pd.DataFrame) -> pd.DataFrame:
     if "__row_id" not in working.columns:
         working.insert(0, "__row_id", range(1, len(working) + 1))
     else:
-        working["__row_id"] = pd.to_numeric(working["__row_id"], errors="coerce").fillna(range(1, len(working) + 1)).astype(int)
+        row_ids = pd.to_numeric(working["__row_id"], errors="coerce")
+        fallback_ids = pd.Series(range(1, len(working) + 1), index=working.index, dtype="int64")
+        row_ids = row_ids.where(row_ids.notna(), fallback_ids)
+        working["__row_id"] = row_ids.astype(int)
     return working
 
 
