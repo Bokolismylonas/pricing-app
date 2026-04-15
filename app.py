@@ -1772,6 +1772,49 @@ def load_data(file):
         return None
 
 
+
+def load_excel_file_any(uploaded_file):
+    file_bytes = uploaded_file.getvalue()
+    attempts = [
+        ("openpyxl", io.BytesIO(file_bytes)),
+    ]
+
+    last_error = None
+    for engine, buffer in attempts:
+        try:
+            return pd.ExcelFile(buffer, engine=engine), file_bytes
+        except Exception as e:
+            last_error = e
+
+    try:
+        import xlrd  # noqa: F401
+        try:
+            return pd.ExcelFile(io.BytesIO(file_bytes), engine="xlrd"), file_bytes
+        except Exception as e:
+            last_error = e
+    except Exception:
+        pass
+
+    raise ValueError(
+        "The uploaded file could not be read as a valid Excel workbook. "
+        "If it was saved as .xls or exported with the wrong extension, please re-save it as a real .xlsx file and upload it again."
+    ) from last_error
+
+
+def read_excel_any(file_bytes, sheet_name, header=None):
+    try:
+        return pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, header=header, engine="openpyxl")
+    except Exception as first_error:
+        try:
+            import xlrd  # noqa: F401
+            return pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, header=header, engine="xlrd")
+        except Exception:
+            raise ValueError(
+                "This workbook is not a standard .xlsx file that can be opened safely. "
+                "Please open it in Excel and use Save As -> Excel Workbook (.xlsx), then upload it again."
+            ) from first_error
+
+
 def find_col(df, names):
     cols = {str(c).strip().lower(): c for c in df.columns}
     for n in names:
@@ -3471,9 +3514,7 @@ def _to_increase_fraction(value):
 
 
 def convert_supplier_pricelist_to_source(uploaded_file):
-    file_bytes = uploaded_file.getvalue()
-    file_buffer = io.BytesIO(file_bytes)
-    xls = pd.ExcelFile(file_buffer, engine="openpyxl")
+    xls, file_bytes = load_excel_file_any(uploaded_file)
 
     all_rows = []
     used_sheets = []
@@ -3488,13 +3529,13 @@ def convert_supplier_pricelist_to_source(uploaded_file):
             skipped_sheets.append(f"{sheet_name} (helper)")
             continue
 
-        raw = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, header=None, engine="openpyxl")
+        raw = read_excel_any(file_bytes, sheet_name=sheet_name, header=None)
         if raw.empty:
             skipped_sheets.append(f"{sheet_name} (empty)")
             continue
 
         header_row = _detect_supplier_header_row(raw)
-        df = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, header=header_row, engine="openpyxl")
+        df = read_excel_any(file_bytes, sheet_name=sheet_name, header=header_row)
         if df.empty:
             skipped_sheets.append(f"{sheet_name} (no rows)")
             continue
@@ -3622,7 +3663,11 @@ def render_sources():
         )
 
     if uploaded_supplier_file is not None:
-        source_df, conversion_stats = convert_supplier_pricelist_to_source(uploaded_supplier_file)
+        try:
+            source_df, conversion_stats = convert_supplier_pricelist_to_source(uploaded_supplier_file)
+        except Exception as e:
+            st.error(str(e))
+            source_df, conversion_stats = None, None
 
         if source_df is None or source_df.empty:
             st.error("Could not convert this supplier file automatically.")
