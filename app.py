@@ -3432,6 +3432,407 @@ def _source_generator_output_columns():
     return ["SAP", "Product", "Base Price", "Increase %", "Price", "MM", "Package", "Category"]
 
 
+def _source_dataframe_to_excel_bytes(df: pd.DataFrame) -> bytes:
+    output = io.BytesIO()
+    export_df = df.copy()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        export_df.to_excel(writer, sheet_name="PRICELIST", index=False)
+    output.seek(0)
+    return output.getvalue()
+
+
+def _normalize_text_simple(value) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if text.lower() in {"", "nan", "none"}:
+        return ""
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def _is_all_capsish(text: str) -> bool:
+    letters = [ch for ch in text if ch.isalpha()]
+    if not letters:
+        return False
+    upper_ratio = sum(1 for ch in letters if ch.isupper()) / len(letters)
+    return upper_ratio >= 0.65
+
+
+def _looks_like_section_title(values) -> bool:
+    cleaned = [_normalize_text_simple(v) for v in values]
+    cleaned = [x for x in cleaned if x]
+    if not cleaned:
+        return False
+    if len(cleaned) == 1:
+        only = cleaned[0]
+        if _to_float_or_none(only) is not None:
+            return False
+        return len(only) <= 140 and (_is_all_capsish(only) or len(only.split()) <= 8)
+    numeric = sum(1 for x in cleaned if _to_float_or_none(x) is not None)
+    return numeric == 0 and len(cleaned) <= 2
+
+
+def _read_raw_sheet(file_bytes: bytes, sheet_name: str) -> pd.DataFrame:
+    return pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, header=None, engine="openpyxl")
+
+
+def _extract_category_map(file_bytes: bytes):
+    category_map = {}
+    try:
+        df = pd.read_excel(io.BytesIO(file_bytes), sheet_name="Categorie", engine="openpyxl")
+        if df is not None and not df.empty and len(df.columns) >= 1:
+            cat_col = df.columns[0]
+            prc_col = df.columns[1] if len(df.columns) > 1 else None
+            for _, row in df.iterrows():
+                key = _normalize_text_simple(row.get(cat_col))
+                if not key:
+                    continue
+                category_map[key] = _to_increase_fraction(row.get(prc_col)) if prc_col is not None else 0.0
+    except Exception:
+        pass
+    return category_map
+
+
+def _is_siniat_april_workbook(sheet_names):
+    normalized = {str(s).strip().lower() for s in sheet_names}
+    needed = {"σανίδες nida (placa nida)", " αξεσουάρ (accesorii)", " προφίλ (profile)", "κονιάματα (adera)"}
+    return any("placa nida" in s for s in normalized) and any("accesorii" in s for s in normalized)
+
+
+def _safe_row_value(row, idx):
+    if idx >= len(row):
+        return None
+    return row[idx]
+
+
+def _append_if_present(base, extra, sep=" | "):
+    base = _normalize_text_simple(base)
+    extra = _normalize_text_simple(extra)
+    if base and extra:
+        return f"{base}{sep}{extra}"
+    return base or extra
+
+
+def _build_package_from_area(unit, package_desc, width_mm=None, length_mm=None):
+    package_desc = _normalize_text_simple(package_desc)
+    unit = _normalize_text_simple(unit)
+    if not package_desc:
+        return ""
+    m = re.search(r"(\d+(?:[.,]\d+)?)", package_desc.replace(" ", ""))
+    if unit.lower() == "m2" and m and width_mm and length_mm:
+        try:
+            count = float(m.group(1).replace(",", "."))
+            area_each = (float(width_mm) / 1000.0) * (float(length_mm) / 1000.0)
+            total = round(count * area_each, 2)
+            return f"{total:g} m²/παλέτα"
+        except Exception:
+            return package_desc
+    if unit in {"Μ", "m", "M"} and m and length_mm:
+        try:
+            count = float(m.group(1).replace(",", "."))
+            total = round(count * (float(length_mm) / 1000.0), 2)
+            total_str = str(int(total)) if abs(total - int(total)) < 1e-9 else str(total)
+            return f"{total_str} m/δέμα"
+        except Exception:
+            return package_desc
+    if "τεμ" in package_desc.lower() and "/" not in package_desc:
+        return package_desc
+    return package_desc
+
+
+def _parse_siniat_boards(file_bytes, sheet_name):
+    raw = _read_raw_sheet(file_bytes, sheet_name)
+    rows = []
+    current_category = ""
+    current_product = ""
+    for i in range(1, len(raw)):
+        vals = raw.iloc[i].tolist()
+        product = _normalize_text_simple(_safe_row_value(vals, 0))
+        sap = _normalize_text_simple(_safe_row_value(vals, 1))
+        width = _safe_row_value(vals, 2)
+        length = _safe_row_value(vals, 3)
+        mm = _normalize_text_simple(_safe_row_value(vals, 4))
+        package_desc = _normalize_text_simple(_safe_row_value(vals, 6))
+        base_price = _to_float_or_none(_safe_row_value(vals, 10))
+        category = _normalize_text_simple(_safe_row_value(vals, 11))
+        inc = _to_increase_fraction(_safe_row_value(vals, 12))
+
+        if _looks_like_section_title(vals[:3]):
+            title = product
+            if title:
+                current_category = title
+            continue
+
+        if product:
+            current_product = product
+        elif not sap and base_price is None:
+            continue
+
+        final_product = current_product
+        if width and length and _to_float_or_none(width) is not None and _to_float_or_none(length) is not None:
+            final_product = _append_if_present(final_product, f"{int(float(width))}x{int(float(length))}mm")
+
+        if not final_product:
+            continue
+
+        final_category = category or current_category or "Placa Nida"
+        rows.append({
+            "SAP": sap,
+            "Product": final_product,
+            "Base Price": base_price,
+            "Increase %": inc,
+            "Price": round(base_price * (1 + inc), 4) if base_price is not None else None,
+            "MM": mm,
+            "Package": _build_package_from_area(mm, package_desc, width, length),
+            "Category": final_category,
+        })
+    return rows
+
+
+def _parse_siniat_accessories(file_bytes, sheet_name):
+    raw = _read_raw_sheet(file_bytes, sheet_name)
+    rows = []
+    current_category = ""
+    for i in range(1, len(raw)):
+        vals = raw.iloc[i].tolist()
+        product = _normalize_text_simple(_safe_row_value(vals, 0))
+        sap = _normalize_text_simple(_safe_row_value(vals, 2))
+        mm = _normalize_text_simple(_safe_row_value(vals, 3))
+        package_desc = _normalize_text_simple(_safe_row_value(vals, 5))
+        base_price = _to_float_or_none(_safe_row_value(vals, 9))
+        category = _normalize_text_simple(_safe_row_value(vals, 10))
+        inc = _to_increase_fraction(_safe_row_value(vals, 11))
+
+        if _looks_like_section_title(vals[:3]):
+            if product:
+                current_category = product
+            continue
+
+        if not product and not sap and base_price is None:
+            continue
+
+        rows.append({
+            "SAP": sap,
+            "Product": product,
+            "Base Price": base_price,
+            "Increase %": inc,
+            "Price": round(base_price * (1 + inc), 4) if base_price is not None else None,
+            "MM": mm,
+            "Package": package_desc,
+            "Category": category or current_category or "Accesorii",
+        })
+    return rows
+
+
+def _parse_siniat_profiles(file_bytes, sheet_name):
+    raw = _read_raw_sheet(file_bytes, sheet_name)
+    rows = []
+    current_category = ""
+    for i in range(1, len(raw)):
+        vals = raw.iloc[i].tolist()
+        product = _normalize_text_simple(_safe_row_value(vals, 0))
+        sap = _normalize_text_simple(_safe_row_value(vals, 2))
+        length = _safe_row_value(vals, 3)
+        mm = _normalize_text_simple(_safe_row_value(vals, 4))
+        package_desc = _normalize_text_simple(_safe_row_value(vals, 6))
+        base_price = _to_float_or_none(_safe_row_value(vals, 10))
+        category = _normalize_text_simple(_safe_row_value(vals, 11))
+        inc = _to_increase_fraction(_safe_row_value(vals, 12))
+
+        if _looks_like_section_title(vals[:3]):
+            if product:
+                current_category = product
+            continue
+
+        if not product and not sap and base_price is None:
+            continue
+
+        final_product = product
+        if length and _to_float_or_none(length) is not None:
+            final_product = _append_if_present(final_product, f"{int(float(length))}mm")
+        rows.append({
+            "SAP": sap,
+            "Product": final_product,
+            "Base Price": base_price,
+            "Increase %": inc,
+            "Price": round(base_price * (1 + inc), 4) if base_price is not None else None,
+            "MM": mm,
+            "Package": _build_package_from_area(mm, package_desc, None, length),
+            "Category": category or current_category or "Profile Nida",
+        })
+    return rows
+
+
+def _parse_siniat_mortars(file_bytes, sheet_name):
+    raw = _read_raw_sheet(file_bytes, sheet_name)
+    rows = []
+    current_category = ""
+    current_product = ""
+    for i in range(1, len(raw)):
+        vals = raw.iloc[i].tolist()
+        product = _normalize_text_simple(_safe_row_value(vals, 0))
+        sap = _normalize_text_simple(_safe_row_value(vals, 1))
+        qty = _normalize_text_simple(_safe_row_value(vals, 2))
+        delivery = _normalize_text_simple(_safe_row_value(vals, 3))
+        mm = _safe_row_value(vals, 4)
+        base_price = _to_float_or_none(_safe_row_value(vals, 6))
+        category = _normalize_text_simple(_safe_row_value(vals, 8))
+
+        if _looks_like_section_title(vals[:2]):
+            if product:
+                current_category = product
+            continue
+
+        if product:
+            current_product = product
+        elif not sap and base_price is None:
+            continue
+
+        final_product = _append_if_present(current_product, qty)
+        rows.append({
+            "SAP": sap,
+            "Product": final_product,
+            "Base Price": base_price if base_price is not None else 0.0,
+            "Increase %": 0.0,
+            "Price": base_price if base_price is not None else 0.0,
+            "MM": mm,
+            "Package": delivery,
+            "Category": category or current_category or "Adera",
+        })
+    return rows
+
+
+def _parse_siniat_trape(file_bytes, sheet_name):
+    raw = _read_raw_sheet(file_bytes, sheet_name)
+    rows = []
+    current_category = ""
+    current_product = ""
+    for i in range(1, len(raw)):
+        vals = raw.iloc[i].tolist()
+        product = _normalize_text_simple(_safe_row_value(vals, 0))
+        sap = _normalize_text_simple(_safe_row_value(vals, 1))
+        thickness = _normalize_text_simple(_safe_row_value(vals, 2))
+        dims = _normalize_text_simple(_safe_row_value(vals, 3))
+        mm = _normalize_text_simple(_safe_row_value(vals, 4))
+        base_price = _to_float_or_none(_safe_row_value(vals, 9))
+        category = _normalize_text_simple(_safe_row_value(vals, 10))
+        inc = _to_increase_fraction(_safe_row_value(vals, 11))
+
+        if _looks_like_section_title(vals[:3]):
+            if product:
+                current_category = product
+            continue
+
+        if product:
+            current_product = product
+        elif not sap and base_price is None:
+            continue
+
+        final_product = current_product
+        suffix = " ".join([x for x in [dims, thickness] if x]).strip()
+        if suffix:
+            final_product = _append_if_present(final_product, suffix)
+        rows.append({
+            "SAP": sap,
+            "Product": final_product,
+            "Base Price": base_price,
+            "Increase %": inc,
+            "Price": round(base_price * (1 + inc), 4) if base_price is not None else None,
+            "MM": mm,
+            "Package": "1 τεμ" if mm else "",
+            "Category": category or current_category or "Trape",
+        })
+    return rows
+
+
+def _parse_siniat_services(file_bytes, sheet_name):
+    raw = _read_raw_sheet(file_bytes, sheet_name)
+    rows = []
+    for i in range(1, len(raw)):
+        vals = raw.iloc[i].tolist()
+        product = _normalize_text_simple(_safe_row_value(vals, 0))
+        sap = _normalize_text_simple(_safe_row_value(vals, 1))
+        mm = _normalize_text_simple(_safe_row_value(vals, 2))
+        package = _normalize_text_simple(_safe_row_value(vals, 3))
+        base_price = _to_float_or_none(_safe_row_value(vals, 5))
+        category = _normalize_text_simple(_safe_row_value(vals, 6)) or "Servicii"
+        inc = _to_increase_fraction(_safe_row_value(vals, 7))
+        if not product:
+            continue
+        rows.append({
+            "SAP": sap,
+            "Product": product,
+            "Base Price": base_price,
+            "Increase %": inc,
+            "Price": round(base_price * (1 + inc), 4) if base_price is not None else None,
+            "MM": mm,
+            "Package": package,
+            "Category": category,
+        })
+    return rows
+
+
+def _parse_siniat_workbook(xls, file_bytes):
+    all_rows = []
+    used_sheets = []
+    skipped_sheets = []
+    for sheet_name in xls.sheet_names:
+        stripped = str(sheet_name).strip()
+        low = stripped.lower()
+        try:
+            if low == "categorie" or low == "extra":
+                skipped_sheets.append(f"{sheet_name} (helper)")
+                continue
+            if "placa nida" in low:
+                rows = _parse_siniat_boards(file_bytes, sheet_name)
+            elif "accesorii" in low:
+                rows = _parse_siniat_accessories(file_bytes, sheet_name)
+            elif "profile" in low:
+                rows = _parse_siniat_profiles(file_bytes, sheet_name)
+            elif "adera" in low:
+                rows = _parse_siniat_mortars(file_bytes, sheet_name)
+            elif "trape" in low:
+                rows = _parse_siniat_trape(file_bytes, sheet_name)
+            elif "υπηρεσίες" in low and "servicii" in low:
+                rows = _parse_siniat_services(file_bytes, sheet_name)
+            elif low == "servicii":
+                skipped_sheets.append(f"{sheet_name} (legacy services skipped)")
+                continue
+            else:
+                skipped_sheets.append(f"{sheet_name} (unmapped)")
+                continue
+        except Exception as e:
+            skipped_sheets.append(f"{sheet_name} (parse error)")
+            continue
+
+        if rows:
+            all_rows.extend(rows)
+            used_sheets.append(sheet_name)
+        else:
+            skipped_sheets.append(f"{sheet_name} (no valid product rows)")
+
+    if not all_rows:
+        return None, {"used_sheets": used_sheets, "skipped_sheets": skipped_sheets, "missing_price_rows": 0, "missing_sap_rows": 0, "missing_product_rows": 0, "detected_section_titles": [], "total_rows": 0}
+
+    source_df = pd.DataFrame(all_rows)
+    source_df["Base Price"] = pd.to_numeric(source_df["Base Price"], errors="coerce")
+    source_df["Increase %"] = pd.to_numeric(source_df["Increase %"], errors="coerce").fillna(0.0)
+    source_df["Price"] = pd.to_numeric(source_df["Price"], errors="coerce")
+    source_df = source_df[_source_generator_output_columns()].reset_index(drop=True)
+
+    stats = {
+        "used_sheets": used_sheets,
+        "skipped_sheets": skipped_sheets,
+        "missing_price_rows": int(source_df["Base Price"].isna().sum()),
+        "missing_sap_rows": int(source_df["SAP"].astype(str).str.strip().eq("").sum()),
+        "missing_product_rows": int(source_df["Product"].astype(str).str.strip().eq("").sum()),
+        "detected_section_titles": [],
+        "total_rows": len(source_df),
+    }
+    return source_df, stats
+
+
 def _detect_supplier_header_row(raw_df: pd.DataFrame) -> int:
     max_scan = min(len(raw_df), 25)
     best_row = 0
@@ -3722,6 +4123,9 @@ def _extract_section_title(values):
 def convert_supplier_pricelist_to_source(uploaded_file):
     xls, file_bytes = load_excel_file_any(uploaded_file)
 
+    if _is_siniat_april_workbook(xls.sheet_names):
+        return _parse_siniat_workbook(xls, file_bytes)
+
     all_rows = []
     used_sheets = []
     skipped_sheets = []
@@ -3838,7 +4242,6 @@ def convert_supplier_pricelist_to_source(uploaded_file):
             continue
 
         out = pd.DataFrame(normalized_rows)
-
         if out.empty:
             skipped_sheets.append(f"{sheet_name} (all rows invalid)")
             continue
