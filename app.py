@@ -4665,7 +4665,7 @@ def render_sources():
                 st.write("")
                 if st.button("Delete selected rows", key="delete_generated_preview_rows", use_container_width=True):
                     deleted_count = _delete_selected_preview_rows_from_state("generated_source_working_df", selected_delete_rows)
-                    st.session_state["generated_source_delete_rows"] = []
+                    st.session_state.pop("generated_source_delete_rows", None)
                     if deleted_count:
                         st.success(f"Deleted {deleted_count} row(s) from the preview.")
                     st.rerun()
@@ -4826,7 +4826,7 @@ def render_sources():
                         st.write("")
                         if st.button("Delete selected manual rows", key="delete_manual_preview_rows", use_container_width=True):
                             deleted_count = _delete_selected_preview_rows_from_state("manual_source_working_df", selected_manual_delete_rows)
-                            st.session_state["manual_source_delete_rows"] = []
+                            st.session_state.pop("manual_source_delete_rows", None)
                             if deleted_count:
                                 st.success(f"Deleted {deleted_count} row(s) from the manual preview.")
                             st.rerun()
