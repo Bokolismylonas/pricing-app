@@ -4,6 +4,7 @@ import base64
 import json
 import re
 import uuid
+import shutil
 from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
 
@@ -1327,14 +1328,10 @@ def set_user_max_active_sessions_override(email, sub, max_sessions_override):
 def get_user_max_active_sessions(user_row=None, email=None, sub=None):
     row = user_row
     if row is None and email and sub:
-        _, row, _ = get_current_user_registry_row() if (
-            email == get_current_user_email() and sub == get_current_user_id()
-        ) else (None, None, None)
-        if row is None:
-            users = load_users_registry()
-            idx = find_user_index(users, email, sub)
-            if idx is not None:
-                row = ensure_user_fields(users[idx])
+        users = load_users_registry()
+        idx = find_user_index(users, email, sub)
+        if idx is not None:
+            row = ensure_user_fields(users[idx])
 
     if row is None:
         return MAX_ACTIVE_SESSIONS
@@ -1655,6 +1652,12 @@ WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 COMPARISONS_DIR.mkdir(parents=True, exist_ok=True)
 
+TRASH_DIR = WORKSPACE_DIR / "_trash"
+TRASH_SOURCES_DIR = TRASH_DIR / "sources"
+TRASH_COMPARISONS_DIR = TRASH_DIR / "comparisons"
+TRASH_SOURCES_DIR.mkdir(parents=True, exist_ok=True)
+TRASH_COMPARISONS_DIR.mkdir(parents=True, exist_ok=True)
+
 
 def get_current_user_comparisons_file():
     raw_user = get_current_user_id() or get_current_user_email() or "anonymous"
@@ -1716,6 +1719,154 @@ for _, row in companies_df.iterrows():
     (UPLOADS_DIR / row["code"]).mkdir(parents=True, exist_ok=True)
 
 
+
+def refresh_source_file_views():
+    return None
+
+
+def _ensure_preview_row_id(df: pd.DataFrame) -> pd.DataFrame:
+    working = pd.DataFrame(df).copy().reset_index(drop=True)
+    if "__row_id" not in working.columns:
+        working.insert(0, "__row_id", range(1, len(working) + 1))
+    else:
+        row_ids = pd.to_numeric(working["__row_id"], errors="coerce")
+        fallback_ids = pd.Series(range(1, len(working) + 1), index=working.index, dtype="int64")
+        row_ids = row_ids.where(row_ids.notna(), fallback_ids)
+        working["__row_id"] = row_ids.astype(int)
+    return working
+
+
+def _preview_display_df(df: pd.DataFrame) -> pd.DataFrame:
+    working = _ensure_preview_row_id(df)
+    out = working.copy()
+    out = out.rename(columns={"__row_id": "Row"})
+    return out
+
+
+def _normalize_preview_editor_output(edited_df: pd.DataFrame) -> pd.DataFrame:
+    working = pd.DataFrame(edited_df).copy()
+    if "Row" in working.columns and "__row_id" not in working.columns:
+        working = working.rename(columns={"Row": "__row_id"})
+    working = _ensure_preview_row_id(working)
+
+    expected_cols = _source_generator_output_columns()
+    for col in expected_cols:
+        if col not in working.columns:
+            working[col] = ""
+
+    working = working[["__row_id"] + expected_cols].copy()
+    working["Base Price"] = pd.to_numeric(working["Base Price"], errors="coerce")
+    working["Price"] = working["Base Price"]
+    for text_col in ["SAP", "Product", "MM", "Package", "Category"]:
+        working[text_col] = working[text_col].fillna("").astype(str).str.strip()
+
+    working = working[
+        ~(
+            working["SAP"].eq("")
+            & working["Product"].eq("")
+            & working["Base Price"].isna()
+        )
+    ].reset_index(drop=True)
+    working = _ensure_preview_row_id(working.drop(columns=["__row_id"], errors="ignore"))
+    return working
+
+
+def _delete_selected_preview_rows_from_state(state_key: str, selected_row_ids) -> int:
+    df = st.session_state.get(state_key)
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+        return 0
+
+    selected_set = {int(x) for x in selected_row_ids if str(x).strip()}
+    if not selected_set:
+        return 0
+
+    working = _ensure_preview_row_id(df)
+    before = len(working)
+    working = working[~working["__row_id"].isin(selected_set)].copy().reset_index(drop=True)
+    working = _ensure_preview_row_id(working.drop(columns=["__row_id"], errors="ignore"))
+    deleted = before - len(working)
+    st.session_state[state_key] = working
+    return deleted
+
+
+def _make_soft_delete_name(path_obj: Path) -> str:
+    stamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    return f"{stamp}__{path_obj.name}"
+
+
+def _comparison_uses_source(record: dict, source_filename: str) -> bool:
+    if not isinstance(record, dict):
+        return False
+
+    source_filename = str(source_filename).strip()
+    if not source_filename:
+        return False
+
+    source_files = record.get("source_files", {}) or {}
+    for _, value in source_files.items():
+        if str(value).strip() == source_filename:
+            return True
+
+    state = record.get("state", {}) or {}
+    if isinstance(state, dict):
+        for key, value in state.items():
+            if str(key).startswith("select_") and str(value).strip() == source_filename:
+                return True
+
+    blob = json.dumps(record, ensure_ascii=False, default=str)
+    return source_filename in blob
+
+
+def _find_comparisons_using_source(source_filename: str):
+    matches = []
+    for comparison_file in sorted(COMPARISONS_DIR.glob("*.json")):
+        try:
+            records = list_comparisons(comparison_file)
+        except Exception:
+            continue
+
+        for record in records:
+            if _comparison_uses_source(record, source_filename):
+                matches.append({"comparison_file": comparison_file, "record": record})
+    return matches
+
+
+def _soft_delete_source_and_related_comparisons(source_path: Path):
+    source_path = Path(source_path)
+    source_filename = source_path.name
+
+    matches = _find_comparisons_using_source(source_filename)
+    archived_comparisons = []
+
+    for item in matches:
+        comparison_file = item["comparison_file"]
+        record = item["record"]
+        archived_record = {
+            "deleted_at": now_iso(),
+            "reason": f"Source soft-deleted: {source_filename}",
+            "source_filename": source_filename,
+            "from_comparison_file": comparison_file.name,
+            "record": record,
+        }
+        archived_comparisons.append(archived_record)
+        try:
+            delete_comparison(comparison_file, record.get("id"))
+        except Exception:
+            pass
+
+    archive_name = _make_soft_delete_name(source_path).replace(".xlsx", "").replace(".xlsm", "") + "__comparisons.json"
+    archive_path = TRASH_COMPARISONS_DIR / archive_name
+    archive_path.write_text(json.dumps(archived_comparisons, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+
+    trashed_source_path = TRASH_SOURCES_DIR / _make_soft_delete_name(source_path)
+    shutil.move(str(source_path), str(trashed_source_path))
+
+    return {
+        "deleted_comparisons_count": len(archived_comparisons),
+        "trashed_source_path": str(trashed_source_path),
+        "comparisons_archive_path": str(archive_path),
+    }
+
 # -------------------------------------------------
 # FILE / CATALOG HELPERS
 # -------------------------------------------------
@@ -1748,7 +1899,6 @@ def get_next_version_filename(company, dt, original_name):
     return f"{company}_{yyyy}_{mm}_{dd}_v{max_v + 1}{ext}"
 
 
-@st.cache_data(show_spinner=False)
 def get_company_files(code):
     folder = get_company_folder(code)
     files = []
@@ -1808,12 +1958,55 @@ def company_has_files(code):
 
 def load_data(file):
     try:
-        df = pd.read_excel(file, sheet_name="PRICELIST")
+        df = pd.read_excel(file, sheet_name="PRICELIST", engine="openpyxl")
         df.columns = [str(c).strip() for c in df.columns]
         return df
     except Exception as e:
         st.error(f"Error loading file: {e}")
         return None
+
+
+
+def load_excel_file_any(uploaded_file):
+    file_bytes = uploaded_file.getvalue()
+    attempts = [
+        ("openpyxl", io.BytesIO(file_bytes)),
+    ]
+
+    last_error = None
+    for engine, buffer in attempts:
+        try:
+            return pd.ExcelFile(buffer, engine=engine), file_bytes
+        except Exception as e:
+            last_error = e
+
+    try:
+        import xlrd  # noqa: F401
+        try:
+            return pd.ExcelFile(io.BytesIO(file_bytes), engine="xlrd"), file_bytes
+        except Exception as e:
+            last_error = e
+    except Exception:
+        pass
+
+    raise ValueError(
+        "The uploaded file could not be read as a valid Excel workbook. "
+        "If it was saved as .xls or exported with the wrong extension, please re-save it as a real .xlsx file and upload it again."
+    ) from last_error
+
+
+def read_excel_any(file_bytes, sheet_name, header=None):
+    try:
+        return pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, header=header, engine="openpyxl")
+    except Exception as first_error:
+        try:
+            import xlrd  # noqa: F401
+            return pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, header=header, engine="xlrd")
+        except Exception:
+            raise ValueError(
+                "This workbook is not a standard .xlsx file that can be opened safely. "
+                "Please open it in Excel and use Save As -> Excel Workbook (.xlsx), then upload it again."
+            ) from first_error
 
 
 def find_col(df, names):
@@ -1935,6 +2128,85 @@ def build_comparison_summary(final_prices, selected_codes):
         summaries[code] = " | ".join(notes)
 
     return summaries
+
+
+
+def _extract_sap_from_display_value(display_value: str) -> str:
+    text = str(display_value or "").strip()
+    if " | SAP " in text:
+        return text.split(" | SAP ", 1)[1].strip()
+    return ""
+
+
+def _extract_product_from_display_value(display_value: str) -> str:
+    text = str(display_value or "").strip()
+    if " | SAP " in text:
+        return text.split(" | SAP ", 1)[0].strip()
+    return text
+
+
+def _reconcile_selected_products_for_source_change(code, df):
+    if df is None or df.empty:
+        return
+
+    valid_displays = set(df["DISPLAY"].astype(str).tolist())
+    sap_to_display = {}
+    product_to_display = {}
+
+    for _, row in df.iterrows():
+        display = str(row.get("DISPLAY", "")).strip()
+        sap = str(row.get("SAP", "")).strip()
+        product = str(row.get("Product", "")).strip()
+
+        if display:
+            if sap and sap not in sap_to_display:
+                sap_to_display[sap] = display
+            if product and product not in product_to_display:
+                product_to_display[product] = display
+
+    for row_id in list(st.session_state.get("row_ids", [])):
+        data_key = f"row_{row_id}_{code}_product"
+        widget_key = get_product_widget_key(row_id, code)
+        selected_value = str(st.session_state.get(data_key, "") or "").strip()
+
+        if not selected_value:
+            continue
+
+        if selected_value in valid_displays:
+            st.session_state[widget_key] = selected_value
+            continue
+
+        remapped_value = ""
+        sap = _extract_sap_from_display_value(selected_value)
+        product = _extract_product_from_display_value(selected_value)
+
+        if sap and sap in sap_to_display:
+            remapped_value = sap_to_display[sap]
+        elif product and product in product_to_display:
+            remapped_value = product_to_display[product]
+
+        st.session_state[data_key] = remapped_value
+        st.session_state[widget_key] = remapped_value
+
+
+def _handle_source_selection_change(code):
+    selected_file = str(st.session_state.get(f"select_{code}", "") or "").strip()
+    tracking_key = f"_last_source_selection_{code}"
+
+    previous_file = str(st.session_state.get(tracking_key, "") or "").strip()
+    st.session_state[tracking_key] = selected_file
+
+    if not selected_file or selected_file == previous_file:
+        return
+
+    try:
+        source_path = get_company_folder(code) / selected_file
+        if not source_path.exists():
+            return
+        df = load_prepared_catalog_from_file(str(source_path), source_path.stat().st_mtime)
+        _reconcile_selected_products_for_source_change(code, df)
+    except Exception:
+        return
 
 
 def get_catalog_row(df, display_value):
@@ -2943,7 +3215,6 @@ if current_user_is_blocked():
 
 if not is_admin_user():
     session_allowed, active_count = register_current_session()
-    dynamic_session_limit = get_user_max_active_sessions(get_current_user_registry_row()[1])
     if not session_allowed:
         st.markdown(
             """
@@ -3476,24 +3747,1291 @@ def render_source_library(show_title=True):
             if not delete_source_display:
                 st.error("Please select a source.")
             else:
-                full_path = Path(source_delete_options[delete_source_display])
-                if full_path.exists():
-                    full_path.unlink()
-                    st.success(f"Source deleted: {full_path.name}")
+                st.session_state["pending_source_delete_display"] = delete_source_display
+
+    pending_delete_display = st.session_state.get("pending_source_delete_display", "")
+    if pending_delete_display:
+        pending_path = Path(source_delete_options.get(pending_delete_display, "")) if pending_delete_display in source_delete_options else None
+        if pending_path and pending_path.exists():
+            impacted = _find_comparisons_using_source(pending_path.name)
+            impacted_names = [item["record"].get("name", "Untitled comparison") for item in impacted]
+
+            st.warning(
+                f"Soft delete will move the selected source to Trash and also remove {len(impacted)} comparison(s) that use it from the active list."
+            )
+            if impacted_names:
+                st.caption("Affected comparisons: " + " • ".join(impacted_names[:8]))
+
+            confirm_delete = st.checkbox(
+                "I understand that the source and its related comparisons will be moved out of the active workspace.",
+                key="confirm_soft_delete_source",
+            )
+
+            confirm_c1, confirm_c2 = st.columns([1, 1])
+            with confirm_c1:
+                if st.button("Confirm Soft Delete", key="confirm_soft_delete_button", use_container_width=True):
+                    if not confirm_delete:
+                        st.error("Please confirm before continuing.")
+                    else:
+                        result = _soft_delete_source_and_related_comparisons(pending_path)
+                        st.session_state.pop("pending_source_delete_display", None)
+                        st.session_state.pop("confirm_soft_delete_source", None)
+                        st.success(
+                            f"Moved source to Trash: {pending_path.name}. "
+                            f"Soft-deleted {result['deleted_comparisons_count']} related comparison(s)."
+                        )
+                        refresh_source_file_views()
+                        st.rerun()
+
+            with confirm_c2:
+                if st.button("Cancel", key="cancel_soft_delete_button", use_container_width=True):
+                    st.session_state.pop("pending_source_delete_display", None)
+                    st.session_state.pop("confirm_soft_delete_source", None)
                     st.rerun()
-                else:
-                    st.error("File not found.")
+        else:
+            st.session_state.pop("pending_source_delete_display", None)
+
+def _source_generator_output_columns():
+    return ["SAP", "Product", "Base Price", "Price", "MM", "Package", "Category"]
+
+
+def _source_dataframe_to_excel_bytes(df: pd.DataFrame) -> bytes:
+    output = io.BytesIO()
+    export_df = df.copy()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        export_df.to_excel(writer, sheet_name="PRICELIST", index=False)
+    output.seek(0)
+    return output.getvalue()
+
+
+def _normalize_text_simple(value) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if text.lower() in {"", "nan", "none"}:
+        return ""
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def _is_all_capsish(text: str) -> bool:
+    letters = [ch for ch in text if ch.isalpha()]
+    if not letters:
+        return False
+    upper_ratio = sum(1 for ch in letters if ch.isupper()) / len(letters)
+    return upper_ratio >= 0.65
+
+
+def _looks_like_section_title(values) -> bool:
+    cleaned = [_normalize_text_simple(v) for v in values]
+    cleaned = [x for x in cleaned if x]
+    if not cleaned:
+        return False
+    if len(cleaned) == 1:
+        only = cleaned[0]
+        if _to_float_or_none(only) is not None:
+            return False
+        return len(only) <= 140 and (_is_all_capsish(only) or len(only.split()) <= 8)
+    numeric = sum(1 for x in cleaned if _to_float_or_none(x) is not None)
+    return numeric == 0 and len(cleaned) <= 2
+
+
+def _read_raw_sheet(file_bytes: bytes, sheet_name: str) -> pd.DataFrame:
+    return pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name, header=None, engine="openpyxl")
+
+
+def _extract_category_map(file_bytes: bytes):
+    category_map = {}
+    try:
+        df = pd.read_excel(io.BytesIO(file_bytes), sheet_name="Categorie", engine="openpyxl")
+        if df is not None and not df.empty and len(df.columns) >= 1:
+            cat_col = df.columns[0]
+            prc_col = df.columns[1] if len(df.columns) > 1 else None
+            for _, row in df.iterrows():
+                key = _normalize_text_simple(row.get(cat_col))
+                if not key:
+                    continue
+                category_map[key] = _to_increase_fraction(row.get(prc_col)) if prc_col is not None else 0.0
+    except Exception:
+        pass
+    return category_map
+
+
+def _is_siniat_april_workbook(sheet_names):
+    normalized = {str(s).strip().lower() for s in sheet_names}
+    needed = {"σανίδες nida (placa nida)", " αξεσουάρ (accesorii)", " προφίλ (profile)", "κονιάματα (adera)"}
+    return any("placa nida" in s for s in normalized) and any("accesorii" in s for s in normalized)
+
+
+def _safe_row_value(row, idx):
+    if idx >= len(row):
+        return None
+    return row[idx]
+
+
+def _append_if_present(base, extra, sep=" | "):
+    base = _normalize_text_simple(base)
+    extra = _normalize_text_simple(extra)
+    if base and extra:
+        return f"{base}{sep}{extra}"
+    return base or extra
+
+
+def _build_package_from_area(unit, package_desc, width_mm=None, length_mm=None):
+    package_desc = _normalize_text_simple(package_desc)
+    unit = _normalize_text_simple(unit)
+    if not package_desc:
+        return ""
+    m = re.search(r"(\d+(?:[.,]\d+)?)", package_desc.replace(" ", ""))
+    if unit.lower() == "m2" and m and width_mm and length_mm:
+        try:
+            count = float(m.group(1).replace(",", "."))
+            area_each = (float(width_mm) / 1000.0) * (float(length_mm) / 1000.0)
+            total = round(count * area_each, 2)
+            return f"{total:g} m²/παλέτα"
+        except Exception:
+            return package_desc
+    if unit in {"Μ", "m", "M"} and m and length_mm:
+        try:
+            count = float(m.group(1).replace(",", "."))
+            total = round(count * (float(length_mm) / 1000.0), 2)
+            total_str = str(int(total)) if abs(total - int(total)) < 1e-9 else str(total)
+            return f"{total_str} m/δέμα"
+        except Exception:
+            return package_desc
+    if "τεμ" in package_desc.lower() and "/" not in package_desc:
+        return package_desc
+    return package_desc
+
+
+def _parse_siniat_boards(file_bytes, sheet_name):
+    raw = _read_raw_sheet(file_bytes, sheet_name)
+    rows = []
+    current_category = ""
+    current_product = ""
+    for i in range(1, len(raw)):
+        vals = raw.iloc[i].tolist()
+        product = _normalize_text_simple(_safe_row_value(vals, 0))
+        sap = _normalize_text_simple(_safe_row_value(vals, 1))
+        width = _safe_row_value(vals, 2)
+        length = _safe_row_value(vals, 3)
+        mm = _normalize_text_simple(_safe_row_value(vals, 4))
+        package_desc = _normalize_text_simple(_safe_row_value(vals, 6))
+        base_price = _to_float_or_none(_safe_row_value(vals, 10))
+        category = _normalize_text_simple(_safe_row_value(vals, 11))
+        inc = _to_increase_fraction(_safe_row_value(vals, 12))
+
+        if _looks_like_section_title(vals[:3]):
+            title = product
+            if title:
+                current_category = title
+            continue
+
+        if product:
+            current_product = product
+        elif not sap and base_price is None:
+            continue
+
+        final_product = current_product
+        if width and length and _to_float_or_none(width) is not None and _to_float_or_none(length) is not None:
+            final_product = _append_if_present(final_product, f"{int(float(width))}x{int(float(length))}mm")
+
+        if not final_product:
+            continue
+
+        final_category = category or current_category or "Placa Nida"
+        rows.append({
+            "SAP": sap,
+            "Product": final_product,
+            "Base Price": base_price,
+            "Increase %": 0.0,
+            "Price": base_price,
+            "MM": mm,
+            "Package": _build_package_from_area(mm, package_desc, width, length),
+            "Category": final_category,
+        })
+    return rows
+
+
+def _parse_siniat_accessories(file_bytes, sheet_name):
+    raw = _read_raw_sheet(file_bytes, sheet_name)
+    rows = []
+    current_category = ""
+    for i in range(1, len(raw)):
+        vals = raw.iloc[i].tolist()
+        product = _normalize_text_simple(_safe_row_value(vals, 0))
+        sap = _normalize_text_simple(_safe_row_value(vals, 2))
+        mm = _normalize_text_simple(_safe_row_value(vals, 3))
+        package_desc = _normalize_text_simple(_safe_row_value(vals, 5))
+        base_price = _to_float_or_none(_safe_row_value(vals, 9))
+        category = _normalize_text_simple(_safe_row_value(vals, 10))
+        inc = _to_increase_fraction(_safe_row_value(vals, 11))
+
+        if _looks_like_section_title(vals[:3]):
+            if product:
+                current_category = product
+            continue
+
+        if not product and not sap and base_price is None:
+            continue
+
+        rows.append({
+            "SAP": sap,
+            "Product": product,
+            "Base Price": base_price,
+            "Increase %": 0.0,
+            "Price": base_price,
+            "MM": mm,
+            "Package": package_desc,
+            "Category": category or current_category or "Accesorii",
+        })
+    return rows
+
+
+def _parse_siniat_profiles(file_bytes, sheet_name):
+    raw = _read_raw_sheet(file_bytes, sheet_name)
+    rows = []
+    current_category = ""
+    for i in range(1, len(raw)):
+        vals = raw.iloc[i].tolist()
+        product = _normalize_text_simple(_safe_row_value(vals, 0))
+        sap = _normalize_text_simple(_safe_row_value(vals, 2))
+        length = _safe_row_value(vals, 3)
+        mm = _normalize_text_simple(_safe_row_value(vals, 4))
+        package_desc = _normalize_text_simple(_safe_row_value(vals, 6))
+        base_price = _to_float_or_none(_safe_row_value(vals, 10))
+        category = _normalize_text_simple(_safe_row_value(vals, 11))
+        inc = _to_increase_fraction(_safe_row_value(vals, 12))
+
+        if _looks_like_section_title(vals[:3]):
+            if product:
+                current_category = product
+            continue
+
+        if not product and not sap and base_price is None:
+            continue
+
+        final_product = product
+        if length and _to_float_or_none(length) is not None:
+            final_product = _append_if_present(final_product, f"{int(float(length))}mm")
+        rows.append({
+            "SAP": sap,
+            "Product": final_product,
+            "Base Price": base_price,
+            "Increase %": 0.0,
+            "Price": base_price,
+            "MM": mm,
+            "Package": _build_package_from_area(mm, package_desc, None, length),
+            "Category": category or current_category or "Profile Nida",
+        })
+    return rows
+
+
+def _parse_siniat_mortars(file_bytes, sheet_name):
+    raw = _read_raw_sheet(file_bytes, sheet_name)
+    rows = []
+    current_category = ""
+    current_product = ""
+    for i in range(1, len(raw)):
+        vals = raw.iloc[i].tolist()
+        product = _normalize_text_simple(_safe_row_value(vals, 0))
+        sap = _normalize_text_simple(_safe_row_value(vals, 1))
+        qty = _normalize_text_simple(_safe_row_value(vals, 2))
+        delivery = _normalize_text_simple(_safe_row_value(vals, 3))
+        mm = _safe_row_value(vals, 4)
+        base_price = _to_float_or_none(_safe_row_value(vals, 6))
+        category = _normalize_text_simple(_safe_row_value(vals, 8))
+
+        if _looks_like_section_title(vals[:2]):
+            if product:
+                current_category = product
+            continue
+
+        if product:
+            current_product = product
+        elif not sap and base_price is None:
+            continue
+
+        final_product = _append_if_present(current_product, qty)
+        rows.append({
+            "SAP": sap,
+            "Product": final_product,
+            "Base Price": base_price if base_price is not None else 0.0,
+            "Increase %": 0.0,
+            "Price": base_price if base_price is not None else 0.0,
+            "MM": mm,
+            "Package": delivery,
+            "Category": category or current_category or "Adera",
+        })
+    return rows
+
+
+def _parse_siniat_trape(file_bytes, sheet_name):
+    raw = _read_raw_sheet(file_bytes, sheet_name)
+    rows = []
+    current_category = ""
+    current_product = ""
+    for i in range(1, len(raw)):
+        vals = raw.iloc[i].tolist()
+        product = _normalize_text_simple(_safe_row_value(vals, 0))
+        sap = _normalize_text_simple(_safe_row_value(vals, 1))
+        thickness = _normalize_text_simple(_safe_row_value(vals, 2))
+        dims = _normalize_text_simple(_safe_row_value(vals, 3))
+        mm = _normalize_text_simple(_safe_row_value(vals, 4))
+        base_price = _to_float_or_none(_safe_row_value(vals, 9))
+        category = _normalize_text_simple(_safe_row_value(vals, 10))
+        inc = _to_increase_fraction(_safe_row_value(vals, 11))
+
+        if _looks_like_section_title(vals[:3]):
+            if product:
+                current_category = product
+            continue
+
+        if product:
+            current_product = product
+        elif not sap and base_price is None:
+            continue
+
+        final_product = current_product
+        suffix = " ".join([x for x in [dims, thickness] if x]).strip()
+        if suffix:
+            final_product = _append_if_present(final_product, suffix)
+        rows.append({
+            "SAP": sap,
+            "Product": final_product,
+            "Base Price": base_price,
+            "Increase %": 0.0,
+            "Price": base_price,
+            "MM": mm,
+            "Package": "1 τεμ" if mm else "",
+            "Category": category or current_category or "Trape",
+        })
+    return rows
+
+
+def _parse_siniat_services(file_bytes, sheet_name):
+    raw = _read_raw_sheet(file_bytes, sheet_name)
+    rows = []
+    for i in range(1, len(raw)):
+        vals = raw.iloc[i].tolist()
+        product = _normalize_text_simple(_safe_row_value(vals, 0))
+        sap = _normalize_text_simple(_safe_row_value(vals, 1))
+        mm = _normalize_text_simple(_safe_row_value(vals, 2))
+        package = _normalize_text_simple(_safe_row_value(vals, 3))
+        base_price = _to_float_or_none(_safe_row_value(vals, 5))
+        category = _normalize_text_simple(_safe_row_value(vals, 6)) or "Servicii"
+        inc = _to_increase_fraction(_safe_row_value(vals, 7))
+        if not product:
+            continue
+        rows.append({
+            "SAP": sap,
+            "Product": product,
+            "Base Price": base_price,
+            "Increase %": 0.0,
+            "Price": base_price,
+            "MM": mm,
+            "Package": package,
+            "Category": category,
+        })
+    return rows
+
+
+def _parse_siniat_workbook(xls, file_bytes):
+    all_rows = []
+    used_sheets = []
+    skipped_sheets = []
+    for sheet_name in xls.sheet_names:
+        stripped = str(sheet_name).strip()
+        low = stripped.lower()
+        try:
+            if low == "categorie" or low == "extra":
+                skipped_sheets.append(f"{sheet_name} (helper)")
+                continue
+            if "placa nida" in low:
+                rows = _parse_siniat_boards(file_bytes, sheet_name)
+            elif "accesorii" in low:
+                rows = _parse_siniat_accessories(file_bytes, sheet_name)
+            elif "profile" in low:
+                rows = _parse_siniat_profiles(file_bytes, sheet_name)
+            elif "adera" in low:
+                rows = _parse_siniat_mortars(file_bytes, sheet_name)
+            elif "trape" in low:
+                rows = _parse_siniat_trape(file_bytes, sheet_name)
+            elif "υπηρεσίες" in low and "servicii" in low:
+                rows = _parse_siniat_services(file_bytes, sheet_name)
+            elif low == "servicii":
+                skipped_sheets.append(f"{sheet_name} (legacy services skipped)")
+                continue
+            else:
+                skipped_sheets.append(f"{sheet_name} (unmapped)")
+                continue
+        except Exception as e:
+            skipped_sheets.append(f"{sheet_name} (parse error)")
+            continue
+
+        if rows:
+            all_rows.extend(rows)
+            used_sheets.append(sheet_name)
+        else:
+            skipped_sheets.append(f"{sheet_name} (no valid product rows)")
+
+    if not all_rows:
+        return None, {"used_sheets": used_sheets, "skipped_sheets": skipped_sheets, "missing_price_rows": 0, "missing_sap_rows": 0, "missing_product_rows": 0, "detected_section_titles": [], "total_rows": 0}
+
+    source_df = pd.DataFrame(all_rows)
+    source_df["Base Price"] = pd.to_numeric(source_df["Base Price"], errors="coerce")
+    source_df["Price"] = source_df["Base Price"]
+    source_df = source_df[_source_generator_output_columns()].reset_index(drop=True)
+
+    stats = {
+        "used_sheets": used_sheets,
+        "skipped_sheets": skipped_sheets,
+        "missing_price_rows": int(source_df["Base Price"].isna().sum()),
+        "missing_sap_rows": int(source_df["SAP"].astype(str).str.strip().eq("").sum()),
+        "missing_product_rows": int(source_df["Product"].astype(str).str.strip().eq("").sum()),
+        "detected_section_titles": [],
+        "total_rows": len(source_df),
+    }
+    return source_df, stats
+
+
+def _detect_supplier_header_row(raw_df: pd.DataFrame) -> int:
+    max_scan = min(len(raw_df), 25)
+    best_row = 0
+    best_score = -1
+
+    code_tokens = ["sap", "code", "item code", "item no", "article", "article no", "sku", "reference", "ref", "material", "κωδικ", "κωδ"]
+    product_tokens = ["description", "product", "name", "item", "material description", "περιγραφ", "προϊ", "προιο", "όνομα", "ονομα"]
+    price_tokens = ["price", "list", "net price", "catalog", "unit price", "τιμή", "τιμο", "value", "αξία", "€/"]
+    unit_tokens = ["unit", "uom", "mm", "μον", "μ.μ", "μ/μ"]
+    package_tokens = ["pack", "package", "packing", "minimum", "pallet", "box", "συσκ"]
+
+    for idx in range(max_scan):
+        values = [str(v).strip().lower() for v in raw_df.iloc[idx].tolist() if str(v).strip() not in ["", "nan", "none"]]
+        score = 0
+        if any(any(token in v for token in code_tokens) for v in values):
+            score += 2
+        if any(any(token in v for token in product_tokens) for v in values):
+            score += 3
+        if any(any(token in v for token in price_tokens) for v in values):
+            score += 4
+        if any(any(token in v for token in unit_tokens) for v in values):
+            score += 1
+        if any(any(token in v for token in package_tokens) for v in values):
+            score += 1
+        if len(values) >= 3:
+            score += 0.5
+        if score > best_score:
+            best_score = score
+            best_row = idx
+
+    return best_row
+
+
+def _normalize_supplier_column_name(col_name: str) -> str:
+    c = str(col_name).strip().lower()
+
+    if any(token in c for token in [
+        "sap", "item code", "item no", "product code", "article", "article no", "sku",
+        "reference", "ref", "material code", "material no", "κωδικ", "κωδ.", "κωδ", "code"
+    ]):
+        return "SAP"
+    if any(token in c for token in [
+        "description", "product", "item description", "product description", "name",
+        "material description", "material", "περιγραφ", "προϊ", "προιο", "όνομα", "ονομα"
+    ]):
+        return "Product"
+    if any(token in c for token in ["increase %", "increase", "diff%", "markup", "adjustment %", "delta %", "ανατ", "αύξη", "αυξη"]):
+        return "Increase %"
+    if any(token in c for token in [
+        "base price", "list price", "net price", "catalog price", "price", "τιμή", "τιμο",
+        "pricelist", "unit price", "value", "αξία", "€/", "eur"
+    ]):
+        return "Base Price"
+    if any(token in c for token in ["unit of measure", "uom", "unit", " mm", "mm ", "μον", "μ.μ", "μ/μ"]) or c == "mm":
+        return "MM"
+    if any(token in c for token in ["package", "pack", "packing", "minimum order", "min order", "pallet", "box", "συσκ"]):
+        return "Package"
+    if any(token in c for token in ["category", "group", "family", "range", "line", "segment", "κατηγο"]):
+        return "Category"
+
+    return str(col_name).strip()
+
+
+def _guess_supplier_columns_by_values(df: pd.DataFrame) -> dict:
+    guessed = {}
+    used_columns = set()
+
+    def _sample(series):
+        vals = []
+        if isinstance(series, pd.DataFrame):
+            if series.shape[1] == 0:
+                return vals
+            series = series.iloc[:, 0]
+        for val in series.astype(object).tolist():
+            if val is None:
+                continue
+            sval = str(val).strip()
+            if sval.lower() in {"", "nan", "none"}:
+                continue
+            vals.append(sval)
+            if len(vals) >= 30:
+                break
+        return vals
+
+    def _numeric_ratio(values):
+        if not values:
+            return 0.0
+        ok = 0
+        for v in values:
+            if _to_float_or_none(v) is not None:
+                ok += 1
+        return ok / len(values)
+
+    def _long_text_ratio(values):
+        if not values:
+            return 0.0
+        ok = 0
+        for v in values:
+            if len(v) >= 8 and _to_float_or_none(v) is None:
+                ok += 1
+        return ok / len(values)
+
+    def _code_like_ratio(values):
+        if not values:
+            return 0.0
+        ok = 0
+        for v in values:
+            compact = v.replace(" ", "")
+            if len(compact) <= 20 and any(ch.isdigit() for ch in compact):
+                ok += 1
+        return ok / len(values)
+
+    profiles = {}
+    for col in df.columns:
+        vals = _sample(df[col])
+        profiles[col] = {
+            "numeric_ratio": _numeric_ratio(vals),
+            "long_text_ratio": _long_text_ratio(vals),
+            "code_like_ratio": _code_like_ratio(vals),
+        }
+
+    price_candidates = sorted(df.columns, key=lambda c: (profiles[c]["numeric_ratio"], "price" in str(c).lower()), reverse=True)
+    for col in price_candidates:
+        if profiles[col]["numeric_ratio"] >= 0.55:
+            guessed["Base Price"] = col
+            used_columns.add(col)
+            break
+
+    product_candidates = sorted(df.columns, key=lambda c: (profiles[c]["long_text_ratio"], len(str(c))), reverse=True)
+    for col in product_candidates:
+        if col in used_columns:
+            continue
+        if profiles[col]["long_text_ratio"] >= 0.35:
+            guessed["Product"] = col
+            used_columns.add(col)
+            break
+
+    code_candidates = sorted(df.columns, key=lambda c: (profiles[c]["code_like_ratio"], -profiles[c]["numeric_ratio"]), reverse=True)
+    for col in code_candidates:
+        if col in used_columns:
+            continue
+        if profiles[col]["code_like_ratio"] >= 0.35:
+            guessed["SAP"] = col
+            used_columns.add(col)
+            break
+
+    return guessed
+
+
+def _to_float_or_none(value):
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+    if isinstance(value, (int, float)) and not pd.isna(value):
+        return float(value)
+
+    text = str(value).strip()
+    if not text or text.lower() in {"nan", "none", "-", "--", "upon request", "contact us"}:
+        return None
+
+    text = text.replace("€", "").replace("EUR", "").replace("eur", "")
+    text = text.replace(" ", "")
+
+    if text.count(",") > 0 and text.count(".") > 0:
+        text = text.replace(".", "").replace(",", ".")
+    else:
+        text = text.replace(",", ".")
+
+    match = re.search(r"-?\d+(?:\.\d+)?", text)
+    if not match:
+        return None
+
+    try:
+        return float(match.group(0))
+    except Exception:
+        return None
+
+
+def _to_increase_fraction(value):
+    num = _to_float_or_none(value)
+    if num is None:
+        return 0.0
+    return num / 100.0 if abs(num) > 1 else num
+
+
+
+def _clean_header_part(value):
+    if value is None:
+        return ""
+    s = str(value).strip()
+    if s.lower() in {"", "nan", "none"}:
+        return ""
+    s = re.sub(r"\s+", " ", s)
+    return s.strip()
+
+
+def _build_supplier_header_names(raw_df: pd.DataFrame, header_row: int, depth: int = 3):
+    if raw_df is None or raw_df.empty:
+        return []
+
+    header_end = min(len(raw_df), header_row + depth)
+    header_block = raw_df.iloc[header_row:header_end].copy()
+    if header_block.empty:
+        return []
+
+    header_block = header_block.ffill(axis=1).ffill(axis=0)
+
+    names = []
+    for col_idx in range(header_block.shape[1]):
+        parts = []
+        seen = set()
+        for row_idx in range(header_block.shape[0]):
+            part = _clean_header_part(header_block.iat[row_idx, col_idx])
+            if not part:
+                continue
+            low = part.lower()
+            if low not in seen:
+                seen.add(low)
+                parts.append(part)
+        joined = " | ".join(parts).strip()
+        names.append(joined if joined else f"Column {col_idx + 1}")
+    return names
+
+
+def _normalize_supplier_dataframe_from_raw(raw_df: pd.DataFrame, header_row: int):
+    header_names = _build_supplier_header_names(raw_df, header_row=header_row, depth=3)
+    if not header_names:
+        return pd.DataFrame()
+
+    data_start = min(len(raw_df), header_row + 3)
+    body = raw_df.iloc[data_start:].copy().reset_index(drop=True)
+    if body.empty:
+        body = raw_df.iloc[header_row + 1:].copy().reset_index(drop=True)
+    if body.empty:
+        return pd.DataFrame()
+
+    if body.shape[1] > len(header_names):
+        header_names += [f"Column {i + 1}" for i in range(len(header_names), body.shape[1])]
+    body.columns = header_names[:body.shape[1]]
+    body = body.dropna(how="all").reset_index(drop=True)
+    return body
+
+
+def _is_section_title_row(values):
+    cleaned = []
+    for v in values:
+        if v is None:
+            continue
+        s = str(v).strip()
+        if s.lower() in {"", "nan", "none"}:
+            continue
+        cleaned.append(s)
+
+    if not cleaned:
+        return False
+
+    numeric_count = sum(1 for s in cleaned if _to_float_or_none(s) is not None)
+
+    if len(cleaned) == 1:
+        s = cleaned[0]
+        if _to_float_or_none(s) is not None:
+            return False
+        alpha_chars = [ch for ch in s if ch.isalpha()]
+        upper_ratio = (sum(1 for ch in alpha_chars if ch.isupper()) / len(alpha_chars)) if alpha_chars else 0.0
+        return len(s) <= 100 and (upper_ratio >= 0.6 or len(s.split()) <= 6)
+
+    if numeric_count == 0 and len(cleaned) <= 2:
+        merged = " ".join(cleaned)
+        alpha_count = sum(1 for ch in merged if ch.isalpha())
+        if alpha_count >= 3 and len(merged) <= 100:
+            return True
+
+    return False
+
+
+def _extract_section_title(values):
+    cleaned = []
+    for v in values:
+        if v is None:
+            continue
+        s = str(v).strip()
+        if s.lower() in {"", "nan", "none"}:
+            continue
+        cleaned.append(s)
+    return " | ".join(cleaned[:2]).strip()
+
+
+
+def convert_supplier_pricelist_to_source(uploaded_file):
+    xls, file_bytes = load_excel_file_any(uploaded_file)
+
+    if _is_siniat_april_workbook(xls.sheet_names):
+        return _parse_siniat_workbook(xls, file_bytes)
+
+    all_rows = []
+    used_sheets = []
+    skipped_sheets = []
+    rows_missing_price = 0
+    rows_missing_sap = 0
+    rows_missing_product = 0
+    detected_section_titles = []
+
+    helper_tokens = ["cover", "legend", "notes", "summary", "readme", "categorie", "lookup", "contents", "index"]
+
+    for sheet_name in xls.sheet_names:
+        lowered_sheet = str(sheet_name).strip().lower()
+        if any(token in lowered_sheet for token in helper_tokens):
+            skipped_sheets.append(f"{sheet_name} (helper)")
+            continue
+
+        raw = read_excel_any(file_bytes, sheet_name=sheet_name, header=None)
+        if raw is None or raw.empty:
+            skipped_sheets.append(f"{sheet_name} (empty)")
+            continue
+
+        raw = raw.ffill(axis=1)
+        header_row = _detect_supplier_header_row(raw)
+        df = _normalize_supplier_dataframe_from_raw(raw, header_row=header_row)
+        if df.empty:
+            skipped_sheets.append(f"{sheet_name} (no rows)")
+            continue
+
+        original_columns = [str(c).strip() for c in df.columns]
+        renamed_columns = {_col: _normalize_supplier_column_name(_col) for _col in original_columns}
+        df = df.rename(columns=renamed_columns)
+        df = df.loc[:, ~pd.Index(df.columns).duplicated(keep="first")]
+
+        guessed_columns = _guess_supplier_columns_by_values(df)
+        for canonical_name, original_col in guessed_columns.items():
+            if canonical_name not in df.columns and original_col in df.columns:
+                df = df.rename(columns={original_col: canonical_name})
+        df = df.loc[:, ~pd.Index(df.columns).duplicated(keep="first")]
+
+        if "Product" not in df.columns:
+            skipped_sheets.append(f"{sheet_name} (missing Product)")
+            continue
+
+        if "Base Price" not in df.columns:
+            skipped_sheets.append(f"{sheet_name} (missing Base Price)")
+            continue
+
+        if "SAP" not in df.columns:
+            df["SAP"] = ""
+
+        if "Category" not in df.columns:
+            df["Category"] = ""
+
+        normalized_rows = []
+        current_category = str(sheet_name).strip()
+
+        for _, source_row in df.iterrows():
+            row_values = source_row.tolist()
+
+            if _is_section_title_row(row_values):
+                section_title = _extract_section_title(row_values)
+                if section_title:
+                    current_category = section_title
+                    detected_section_titles.append(f"{sheet_name}: {section_title}")
+                continue
+
+            product_value = source_row["Product"] if "Product" in source_row.index else None
+            price_value = source_row["Base Price"] if "Base Price" in source_row.index else None
+            sap_value = source_row["SAP"] if "SAP" in source_row.index else ""
+            inc_value = source_row["Increase %"] if "Increase %" in source_row.index else 0.0
+            mm_value = source_row["MM"] if "MM" in source_row.index else ""
+            pack_value = source_row["Package"] if "Package" in source_row.index else ""
+            cat_value = source_row["Category"] if "Category" in source_row.index else ""
+
+            product_text = "" if product_value is None else str(product_value).strip()
+            base_price = _to_float_or_none(price_value)
+            sap_text = "" if sap_value is None else str(sap_value).strip()
+
+            if product_text.lower() in {"", "nan", "none"} and base_price is None:
+                continue
+
+            if _to_float_or_none(product_text) is not None and base_price is None:
+                continue
+
+            if not product_text or product_text.lower() in {"nan", "none"}:
+                rows_missing_product += 1
+                continue
+
+            increase_fraction = _to_increase_fraction(inc_value)
+            mm_text = "" if mm_value is None or (isinstance(mm_value, float) and pd.isna(mm_value)) else str(mm_value).strip()
+            package_text = "" if pack_value is None or (isinstance(pack_value, float) and pd.isna(pack_value)) else str(pack_value).strip()
+            category_text = "" if cat_value is None or (isinstance(cat_value, float) and pd.isna(cat_value)) else str(cat_value).strip()
+
+            final_category = category_text if category_text and category_text.lower() not in {"nan", "none"} else current_category
+
+            if base_price is None:
+                rows_missing_price += 1
+            if not sap_text:
+                rows_missing_sap += 1
+
+            normalized_rows.append({
+                "SAP": sap_text,
+                "Product": product_text,
+                "Base Price": base_price,
+                "Increase %": 0.0,
+                "Price": base_price,
+                "MM": mm_text,
+                "Package": package_text,
+                "Category": final_category,
+            })
+
+        if not normalized_rows:
+            skipped_sheets.append(f"{sheet_name} (no valid product rows)")
+            continue
+
+        out = pd.DataFrame(normalized_rows)
+        if out.empty:
+            skipped_sheets.append(f"{sheet_name} (all rows invalid)")
+            continue
+
+        mask_valid = ~(
+            out["Product"].astype(str).str.strip().str.lower().isin(["", "nan", "none"])
+            & out["Base Price"].isna()
+        )
+        out = out[mask_valid].copy()
+        out = out.reset_index(drop=True)
+
+        if out.empty:
+            skipped_sheets.append(f"{sheet_name} (all rows invalid)")
+            continue
+
+        used_sheets.append(sheet_name)
+        all_rows.append(out)
+
+    if not all_rows:
+        return None, {
+            "used_sheets": used_sheets,
+            "skipped_sheets": skipped_sheets,
+            "missing_price_rows": rows_missing_price,
+            "missing_sap_rows": rows_missing_sap,
+            "missing_product_rows": rows_missing_product,
+            "detected_section_titles": detected_section_titles,
+            "total_rows": 0,
+        }
+
+    source_df = pd.concat(all_rows, ignore_index=True)
+    source_df["Base Price"] = pd.to_numeric(source_df["Base Price"], errors="coerce")
+    source_df["Price"] = source_df["Base Price"]
+    source_df = source_df[_source_generator_output_columns()].reset_index(drop=True)
+
+    stats = {
+        "used_sheets": used_sheets,
+        "skipped_sheets": skipped_sheets,
+        "missing_price_rows": rows_missing_price,
+        "missing_sap_rows": rows_missing_sap,
+        "missing_product_rows": rows_missing_product,
+        "detected_section_titles": detected_section_titles,
+        "total_rows": len(source_df),
+    }
+    return source_df, stats
+
+def _list_supplier_sheet_names(uploaded_file):
+    xls, _file_bytes = load_excel_file_any(uploaded_file)
+    return list(xls.sheet_names)
+
+
+def _load_supplier_sheet_for_mapping(uploaded_file, sheet_name: str, header_row: int):
+    _xls, file_bytes = load_excel_file_any(uploaded_file)
+    raw_preview = read_excel_any(file_bytes, sheet_name=sheet_name, header=None)
+    mapped_df = read_excel_any(file_bytes, sheet_name=sheet_name, header=header_row)
+    if mapped_df is None or mapped_df.empty:
+        return raw_preview, pd.DataFrame()
+    mapped_df.columns = [str(c).strip() for c in mapped_df.columns]
+    return raw_preview, mapped_df
+
+
+def _build_source_from_manual_mapping(mapped_df: pd.DataFrame, column_mapping: dict, default_category: str):
+    out = pd.DataFrame()
+
+    sap_col = column_mapping.get("SAP")
+    product_col = column_mapping.get("Product")
+    price_col = column_mapping.get("Base Price")
+    inc_col = column_mapping.get("Increase %")
+    mm_col = column_mapping.get("MM")
+    pack_col = column_mapping.get("Package")
+    cat_col = column_mapping.get("Category")
+
+    out["SAP"] = mapped_df[sap_col].astype(str).str.strip() if sap_col else ""
+    out["Product"] = mapped_df[product_col].astype(str).str.strip() if product_col else ""
+    out["Base Price"] = mapped_df[price_col].apply(_to_float_or_none) if price_col else None
+    out["Increase %"] = mapped_df[inc_col].apply(_to_increase_fraction) if inc_col else 0.0
+    out["Price"] = out.apply(
+        lambda r: round(r["Base Price"] * (1 + r["Increase %"]), 4) if pd.notna(r["Base Price"]) and r["Base Price"] is not None else None,
+        axis=1,
+    )
+    out["MM"] = mapped_df[mm_col].astype(str).str.strip() if mm_col else ""
+    out["Package"] = mapped_df[pack_col].astype(str).str.strip() if pack_col else ""
+    out["Category"] = mapped_df[cat_col].astype(str).str.strip() if cat_col else str(default_category).strip()
+
+    out = out[_source_generator_output_columns()]
+    out["SAP"] = out["SAP"].fillna("").astype(str).replace({"nan": "", "None": ""})
+    out["Product"] = out["Product"].fillna("").astype(str).replace({"nan": "", "None": ""})
+    out["MM"] = out["MM"].fillna("").astype(str).replace({"nan": "", "None": ""})
+    out["Package"] = out["Package"].fillna("").astype(str).replace({"nan": "", "None": ""})
+    out["Category"] = out["Category"].fillna("").astype(str).replace({"nan": "", "None": ""})
+
+    out = out[
+        ~(
+            out["Product"].eq("")
+            & out["Base Price"].isna()
+        )
+    ].reset_index(drop=True)
+
+    if not out.empty:
+        out = out[out["Base Price"].notna()].reset_index(drop=True)
+
+    return out
+
+
+def _default_manual_mapping(columns):
+    mapping = {key: None for key in _source_generator_output_columns() if key != "Price"}
+    for col in columns:
+        norm = _normalize_supplier_column_name(col)
+        if norm in mapping and mapping[norm] is None:
+            mapping[norm] = col
+    guessed = _guess_supplier_columns_by_values(pd.DataFrame(columns=columns)) if False else {}
+    return mapping
+
 
 
 def render_sources():
     st.markdown('<div class="app-card">', unsafe_allow_html=True)
     st.markdown("## Sources")
 
-    st.markdown("### 2. Save Source")
-
     company_display_map = {
         f"{row['name']} ({row['code']})": row["code"] for _, row in companies_df.iterrows()
     }
+
+    st.markdown("### 1. Create Source from Supplier Pricelist")
+    st.caption("Upload a supplier pricelist Excel, review the converted rows, edit anything you want, and then save it as a ready PRICELIST source file.")
+
+    gen_c1, gen_c2, gen_c3 = st.columns(3)
+    with gen_c1:
+        generator_company_display = st.selectbox(
+            "Company for generated Source",
+            list(company_display_map.keys()),
+            key="generator_company_display",
+        )
+        generator_company_code = company_display_map[generator_company_display]
+
+    with gen_c2:
+        generator_date_val = st.date_input(
+            "Generated Source Date",
+            value=date.today(),
+            key="generator_date",
+        )
+
+    with gen_c3:
+        uploaded_supplier_file = st.file_uploader(
+            "Upload supplier pricelist",
+            type=["xlsx", "xlsm"],
+            key="supplier_pricelist_upload",
+        )
+
+    if uploaded_supplier_file is not None:
+        try:
+            source_df, conversion_stats = convert_supplier_pricelist_to_source(uploaded_supplier_file)
+        except Exception as e:
+            st.error(str(e))
+            source_df, conversion_stats = None, None
+
+        auto_ok = source_df is not None and not source_df.empty
+
+        if source_df is None or source_df.empty:
+            st.error("Could not convert this supplier file automatically.")
+            skipped = conversion_stats.get("skipped_sheets", []) if isinstance(conversion_stats, dict) else []
+            if skipped:
+                st.warning("Skipped sheets: " + ", ".join(skipped))
+        else:
+            st.success(f"Detected {len(source_df)} valid source rows from {len(conversion_stats.get('used_sheets', []))} sheet(s).")
+
+            m1, m2, m3, m4 = st.columns(4)
+            with m1:
+                st.metric("Rows", conversion_stats.get("total_rows", len(source_df)))
+            with m2:
+                st.metric("Used Sheets", len(conversion_stats.get("used_sheets", [])))
+            with m3:
+                st.metric("Missing Prices", conversion_stats.get("missing_price_rows", 0))
+            with m4:
+                st.metric("Missing SAP/Product", conversion_stats.get("missing_sap_rows", 0) + conversion_stats.get("missing_product_rows", 0))
+
+            detected_titles = conversion_stats.get("detected_section_titles", [])
+            if detected_titles:
+                st.caption("Detected section/category titles: " + " • ".join(detected_titles[:8]))
+
+            if conversion_stats.get("used_sheets"):
+                st.caption("Used sheets: " + ", ".join(conversion_stats["used_sheets"]))
+            if conversion_stats.get("skipped_sheets"):
+                st.warning("Skipped sheets: " + ", ".join(conversion_stats["skipped_sheets"][:12]))
+
+            st.markdown("#### Review and Edit Before Save")
+
+            current_generated_origin = f"{uploaded_supplier_file.name}|{generator_company_code}|{len(source_df)}"
+            if (
+                "generated_source_working_df" not in st.session_state
+                or st.session_state.get("generated_source_working_origin") != current_generated_origin
+            ):
+                st.session_state["generated_source_working_df"] = _ensure_preview_row_id(source_df)
+                st.session_state["generated_source_working_origin"] = current_generated_origin
+
+            editable_df = st.data_editor(
+                _preview_display_df(st.session_state["generated_source_working_df"]),
+                use_container_width=True,
+                num_rows="dynamic",
+                key="generated_source_editor",
+                column_config={
+                    "Row": st.column_config.NumberColumn("Row", disabled=True),
+                    "SAP": st.column_config.TextColumn("SAP"),
+                    "Product": st.column_config.TextColumn("Product", width="large"),
+                    "Base Price": st.column_config.NumberColumn("Base Price", format="%.4f"),
+                    "Price": st.column_config.NumberColumn("Price", format="%.4f", disabled=True),
+                    "MM": st.column_config.TextColumn("MM"),
+                    "Package": st.column_config.TextColumn("Package"),
+                    "Category": st.column_config.TextColumn("Category"),
+                },
+            )
+
+            edited_df = _normalize_preview_editor_output(pd.DataFrame(editable_df))
+            st.session_state["generated_source_working_df"] = edited_df
+
+            delete_options = edited_df["__row_id"].astype(int).tolist()
+            del_c1, del_c2 = st.columns([3, 1])
+            with del_c1:
+                selected_delete_rows = st.multiselect(
+                    "Select preview rows to delete",
+                    delete_options,
+                    format_func=lambda x: f"Row {x}",
+                    key="generated_source_delete_rows",
+                )
+            with del_c2:
+                st.write("")
+                st.write("")
+                if st.button("Delete selected rows", key="delete_generated_preview_rows", use_container_width=True):
+                    deleted_count = _delete_selected_preview_rows_from_state("generated_source_working_df", selected_delete_rows)
+                    st.session_state.pop("generated_source_delete_rows", None)
+                    if deleted_count:
+                        st.success(f"Deleted {deleted_count} row(s) from the preview.")
+                    st.rerun()
+
+            edited_df = st.session_state["generated_source_working_df"].copy()
+            edited_df["Price"] = edited_df["Base Price"]
+            export_edited_df = edited_df.drop(columns=["__row_id"], errors="ignore").copy()
+
+            preview_c1, preview_c2 = st.columns([1, 1])
+            with preview_c1:
+                st.download_button(
+                    "Download Generated Source",
+                    data=_source_dataframe_to_excel_bytes(export_edited_df),
+                    file_name=f"{generator_company_code}_generated_source_preview.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="download_generated_source_preview",
+                    use_container_width=True,
+                )
+            with preview_c2:
+                if st.button("Save Generated Source", key="save_generated_source_button", use_container_width=True):
+                    if export_edited_df.empty:
+                        st.error("There are no rows to save.")
+                    else:
+                        name = get_next_version_filename(generator_company_code, generator_date_val, uploaded_supplier_file.name)
+                        path = get_company_folder(generator_company_code) / name
+                        with open(path, "wb") as f:
+                            f.write(_source_dataframe_to_excel_bytes(export_edited_df))
+                        st.success(f"Generated source saved as: {name}")
+                        refresh_source_file_views()
+                        st.rerun()
+
+        with st.expander("Manual column override", expanded=not auto_ok):
+            st.caption("Use this only when the automatic detection is not ideal. Choose the correct sheet, header row, and columns, then rebuild the Source preview.")
+
+            try:
+                manual_sheet_names = _list_supplier_sheet_names(uploaded_supplier_file)
+            except Exception as e:
+                manual_sheet_names = []
+                st.error(str(e))
+
+            if manual_sheet_names:
+                man_c1, man_c2, man_c3 = st.columns([2, 1, 1])
+                with man_c1:
+                    manual_sheet = st.selectbox(
+                        "Sheet to map",
+                        manual_sheet_names,
+                        key="manual_override_sheet",
+                    )
+                with man_c2:
+                    manual_header_row = st.number_input(
+                        "Header row (0-based)",
+                        min_value=0,
+                        max_value=50,
+                        value=0,
+                        step=1,
+                        key="manual_override_header_row",
+                    )
+                with man_c3:
+                    manual_default_category = st.text_input(
+                        "Default category",
+                        value=str(manual_sheet) if 'manual_sheet' in locals() else "",
+                        key="manual_override_default_category",
+                    )
+
+                if st.button("Load sheet for manual mapping", key="manual_override_load_sheet", use_container_width=True):
+                    st.session_state["manual_override_loaded"] = True
+
+                if st.session_state.get("manual_override_loaded"):
+                    raw_preview_df, mapping_df = _load_supplier_sheet_for_mapping(
+                        uploaded_supplier_file,
+                        manual_sheet,
+                        int(manual_header_row),
+                    )
+
+                    st.markdown("##### Raw preview")
+                    st.dataframe(raw_preview_df.head(10), use_container_width=True)
+
+                    if mapping_df is None or mapping_df.empty:
+                        st.warning("No rows found for this sheet/header combination.")
+                    else:
+                        st.markdown("##### Column mapping")
+                        st.dataframe(mapping_df.head(10), use_container_width=True)
+
+                        available_cols = list(mapping_df.columns)
+                        none_option = ["— None —"] + available_cols
+
+                        auto_defaults = {}
+                        for col in available_cols:
+                            norm = _normalize_supplier_column_name(col)
+                            if norm not in auto_defaults:
+                                auto_defaults[norm] = col
+
+                        map_c1, map_c2, map_c3 = st.columns(3)
+                        with map_c1:
+                            manual_sap = st.selectbox("SAP column", none_option, index=(none_option.index(auto_defaults.get("SAP")) if auto_defaults.get("SAP") in none_option else 0), key="manual_sap_col")
+                            manual_product = st.selectbox("Product column", available_cols, index=(available_cols.index(auto_defaults.get("Product")) if auto_defaults.get("Product") in available_cols else 0), key="manual_product_col")
+                            manual_price = st.selectbox("Base Price column", available_cols, index=(available_cols.index(auto_defaults.get("Base Price")) if auto_defaults.get("Base Price") in available_cols else 0), key="manual_price_col")
+                        with map_c2:
+                            manual_inc = st.selectbox("Increase % column", none_option, index=(none_option.index(auto_defaults.get("Increase %")) if auto_defaults.get("Increase %") in none_option else 0), key="manual_inc_col")
+                            manual_mm = st.selectbox("MM column", none_option, index=(none_option.index(auto_defaults.get("MM")) if auto_defaults.get("MM") in none_option else 0), key="manual_mm_col")
+                        with map_c3:
+                            manual_pack = st.selectbox("Package column", none_option, index=(none_option.index(auto_defaults.get("Package")) if auto_defaults.get("Package") in none_option else 0), key="manual_pack_col")
+                            manual_cat = st.selectbox("Category column", none_option, index=(none_option.index(auto_defaults.get("Category")) if auto_defaults.get("Category") in none_option else 0), key="manual_cat_col")
+
+                        if st.button("Apply manual mapping", key="manual_override_apply", use_container_width=True):
+                            mapping = {
+                                "SAP": None if manual_sap == "— None —" else manual_sap,
+                                "Product": manual_product,
+                                "Base Price": manual_price,
+                                "MM": None if manual_mm == "— None —" else manual_mm,
+                                "Package": None if manual_pack == "— None —" else manual_pack,
+                                "Category": None if manual_cat == "— None —" else manual_cat,
+                            }
+
+                            manual_source_df = _build_source_from_manual_mapping(mapping_df, mapping, manual_default_category or manual_sheet)
+                            if manual_source_df is None or manual_source_df.empty:
+                                st.error("Manual mapping produced no valid rows.")
+                            else:
+                                st.success(f"Manual mapping generated {len(manual_source_df)} rows.")
+                                st.session_state["manual_source_df"] = manual_source_df.to_dict(orient="records")
+                                st.session_state["manual_source_working_df"] = _ensure_preview_row_id(manual_source_df)
+                                st.session_state["manual_source_working_origin"] = f"{uploaded_supplier_file.name}|{generator_company_code}|manual|{len(manual_source_df)}"
+
+                if st.session_state.get("manual_source_df"):
+                    st.markdown("##### Manual mapping preview")
+                    current_manual_origin = f"{uploaded_supplier_file.name}|{generator_company_code}|manual|{len(st.session_state.get('manual_source_df', []))}"
+                    if (
+                        "manual_source_working_df" not in st.session_state
+                        or st.session_state.get("manual_source_working_origin") != current_manual_origin
+                    ):
+                        st.session_state["manual_source_working_df"] = _ensure_preview_row_id(pd.DataFrame(st.session_state["manual_source_df"]))
+                        st.session_state["manual_source_working_origin"] = current_manual_origin
+                    manual_preview_df = st.data_editor(
+                        _preview_display_df(st.session_state["manual_source_working_df"]),
+                        use_container_width=True,
+                        num_rows="dynamic",
+                        key="manual_generated_source_editor",
+                        column_config={
+                            "Row": st.column_config.NumberColumn("Row", disabled=True),
+                            "SAP": st.column_config.TextColumn("SAP"),
+                            "Product": st.column_config.TextColumn("Product", width="large"),
+                            "Base Price": st.column_config.NumberColumn("Base Price", format="%.4f"),
+                                    "Price": st.column_config.NumberColumn("Price", format="%.4f", disabled=True),
+                            "MM": st.column_config.TextColumn("MM"),
+                            "Package": st.column_config.TextColumn("Package"),
+                            "Category": st.column_config.TextColumn("Category"),
+                        },
+                    )
+
+                    manual_preview_df = _normalize_preview_editor_output(pd.DataFrame(manual_preview_df))
+                    st.session_state["manual_source_working_df"] = manual_preview_df
+
+                    man_del_c1, man_del_c2 = st.columns([3, 1])
+                    with man_del_c1:
+                        selected_manual_delete_rows = st.multiselect(
+                            "Select manual preview rows to delete",
+                            manual_preview_df["__row_id"].astype(int).tolist(),
+                            format_func=lambda x: f"Row {x}",
+                            key="manual_source_delete_rows",
+                        )
+                    with man_del_c2:
+                        st.write("")
+                        st.write("")
+                        if st.button("Delete selected manual rows", key="delete_manual_preview_rows", use_container_width=True):
+                            deleted_count = _delete_selected_preview_rows_from_state("manual_source_working_df", selected_manual_delete_rows)
+                            st.session_state.pop("manual_source_delete_rows", None)
+                            if deleted_count:
+                                st.success(f"Deleted {deleted_count} row(s) from the manual preview.")
+                            st.rerun()
+
+                    manual_preview_df = st.session_state["manual_source_working_df"].copy()
+                    manual_preview_df["Price"] = manual_preview_df["Base Price"]
+                    export_manual_preview_df = manual_preview_df.drop(columns=["__row_id"], errors="ignore").copy()
+
+                    man_save_c1, man_save_c2 = st.columns(2)
+                    with man_save_c1:
+                        st.download_button(
+                            "Download Manual Source",
+                            data=_source_dataframe_to_excel_bytes(export_manual_preview_df),
+                            file_name=f"{generator_company_code}_manual_source_preview.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="download_manual_source_preview",
+                            use_container_width=True,
+                        )
+                    with man_save_c2:
+                        if st.button("Save Manual Source", key="save_manual_source_button", use_container_width=True):
+                            if export_manual_preview_df.empty:
+                                st.error("There are no rows to save.")
+                            else:
+                                manual_name = get_next_version_filename(generator_company_code, generator_date_val, uploaded_supplier_file.name)
+                                manual_path = get_company_folder(generator_company_code) / manual_name
+                                with open(manual_path, "wb") as f:
+                                    f.write(_source_dataframe_to_excel_bytes(export_manual_preview_df))
+                                st.success(f"Manual source saved as: {manual_name}")
+                                refresh_source_file_views()
+                                st.rerun()
+
+    st.markdown("---")
+    st.markdown("### 2. Save Ready Source")
 
     s1, s2, s3 = st.columns(3)
     with s1:
@@ -3508,9 +5046,9 @@ def render_sources():
         date_val = st.date_input("Date", value=date.today(), key="save_date")
 
     with s3:
-        file = st.file_uploader("Upload Source", type=["xlsx", "xlsm"], key="save_file")
+        file = st.file_uploader("Upload Ready Source", type=["xlsx", "xlsm"], key="save_file")
 
-    if st.button("Save", key="save_source_button", use_container_width=True):
+    if st.button("Save Ready Source", key="save_source_button", use_container_width=True):
         if file is None:
             st.error("Please upload a source file first.")
         else:
@@ -3519,6 +5057,7 @@ def render_sources():
             with open(path, "wb") as f:
                 f.write(file.getbuffer())
             st.success(f"Saved as: {name}")
+            refresh_source_file_views()
             st.rerun()
 
     st.info(
@@ -3541,6 +5080,7 @@ def render_sources():
     st.markdown("---")
     render_source_library(show_title=True)
     st.markdown("</div>", unsafe_allow_html=True)
+
 
 
 def render_comparisons():
@@ -3749,7 +5289,7 @@ def render_comparisons():
                         f"{code} source file",
                         [""] + files,
                         key=f"select_{code}",
-                        on_change=mark_comparison_dirty,
+                        on_change=lambda c=code: (_handle_source_selection_change(c), mark_comparison_dirty()),
                     )
 
         for code in selected_codes:
