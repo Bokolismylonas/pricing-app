@@ -5429,11 +5429,11 @@ def render_comparisons():
                             if selected_lock:
                                 holder = selected_lock.get("owner_name") or selected_lock.get("owner_email") or "another user"
                                 if comparison_lock_owned_by_current_session(selected_lock):
-                                    st.info("🔒 This comparison is currently locked by you for editing.")
+                                    st.info("Editing mode active for this comparison.")
                                 else:
                                     st.warning(f"🔒 Locked by {holder}")
 
-                            load_c1, load_c2 = st.columns(2)
+                            load_c1, load_c2, load_c3 = st.columns(3)
                             with load_c1:
                                 if st.button("Load Selected", use_container_width=True, key="load_selected_comparison_btn_popover"):
                                     state_payload = selected_record.get("state", {}) or {}
@@ -5471,6 +5471,15 @@ def render_comparisons():
                                                 st.warning(msg)
 
                             with load_c2:
+                                if st.button("📄 Duplicate", use_container_width=True, key="duplicate_selected_comparison_btn_popover"):
+                                    ok, msg, _ = duplicate_saved_comparison(comparison_file, selected_record.get("id"))
+                                    if ok:
+                                        st.success(msg)
+                                        st.rerun()
+                                    else:
+                                        st.warning(msg)
+
+                            with load_c3:
                                 if st.button("🗑️ Delete", use_container_width=True, key="delete_selected_comparison_btn_popover"):
                                     delete_lock = get_comparison_lock_info(comparison_file, selected_record.get("id"))
                                     if delete_lock and not comparison_lock_owned_by_current_session(delete_lock):
@@ -5502,7 +5511,7 @@ def render_comparisons():
         if current_lock:
             holder = current_lock.get("owner_name") or current_lock.get("owner_email") or "another user"
             if comparison_lock_owned_by_current_session(current_lock):
-                st.caption("🔒 Editing lock active for this comparison.")
+                st.caption("Editing mode active.")
             else:
                 st.warning(f"🔒 This comparison is currently locked by {holder}.")
 
