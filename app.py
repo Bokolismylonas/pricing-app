@@ -1167,6 +1167,10 @@ def ensure_company_fields(company_row):
         company_row["is_active"] = True
     if "shared_workspace_enabled" not in company_row:
         company_row["shared_workspace_enabled"] = False
+    if "plan_start" not in company_row:
+        company_row["plan_start"] = None
+    if "plan_end" not in company_row:
+        company_row["plan_end"] = None
     if "trial_start" not in company_row:
         company_row["trial_start"] = now_iso()
     if "trial_end" not in company_row:
@@ -1530,12 +1534,55 @@ def sync_individual_status_from_stripe(email: str):
     return False
 
 
+def get_company_plan_window(company):
+    if not company:
+        return None, None
+
+    plan_start = company.get("plan_start")
+    plan_end = company.get("plan_end")
+    start_dt = None
+    end_dt = None
+
+    if plan_start:
+        try:
+            start_dt = datetime.combine(date.fromisoformat(str(plan_start)[:10]), datetime.min.time())
+        except Exception:
+            start_dt = parse_iso(str(plan_start))
+
+    if plan_end:
+        try:
+            end_dt = datetime.combine(date.fromisoformat(str(plan_end)[:10]), datetime.max.time())
+        except Exception:
+            end_dt = parse_iso(str(plan_end))
+
+    return start_dt, end_dt
+
+
+def get_company_plan_days_left(company):
+    _, end_dt = get_company_plan_window(company)
+    if end_dt is None:
+        return None
+    remaining = end_dt - now_utc()
+    if remaining.total_seconds() <= 0:
+        return 0
+    return max(1, remaining.days + (1 if remaining.seconds > 0 else 0))
+
+
 def company_has_access(company):
     if not company:
         return False
 
     if not company.get("is_active", True):
         return False
+
+    plan_start_dt, plan_end_dt = get_company_plan_window(company)
+    if plan_start_dt or plan_end_dt:
+        now_dt = now_utc()
+        if plan_start_dt and now_dt < plan_start_dt:
+            return False
+        if plan_end_dt and now_dt > plan_end_dt:
+            return False
+        return True
 
     if company.get("billing_status") == "active":
         return True
@@ -1584,6 +1631,8 @@ def upsert_company(
     billing_status="trialing",
     owner_email="",
     shared_workspace_enabled=False,
+    plan_start=None,
+    plan_end=None,
 ):
     companies = load_companies_registry()
     normalized_key = normalize_company_key(company_key)
@@ -1602,6 +1651,8 @@ def upsert_company(
         "stripe_subscription_id": None,
         "owner_email": owner_email.strip().lower(),
         "shared_workspace_enabled": bool(shared_workspace_enabled),
+        "plan_start": plan_start.isoformat() if hasattr(plan_start, "isoformat") else (str(plan_start) if plan_start else None),
+        "plan_end": plan_end.isoformat() if hasattr(plan_end, "isoformat") else (str(plan_end) if plan_end else None),
         "updated_at": now_iso(),
     }
 
@@ -1618,6 +1669,10 @@ def upsert_company(
         if not owner_email:
             payload["owner_email"] = existing.get("owner_email", "")
         payload["shared_workspace_enabled"] = bool(shared_workspace_enabled)
+        if plan_start in [None, ""]:
+            payload["plan_start"] = existing.get("plan_start")
+        if plan_end in [None, ""]:
+            payload["plan_end"] = existing.get("plan_end")
         companies[idx] = payload
 
     save_companies_registry(companies)
@@ -6208,6 +6263,8 @@ def render_admin_panel():
                 "Max Seats": company.get("max_seats", 0),
                 "Owner Email": company.get("owner_email", ""),
                 "Shared Workspace": company.get("shared_workspace_enabled", False),
+                "Plan Start": company.get("plan_start", ""),
+                "Plan End": company.get("plan_end", ""),
                 "Active": company.get("is_active", True),
                 "Trial End": company.get("trial_end", ""),
             }
@@ -6270,6 +6327,20 @@ def render_admin_panel():
         help="When enabled, users of this company share the same saved Comparisons.",
     )
 
+    cp1, cp2 = st.columns(2)
+    with cp1:
+        company_plan_start_input = st.date_input(
+            "Company Plan Start",
+            value=None,
+            key="company_plan_start_input",
+        )
+    with cp2:
+        company_plan_end_input = st.date_input(
+            "Company Plan End",
+            value=None,
+            key="company_plan_end_input",
+        )
+
     ccu1, ccu2 = st.columns(2)
 
     with ccu1:
@@ -6294,6 +6365,8 @@ def render_admin_panel():
                     "trialing",
                     company_owner_email,
                     company_shared_workspace_input,
+                    company_plan_start_input,
+                    company_plan_end_input,
                 )
                 st.success(f"Company workspace saved: {company_name_input}")
                 st.rerun()
