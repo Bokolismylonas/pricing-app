@@ -1884,6 +1884,36 @@ def duplicate_saved_comparison(comparison_file: Path, comparison_id: str):
         return False, f"Could not duplicate comparison: {e}", None
 
 
+def duplicate_saved_comparison_with_name(comparison_file: Path, comparison_id: str, new_name: str):
+    try:
+        comparison_file = Path(comparison_file)
+        target_name = str(new_name or "").strip()
+        if not target_name:
+            return False, "Please enter a name.", None
+
+        records = list_comparisons(comparison_file)
+
+        for rec in records:
+            if str(rec.get("id", "")) == str(comparison_id):
+                new_rec = json.loads(json.dumps(rec, ensure_ascii=False, default=str))
+                new_rec["id"] = str(uuid.uuid4())
+                new_rec["name"] = target_name
+                new_rec["created_at"] = now_iso()
+                new_rec["updated_at"] = now_iso()
+
+                all_records = list(records)
+                all_records.append(new_rec)
+                comparison_file.write_text(
+                    json.dumps(all_records, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                return True, "Comparison saved as new copy.", new_rec
+
+        return False, "Comparison not found.", None
+    except Exception as e:
+        return False, f"Could not save as new comparison: {e}", None
+
+
 def get_all_active_comparison_locks():
     rows = []
     for lock_file in sorted(COMPARISONS_DIR.glob("*__locks.json")):
@@ -5500,6 +5530,30 @@ def render_comparisons():
                                             st.rerun()
                                         else:
                                             st.warning("Could not delete comparison.")
+
+                            save_as_default_name = str(selected_record.get("name", "") or "").strip()
+                            save_as_key = f"save_as_duplicate_name_{selected_record.get('id')}"
+                            if save_as_key not in st.session_state:
+                                st.session_state[save_as_key] = save_as_default_name
+
+                            st.text_input(
+                                "Save As name",
+                                key=save_as_key,
+                                help="Enter the name for the new copied comparison.",
+                            )
+
+                            if st.button("💾 Save As", use_container_width=True, key="save_as_selected_comparison_btn_popover"):
+                                target_name = str(st.session_state.get(save_as_key, "") or "").strip()
+                                ok, msg, _ = duplicate_saved_comparison_with_name(
+                                    comparison_file,
+                                    selected_record.get("id"),
+                                    target_name,
+                                )
+                                if ok:
+                                    st.success(msg)
+                                    st.rerun()
+                                else:
+                                    st.warning(msg)
 
         st.markdown("</div>", unsafe_allow_html=True)
         return
