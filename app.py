@@ -4,7 +4,9 @@ import base64
 import json
 import re
 import uuid
+from difflib import SequenceMatcher
 import shutil
+import pdfplumber
 from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
 
@@ -15,6 +17,7 @@ import stripe
 from supabase import create_client, Client
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+from pypdf import PdfReader
 from storage import (
     list_comparisons,
     save_new_comparison,
@@ -4621,6 +4624,645 @@ def _default_manual_mapping(columns):
 
 
 
+
+
+def _normalize_match_text(text):
+    text = str(text or "").lower().strip()
+    text = re.sub(r"[^a-z0-9α-ωάέήίόύώϊϋΐΰ\s]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _extract_match_mm(text):
+    text = str(text or "").lower()
+    m = re.search(r"(\d+(?:[.,]\d+)?)\s*mm", text)
+    if not m:
+        return None
+    try:
+        return float(m.group(1).replace(",", "."))
+    except Exception:
+        return None
+
+
+def _extract_match_dimensions(text):
+    text = str(text or "").lower().replace("×", "x")
+    m = re.search(r"(\d{3,4})\s*x\s*(\d{3,4})", text)
+    if not m:
+        return None
+    try:
+        return (int(m.group(1)), int(m.group(2)))
+    except Exception:
+        return None
+
+
+def _text_similarity(a, b):
+    return SequenceMatcher(None, _normalize_match_text(a), _normalize_match_text(b)).ratio()
+
+
+def _score_product_match(row_a: dict, row_b: dict) -> float:
+    product_a = str(row_a.get("Product", "") or "")
+    product_b = str(row_b.get("Product", "") or "")
+    category_a = str(row_a.get("Category", "") or "")
+    category_b = str(row_b.get("Category", "") or "")
+    mm_a = str(row_a.get("MM", "") or "")
+    mm_b = str(row_b.get("MM", "") or "")
+
+    score = _text_similarity(product_a, product_b) * 60.0
+
+    dim_a = _extract_match_dimensions(product_a)
+    dim_b = _extract_match_dimensions(product_b)
+    if dim_a and dim_b:
+        if dim_a == dim_b:
+            score += 18
+        elif sorted(dim_a) == sorted(dim_b):
+            score += 12
+
+    thick_a = _extract_match_mm(product_a + " " + mm_a)
+    thick_b = _extract_match_mm(product_b + " " + mm_b)
+    if thick_a is not None and thick_b is not None:
+        if abs(thick_a - thick_b) < 0.01:
+            score += 15
+        elif abs(thick_a - thick_b) <= 0.5:
+            score += 6
+        else:
+            score -= 10
+
+    cat_sim = _text_similarity(category_a, category_b)
+    score += cat_sim * 12.0
+
+    if str(row_a.get("MM", "")).strip() and str(row_b.get("MM", "")).strip():
+        if str(row_a.get("MM", "")).strip().lower() == str(row_b.get("MM", "")).strip().lower():
+            score += 8
+
+    return round(max(0.0, min(score, 100.0)), 2)
+
+
+def _confidence_bucket(score: float) -> str:
+    if score >= 85:
+        return "High"
+    if score >= 65:
+        return "Needs review"
+    return "Low"
+
+
+def _generate_hybrid_matches(df_a: pd.DataFrame, df_b: pd.DataFrame, max_rows: int = 500) -> pd.DataFrame:
+    if df_a is None or df_a.empty or df_b is None or df_b.empty:
+        return pd.DataFrame()
+
+    rows_a = df_a.head(max_rows).to_dict("records")
+    rows_b = df_b.to_dict("records")
+
+    results = []
+    for row_a in rows_a:
+        best_row = None
+        best_score = -1.0
+        for row_b in rows_b:
+            score = _score_product_match(row_a, row_b)
+            if score > best_score:
+                best_score = score
+                best_row = row_b
+
+        results.append({
+            "Action": "Confirm" if best_score >= 85 else "Review",
+            "Score": best_score,
+            "Confidence": _confidence_bucket(best_score),
+            "A Product": row_a.get("Product", ""),
+            "A SAP": row_a.get("SAP", ""),
+            "A Category": row_a.get("Category", ""),
+            "A Price": row_a.get("Price", None),
+            "Suggested B Product": best_row.get("Product", "") if best_row else "",
+            "Suggested B SAP": best_row.get("SAP", "") if best_row else "",
+            "Suggested B Category": best_row.get("Category", "") if best_row else "",
+            "Suggested B Price": best_row.get("Price", None) if best_row else None,
+        })
+
+    return pd.DataFrame(results)
+
+
+def render_product_matching():
+    st.markdown('<div class="app-card">', unsafe_allow_html=True)
+    st.markdown("## Product Matching")
+    st.caption("Hybrid matching: the system suggests product equivalents across two source files, and you confirm, review or reject them.")
+
+    company_display_map = {
+        f"{row['name']} ({row['code']})": row["code"] for _, row in companies_df.iterrows()
+    }
+
+    top_c1, top_c2 = st.columns(2)
+    with top_c1:
+        company_a_display = st.selectbox(
+            "Company A",
+            list(company_display_map.keys()),
+            key="matching_company_a",
+        )
+        company_a_code = company_display_map[company_a_display]
+        files_a = get_company_files(company_a_code)
+        source_a = st.selectbox(
+            "Source A",
+            [""] + files_a,
+            key="matching_source_a",
+        )
+    with top_c2:
+        other_company_options = [x for x in company_display_map.keys() if x != company_a_display] or list(company_display_map.keys())
+        default_b_index = 0
+        company_b_display = st.selectbox(
+            "Company B",
+            other_company_options,
+            index=default_b_index,
+            key="matching_company_b",
+        )
+        company_b_code = company_display_map[company_b_display]
+        files_b = get_company_files(company_b_code)
+        source_b = st.selectbox(
+            "Source B",
+            [""] + files_b,
+            key="matching_source_b",
+        )
+
+    match_c1, match_c2 = st.columns([1, 1])
+    with match_c1:
+        max_rows = st.number_input("Rows from Source A to evaluate", min_value=10, max_value=1000, value=300, step=10, key="matching_max_rows")
+    with match_c2:
+        st.write("")
+        st.write("")
+        run_match = st.button("Suggest Matches", key="matching_run_button", use_container_width=True)
+
+    if run_match:
+        if not source_a or not source_b:
+            st.error("Please choose both source files.")
+        else:
+            path_a = get_company_folder(company_a_code) / source_a
+            path_b = get_company_folder(company_b_code) / source_b
+            try:
+                df_a = load_prepared_catalog_from_file(str(path_a), path_a.stat().st_mtime)
+                df_b = load_prepared_catalog_from_file(str(path_b), path_b.stat().st_mtime)
+                matches_df = _generate_hybrid_matches(df_a, df_b, max_rows=max_rows)
+                st.session_state["matching_results_df"] = matches_df
+                st.session_state["matching_context"] = {
+                    "company_a_code": company_a_code,
+                    "company_b_code": company_b_code,
+                    "source_a": source_a,
+                    "source_b": source_b,
+                }
+            except Exception as e:
+                st.error(f"Matching failed: {e}")
+
+    if "matching_results_df" in st.session_state:
+        matches_df = pd.DataFrame(st.session_state["matching_results_df"]).copy()
+        if not matches_df.empty:
+            st.success(f"Generated {len(matches_df)} suggested matches.")
+            m1, m2, m3 = st.columns(3)
+            with m1:
+                st.metric("High confidence", int((matches_df["Confidence"] == "High").sum()))
+            with m2:
+                st.metric("Needs review", int((matches_df["Confidence"] == "Needs review").sum()))
+            with m3:
+                st.metric("Low confidence", int((matches_df["Confidence"] == "Low").sum()))
+
+            edited_matches = st.data_editor(
+                matches_df,
+                use_container_width=True,
+                num_rows="dynamic",
+                key="matching_results_editor",
+                column_config={
+                    "Action": st.column_config.SelectboxColumn("Action", options=["Confirm", "Review", "Reject"]),
+                    "Score": st.column_config.NumberColumn("Score", format="%.2f", disabled=True),
+                    "Confidence": st.column_config.TextColumn("Confidence", disabled=True),
+                    "A Product": st.column_config.TextColumn("A Product", width="large", disabled=True),
+                    "A SAP": st.column_config.TextColumn("A SAP", disabled=True),
+                    "A Category": st.column_config.TextColumn("A Category", disabled=True),
+                    "A Price": st.column_config.NumberColumn("A Price", format="%.4f", disabled=True),
+                    "Suggested B Product": st.column_config.TextColumn("Suggested B Product", width="large"),
+                    "Suggested B SAP": st.column_config.TextColumn("Suggested B SAP"),
+                    "Suggested B Category": st.column_config.TextColumn("Suggested B Category"),
+                    "Suggested B Price": st.column_config.NumberColumn("Suggested B Price", format="%.4f"),
+                },
+            )
+
+            edited_matches_df = pd.DataFrame(edited_matches).copy()
+            st.session_state["matching_results_df"] = edited_matches_df
+
+            download_c1, download_c2 = st.columns(2)
+            with download_c1:
+                st.download_button(
+                    "Download Matching Table",
+                    data=_source_dataframe_to_excel_bytes(
+                        edited_matches_df.rename(columns={
+                            "A Product": "Product A",
+                            "A SAP": "SAP A",
+                            "A Category": "Category A",
+                            "A Price": "Price A",
+                            "Suggested B Product": "Product B",
+                            "Suggested B SAP": "SAP B",
+                            "Suggested B Category": "Category B",
+                            "Suggested B Price": "Price B",
+                        })
+                    ),
+                    file_name="product_matching_results.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="download_matching_results",
+                    use_container_width=True,
+                )
+            with download_c2:
+                confirmed_count = int((edited_matches_df["Action"] == "Confirm").sum())
+                rejected_count = int((edited_matches_df["Action"] == "Reject").sum())
+                st.info(f"Confirmed: {confirmed_count} • Rejected: {rejected_count}")
+        else:
+            st.warning("No matches were generated for the selected sources.")
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+
+
+def parse_pdf_page_range(page_range_text: str, total_pages: int):
+    text = str(page_range_text or "").strip().lower()
+    if text in {"", "all"}:
+        return list(range(1, total_pages + 1))
+
+    pages = set()
+    for part in text.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            a, b = part.split("-", 1)
+            try:
+                start = max(1, int(a))
+                end = min(total_pages, int(b))
+                for p in range(start, end + 1):
+                    pages.add(p)
+            except Exception:
+                pass
+        else:
+            try:
+                p = int(part)
+                if 1 <= p <= total_pages:
+                    pages.add(p)
+            except Exception:
+                pass
+
+    return sorted(pages)
+
+
+def get_pdf_page_count(file_bytes: bytes) -> int:
+    reader = PdfReader(io.BytesIO(file_bytes))
+    return len(reader.pages)
+
+
+def extract_pdf_tables_pdfplumber(file_bytes: bytes, pages_to_read):
+    extracted = []
+
+    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+        for page_no in pages_to_read:
+            page = pdf.pages[page_no - 1]
+            tables = page.extract_tables()
+            if not tables:
+                continue
+
+            for idx, table in enumerate(tables, start=1):
+                try:
+                    df = pd.DataFrame(table)
+                    if df is None or df.empty:
+                        continue
+                    extracted.append({
+                        "page": page_no,
+                        "table_index": idx,
+                        "source": "pdfplumber",
+                        "dataframe": df,
+                    })
+                except Exception:
+                    continue
+
+    return extracted
+
+
+def normalize_pdf_raw_table(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    out = df.copy()
+    out = out.dropna(axis=1, how="all")
+    out = out.dropna(axis=0, how="all")
+    out = out.reset_index(drop=True)
+    out = out.applymap(lambda x: "" if pd.isna(x) else str(x).strip())
+    out = out[
+        ~out.apply(lambda r: all(str(v).strip() == "" for v in r.tolist()), axis=1)
+    ].reset_index(drop=True)
+    return out
+
+
+def score_pdf_table_candidate(df: pd.DataFrame):
+    if df is None or df.empty:
+        return {
+            "rows": 0,
+            "has_product_like": False,
+            "has_price_like": False,
+            "confidence": "Low",
+            "score": 0,
+        }
+
+    flat_values = " | ".join(
+        str(v).strip().lower()
+        for v in df.head(8).fillna("").values.flatten().tolist()
+        if str(v).strip()
+    )
+
+    product_like = any(x in flat_values for x in ["product", "description", "item", "περιγραφ", "προϊόν", "προιο", "name"])
+    price_like = any(x in flat_values for x in ["price", "list", "net", "τιμή", "value", "eur", "€"])
+
+    score = 0
+    if product_like:
+        score += 40
+    if price_like:
+        score += 40
+    if len(df) >= 5:
+        score += 20
+
+    if score >= 80:
+        confidence = "High"
+    elif score >= 50:
+        confidence = "Medium"
+    else:
+        confidence = "Low"
+
+    return {
+        "rows": len(df),
+        "has_product_like": product_like,
+        "has_price_like": price_like,
+        "confidence": confidence,
+        "score": score,
+    }
+
+
+def analyze_pdf_pricelist(file_bytes: bytes, page_range_text="all"):
+    total_pages = get_pdf_page_count(file_bytes)
+    pages_to_read = parse_pdf_page_range(page_range_text, total_pages)
+    raw_tables = extract_pdf_tables_pdfplumber(file_bytes, pages_to_read)
+
+    analyzed_tables = []
+    for item in raw_tables:
+        norm_df = normalize_pdf_raw_table(item["dataframe"])
+        stats = score_pdf_table_candidate(norm_df)
+        analyzed_tables.append({
+            "page": item["page"],
+            "table_index": item["table_index"],
+            "source": item["source"],
+            "dataframe": norm_df,
+            "stats": stats,
+            "include": stats["confidence"] in ["High", "Medium"],
+        })
+
+    return {
+        "total_pages": total_pages,
+        "pages_read": pages_to_read,
+        "tables_found": len(analyzed_tables),
+        "tables": analyzed_tables,
+    }
+
+
+def convert_pdf_tables_to_source(analyzed_pdf):
+    all_rows = []
+    used_tables = []
+    skipped_tables = []
+
+    tables = analyzed_pdf.get("tables", [])
+    for table in tables:
+        if not table.get("include", False):
+            skipped_tables.append(f"Page {table['page']} Table {table['table_index']} (excluded)")
+            continue
+
+        df = table.get("dataframe")
+        if df is None or df.empty:
+            skipped_tables.append(f"Page {table['page']} Table {table['table_index']} (empty)")
+            continue
+
+        try:
+            raw_df = df.copy()
+            header_row = _detect_supplier_header_row(raw_df)
+            normalized_df = _normalize_supplier_dataframe_from_raw(raw_df, header_row=header_row)
+
+            if normalized_df is None or normalized_df.empty:
+                skipped_tables.append(f"Page {table['page']} Table {table['table_index']} (no rows)")
+                continue
+
+            original_columns = [str(c).strip() for c in normalized_df.columns]
+            renamed_columns = {_col: _normalize_supplier_column_name(_col) for _col in original_columns}
+            normalized_df = normalized_df.rename(columns=renamed_columns)
+            normalized_df = normalized_df.loc[:, ~pd.Index(normalized_df.columns).duplicated(keep="first")]
+
+            guessed_columns = _guess_supplier_columns_by_values(normalized_df)
+            for canonical_name, original_col in guessed_columns.items():
+                if canonical_name not in normalized_df.columns and original_col in normalized_df.columns:
+                    normalized_df = normalized_df.rename(columns={original_col: canonical_name})
+
+            if "Product" not in normalized_df.columns or "Base Price" not in normalized_df.columns:
+                skipped_tables.append(f"Page {table['page']} Table {table['table_index']} (missing Product/Base Price)")
+                continue
+
+            if "SAP" not in normalized_df.columns:
+                normalized_df["SAP"] = ""
+            if "Category" not in normalized_df.columns:
+                normalized_df["Category"] = f"PDF Page {table['page']}"
+
+            out = pd.DataFrame()
+            out["SAP"] = normalized_df["SAP"].fillna("").astype(str).str.strip()
+            out["Product"] = normalized_df["Product"].fillna("").astype(str).str.strip()
+            out["Base Price"] = pd.to_numeric(normalized_df["Base Price"], errors="coerce")
+            out["Price"] = out["Base Price"]
+            out["MM"] = normalized_df["MM"].fillna("").astype(str).str.strip() if "MM" in normalized_df.columns else ""
+            out["Package"] = normalized_df["Package"].fillna("").astype(str).str.strip() if "Package" in normalized_df.columns else ""
+            out["Category"] = normalized_df["Category"].fillna("").astype(str).str.strip()
+
+            out = out[
+                ~(
+                    out["Product"].eq("")
+                    & out["Base Price"].isna()
+                )
+            ].reset_index(drop=True)
+
+            if out.empty:
+                skipped_tables.append(f"Page {table['page']} Table {table['table_index']} (all rows invalid)")
+                continue
+
+            all_rows.append(out)
+            used_tables.append(f"Page {table['page']} Table {table['table_index']}")
+        except Exception:
+            skipped_tables.append(f"Page {table['page']} Table {table['table_index']} (parse error)")
+
+    if not all_rows:
+        return None, {
+            "used_tables": used_tables,
+            "skipped_tables": skipped_tables,
+            "total_rows": 0,
+        }
+
+    source_df = pd.concat(all_rows, ignore_index=True)
+    source_df["Base Price"] = pd.to_numeric(source_df["Base Price"], errors="coerce")
+    source_df["Price"] = source_df["Base Price"]
+    source_df = source_df[_source_generator_output_columns()].reset_index(drop=True)
+
+    return source_df, {
+        "used_tables": used_tables,
+        "skipped_tables": skipped_tables,
+        "total_rows": len(source_df),
+    }
+
+
+def render_pdf_source_import(company_display_map):
+    st.markdown("---")
+    st.markdown("### 2. Create Source from PDF Pricelist")
+    st.caption("Best effort extraction. Review before saving.")
+
+    p1, p2, p3 = st.columns(3)
+    with p1:
+        pdf_company_display = st.selectbox(
+            "Company for PDF Source",
+            list(company_display_map.keys()),
+            key="pdf_generator_company_display",
+        )
+        pdf_company_code = company_display_map[pdf_company_display]
+
+    with p2:
+        pdf_date_val = st.date_input(
+            "PDF Source Date",
+            value=date.today(),
+            key="pdf_generator_date",
+        )
+
+    with p3:
+        uploaded_pdf = st.file_uploader(
+            "Upload PDF pricelist",
+            type=["pdf"],
+            key="pdf_pricelist_upload",
+        )
+
+    q1, q2 = st.columns(2)
+    with q1:
+        pdf_page_range = st.text_input(
+            "Page range",
+            value="all",
+            key="pdf_page_range",
+            help="Examples: all, 3-18, 5,6,7",
+        )
+    with q2:
+        st.write("")
+        st.write("")
+        analyze_pdf_clicked = st.button("Analyze PDF", key="analyze_pdf_button", use_container_width=True)
+
+    if analyze_pdf_clicked:
+        if uploaded_pdf is None:
+            st.error("Please upload a PDF first.")
+        else:
+            try:
+                file_bytes = uploaded_pdf.getvalue()
+                pdf_analysis = analyze_pdf_pricelist(file_bytes, page_range_text=pdf_page_range)
+                st.session_state["pdf_analysis"] = pdf_analysis
+                st.session_state["pdf_import_origin"] = f"{uploaded_pdf.name}|{pdf_company_code}|{pdf_page_range}"
+            except Exception as e:
+                st.error(f"PDF analysis failed: {e}")
+
+    if "pdf_analysis" in st.session_state and uploaded_pdf is not None:
+        pdf_analysis = st.session_state["pdf_analysis"]
+
+        m1, m2, m3 = st.columns(3)
+        with m1:
+            st.metric("Pages read", len(pdf_analysis.get("pages_read", [])))
+        with m2:
+            st.metric("Tables found", pdf_analysis.get("tables_found", 0))
+        with m3:
+            high_conf = sum(1 for t in pdf_analysis.get("tables", []) if t["stats"]["confidence"] == "High")
+            st.metric("High confidence tables", high_conf)
+
+        table_options = []
+        table_lookup = {}
+        for t in pdf_analysis.get("tables", []):
+            label = f"Page {t['page']} - Table {t['table_index']} ({t['stats']['confidence']})"
+            table_options.append(label)
+            table_lookup[label] = t
+
+        if table_options:
+            selected_table_label = st.selectbox(
+                "Raw extracted table preview",
+                table_options,
+                key="pdf_selected_raw_table",
+            )
+            selected_table = table_lookup[selected_table_label]
+            st.dataframe(selected_table["dataframe"], use_container_width=True)
+        else:
+            st.warning("No table-like content was detected in the selected PDF pages.")
+
+        if st.button("Convert PDF to Source", key="convert_pdf_to_source_button", use_container_width=True):
+            source_df, stats = convert_pdf_tables_to_source(pdf_analysis)
+            if source_df is None or source_df.empty:
+                st.error("Could not convert this PDF to a Source.")
+            else:
+                st.session_state["pdf_source_working_df"] = _ensure_preview_row_id(source_df)
+                st.session_state["pdf_source_stats"] = stats
+                st.session_state["pdf_source_origin"] = st.session_state.get("pdf_import_origin", uploaded_pdf.name)
+
+    if "pdf_source_working_df" in st.session_state and uploaded_pdf is not None:
+        current_pdf_origin = st.session_state.get("pdf_import_origin", uploaded_pdf.name)
+        if st.session_state.get("pdf_source_origin") == current_pdf_origin:
+            pdf_source_df = st.session_state["pdf_source_working_df"]
+            stats = st.session_state.get("pdf_source_stats", {})
+
+            st.success(f"Detected {len(pdf_source_df)} source rows from PDF.")
+
+            if stats.get("used_tables"):
+                st.caption("Used tables: " + ", ".join(stats["used_tables"]))
+            if stats.get("skipped_tables"):
+                st.warning("Skipped tables: " + ", ".join(stats["skipped_tables"][:10]))
+
+            edited_pdf_df = st.data_editor(
+                _preview_display_df(pdf_source_df),
+                use_container_width=True,
+                num_rows="dynamic",
+                key="pdf_generated_source_editor",
+            )
+
+            edited_pdf_df = _normalize_preview_editor_output(pd.DataFrame(edited_pdf_df))
+            st.session_state["pdf_source_working_df"] = edited_pdf_df
+
+            selected_delete_pdf_rows = st.multiselect(
+                "Select PDF preview rows to delete",
+                edited_pdf_df["__row_id"].astype(int).tolist(),
+                format_func=lambda x: f"Row {x}",
+                key="pdf_source_delete_rows",
+            )
+
+            if st.button("Delete selected PDF rows", key="delete_pdf_preview_rows", use_container_width=True):
+                deleted_count = _delete_selected_preview_rows_from_state("pdf_source_working_df", selected_delete_pdf_rows)
+                st.session_state.pop("pdf_source_delete_rows", None)
+                if deleted_count:
+                    st.success(f"Deleted {deleted_count} row(s) from the PDF preview.")
+                st.rerun()
+
+            export_pdf_df = st.session_state["pdf_source_working_df"].drop(columns=["__row_id"], errors="ignore").copy()
+            export_pdf_df["Price"] = export_pdf_df["Base Price"]
+
+            d1, d2 = st.columns(2)
+            with d1:
+                st.download_button(
+                    "Download PDF Generated Source",
+                    data=_source_dataframe_to_excel_bytes(export_pdf_df),
+                    file_name=f"{pdf_company_code}_pdf_generated_source.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="download_pdf_generated_source",
+                    use_container_width=True,
+                )
+            with d2:
+                if st.button("Save PDF Generated Source", key="save_pdf_generated_source", use_container_width=True):
+                    if export_pdf_df.empty:
+                        st.error("There are no rows to save.")
+                    else:
+                        name = get_next_version_filename(pdf_company_code, pdf_date_val, "pdf_generated_source.xlsx")
+                        path = get_company_folder(pdf_company_code) / name
+                        with open(path, "wb") as f:
+                            f.write(_source_dataframe_to_excel_bytes(export_pdf_df))
+                        st.success(f"PDF generated source saved as: {name}")
+                        refresh_source_file_views()
+                        st.rerun()
+
 def render_sources():
     st.markdown('<div class="app-card">', unsafe_allow_html=True)
     st.markdown("## Sources")
@@ -4933,8 +5575,10 @@ def render_sources():
                                 refresh_source_file_views()
                                 st.rerun()
 
+    render_pdf_source_import(company_display_map)
+
     st.markdown("---")
-    st.markdown("### 2. Save Ready Source")
+    st.markdown("### 3. Save Ready Source")
 
     s1, s2, s3 = st.columns(3)
     with s1:
