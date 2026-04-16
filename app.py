@@ -1863,18 +1863,25 @@ def duplicate_saved_comparison(comparison_file: Path, comparison_id: str):
         if not original:
             return False, "Comparison not found.", None
 
-        new_record = json.loads(json.dumps(original, ensure_ascii=False, default=str))
-        new_record["id"] = str(uuid.uuid4())
+        owner_email = original.get("owner_email", "")
         original_name = str(original.get("name", "") or "Comparison").strip()
-        new_record["name"] = f"Copy of {original_name}"
-        new_record["created_at"] = now_iso()
-        new_record["updated_at"] = now_iso()
+        name = f"Copy of {original_name}"
+        companies = original.get("companies", []) or []
+        source_files = original.get("source_files", {}) or {}
+        state = original.get("state", {}) or {}
 
-        ok = save_new_comparison(comparison_file, new_record)
+        ok = save_new_comparison(
+            comparison_file,
+            owner_email,
+            name,
+            companies,
+            source_files,
+            state,
+        )
         if not ok:
             return False, "Could not duplicate comparison.", None
 
-        return True, "Comparison duplicated.", new_record
+        return True, "Comparison duplicated.", None
     except Exception as e:
         return False, f"Could not duplicate comparison: {e}", None
 
