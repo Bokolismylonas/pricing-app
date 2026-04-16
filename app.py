@@ -1859,29 +1859,27 @@ def release_comparison_lock(comparison_file: Path | None = None, comparison_id: 
 
 def duplicate_saved_comparison(comparison_file: Path, comparison_id: str):
     try:
-        original = get_comparison(comparison_file, comparison_id)
-        if not original:
-            return False, "Comparison not found.", None
+        comparison_file = Path(comparison_file)
+        records = list_comparisons(comparison_file)
 
-        owner_email = original.get("owner_email", "")
-        original_name = str(original.get("name", "") or "Comparison").strip()
-        name = f"Copy of {original_name}"
-        companies = original.get("companies", []) or []
-        source_files = original.get("source_files", {}) or {}
-        state = original.get("state", {}) or {}
+        for rec in records:
+            if str(rec.get("id", "")) == str(comparison_id):
+                new_rec = json.loads(json.dumps(rec, ensure_ascii=False, default=str))
+                new_rec["id"] = str(uuid.uuid4())
+                original_name = str(rec.get("name", "") or "Comparison").strip()
+                new_rec["name"] = f"Copy of {original_name}"
+                new_rec["created_at"] = now_iso()
+                new_rec["updated_at"] = now_iso()
 
-        ok = save_new_comparison(
-            comparison_file,
-            owner_email,
-            name,
-            companies,
-            source_files,
-            state,
-        )
-        if not ok:
-            return False, "Could not duplicate comparison.", None
+                all_records = list(records)
+                all_records.append(new_rec)
+                comparison_file.write_text(
+                    json.dumps(all_records, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                return True, "Comparison duplicated.", new_rec
 
-        return True, "Comparison duplicated.", None
+        return False, "Comparison not found.", None
     except Exception as e:
         return False, f"Could not duplicate comparison: {e}", None
 
