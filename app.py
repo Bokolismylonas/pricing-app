@@ -1687,6 +1687,130 @@ def refresh_source_file_views():
     return None
 
 
+def get_user_sources_count() -> int:
+    try:
+        saved_df = list_saved_sources()
+        return 0 if saved_df is None else len(saved_df)
+    except Exception:
+        return 0
+
+
+def get_user_comparisons_count() -> int:
+    try:
+        comparison_file = get_current_user_comparisons_file()
+        rows = list_comparisons(comparison_file)
+        return len(rows or [])
+    except Exception:
+        return 0
+
+
+def get_trial_status():
+    idx, user_row, _ = get_current_user_registry_row()
+    if not user_row:
+        return {
+            "is_trial": False,
+            "days_left": None,
+            "expired": False,
+        }
+
+    billing_status = str(user_row.get("billing_status", "") or "").strip().lower()
+    days_left = trial_days_left(user_row.get("trial_end")) if user_row else 0
+
+    return {
+        "is_trial": billing_status == "trialing",
+        "days_left": days_left,
+        "expired": billing_status == "expired" or (billing_status == "trialing" and days_left <= 0),
+    }
+
+
+def get_onboarding_message():
+    sources_count = get_user_sources_count()
+    comparisons_count = get_user_comparisons_count()
+    trial = get_trial_status()
+
+    if trial["expired"]:
+        return {
+            "type": "warning",
+            "text": "⏳ Το trial σου έληξε — ενεργοποίησε το account σου για να συνεχίσεις να χρησιμοποιείς τα Sources και τα Comparisons σου.",
+        }
+
+    if sources_count == 0:
+        return {
+            "type": "info",
+            "text": "👉 Ξεκίνα ανεβάζοντας έναν τιμοκατάλογο για να δημιουργήσεις το πρώτο σου Source.",
+        }
+
+    if sources_count >= 1 and comparisons_count == 0:
+        return {
+            "type": "success",
+            "text": "✅ Source έτοιμο — τώρα δημιούργησε το πρώτο σου Comparison.",
+        }
+
+    if comparisons_count >= 1:
+        return {
+            "type": "success",
+            "text": "🔥 Έχεις ήδη Comparisons — δοκίμασε να αλλάξεις Source για να δεις πόσο γρήγορα ενημερώνονται οι τιμές.",
+        }
+
+    return None
+
+
+def render_onboarding_banner():
+    msg = get_onboarding_message()
+    if not msg:
+        return
+
+    if msg["type"] == "info":
+        st.info(msg["text"])
+    elif msg["type"] == "success":
+        st.success(msg["text"])
+    elif msg["type"] == "warning":
+        st.warning(msg["text"])
+
+
+def render_usage_stats():
+    sources_count = get_user_sources_count()
+    comparisons_count = get_user_comparisons_count()
+
+    if sources_count == 0 and comparisons_count == 0:
+        return
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.metric("Sources", sources_count)
+    with c2:
+        st.metric("Comparisons", comparisons_count)
+
+
+def render_trial_sidebar_status():
+    trial = get_trial_status()
+    if not trial["is_trial"]:
+        return
+
+    if trial["expired"]:
+        st.sidebar.error("Trial expired")
+        st.sidebar.caption("Activate your account to continue.")
+        return
+
+    days_left = trial.get("days_left")
+    if days_left is None:
+        st.sidebar.info("Trial active")
+    elif days_left <= 1:
+        st.sidebar.warning("Trial: less than 1 day left")
+    else:
+        st.sidebar.info(f"Trial: {days_left} day(s) left")
+
+
+def render_trial_conversion_nudge():
+    trial = get_trial_status()
+    if not trial["is_trial"] or trial["expired"]:
+        return
+
+    days_left = trial.get("days_left")
+    if days_left is not None and days_left <= 1:
+        st.warning("⏳ Το trial σου λήγει σύντομα — συνέχισε με 10€/μήνα για να κρατήσεις ενεργά τα δεδομένα και τα comparisons σου.")
+
+
 def _ensure_preview_row_id(df: pd.DataFrame) -> pd.DataFrame:
     working = pd.DataFrame(df).copy().reset_index(drop=True)
     if "__row_id" not in working.columns:
@@ -3245,6 +3369,8 @@ with st.sidebar:
                 st.info(f"Trial: {trial_left} day(s) left")
             else:
                 st.warning("Plan: Locked")
+
+    render_trial_sidebar_status()
 
     st.markdown("---")
     st.subheader("🧭 Navigation")
@@ -4994,6 +5120,254 @@ def score_pdf_table_candidate(df: pd.DataFrame):
     }
 
 
+
+
+def _clean_pdf_price_candidate(value):
+    text = str(value or "").strip()
+    if text.lower() in {"", "nan", "none"}:
+        return None
+    text = text.replace("€", "").replace("EUR", "").replace("eur", "")
+    text = text.replace("\xa0", " ").strip()
+    text = re.sub(r"(?<=\d)\s+(?=\d)", "", text)
+    text = text.replace(",", ".")
+    text = re.sub(r"[^0-9.\-]", "", text)
+    if text.count(".") > 1:
+        parts = text.split(".")
+        text = "".join(parts[:-1]) + "." + parts[-1]
+    try:
+        return float(text)
+    except Exception:
+        return None
+
+
+def _pdf_column_numeric_score(series: pd.Series):
+    values = list(series.fillna("").astype(str))
+    parsed = [_clean_pdf_price_candidate(v) for v in values]
+    numeric_count = sum(1 for v in parsed if v is not None and v >= 0)
+    ratio = numeric_count / max(1, len(values))
+    return ratio, parsed
+
+
+def _detect_pdf_base_price_column(df: pd.DataFrame):
+    if df is None or df.empty:
+        return None
+
+    best_col = None
+    best_score = -1.0
+    columns = list(df.columns)
+
+    for idx, col in enumerate(columns):
+        ratio, parsed = _pdf_column_numeric_score(df[col])
+        header_hint = str(df[col].iloc[0]).strip().lower() if len(df[col]) else ""
+        hint_bonus = 0.0
+        if any(x in header_hint for x in ["price", "τιμ", "eur", "€", "net", "list", "value"]):
+            hint_bonus += 0.25
+        right_side_bonus = 0.05 * (idx / max(1, len(columns) - 1))
+        numeric_count = sum(1 for x in parsed if x is not None)
+        score = ratio + hint_bonus + right_side_bonus
+
+        if numeric_count > 0 and ratio >= 0.15 and score > best_score:
+            best_col = col
+            best_score = score
+
+    return best_col
+
+
+def _normalize_pdf_table_for_conversion(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    out = df.copy()
+    out = out.dropna(axis=0, how="all").dropna(axis=1, how="all").reset_index(drop=True)
+    out = out.applymap(lambda x: "" if pd.isna(x) else str(x).strip())
+
+    keep_cols = []
+    for col in out.columns:
+        non_empty = out[col].astype(str).str.strip().ne("").sum()
+        if non_empty > 0:
+            keep_cols.append(col)
+    out = out[keep_cols].copy()
+
+    merged_cols = []
+    i = 0
+    cols = list(out.columns)
+    while i < len(cols):
+        current = out[cols[i]].astype(str)
+        if i < len(cols) - 1:
+            nxt = out[cols[i + 1]].astype(str)
+            cur_non_empty = current.str.strip().ne("").sum()
+            nxt_non_empty = nxt.str.strip().ne("").sum()
+            if cur_non_empty <= max(2, int(len(out) * 0.05)) and nxt_non_empty > cur_non_empty:
+                combined = (current.str.strip() + " " + nxt.str.strip()).str.strip()
+                merged_cols.append(combined.rename(cols[i + 1]))
+                i += 2
+                continue
+        merged_cols.append(current.rename(cols[i]))
+        i += 1
+
+    if merged_cols:
+        out = pd.concat(merged_cols, axis=1)
+
+    out = out.applymap(lambda x: re.sub(r"\s+", " ", str(x)).strip())
+    out = out[
+        ~out.apply(lambda r: all(str(v).strip() == "" for v in r.tolist()), axis=1)
+    ].reset_index(drop=True)
+    return out
+
+
+def _apply_manual_pdf_mapping(df: pd.DataFrame, mapping: dict) -> pd.DataFrame:
+    out = pd.DataFrame()
+    for target in ["SAP", "Product", "Base Price", "MM", "Package", "Category"]:
+        source_col = mapping.get(target)
+        if source_col and source_col != "— None —" and source_col in df.columns:
+            out[target] = df[source_col]
+
+    if "SAP" not in out.columns:
+        out["SAP"] = ""
+    if "MM" not in out.columns:
+        out["MM"] = ""
+    if "Package" not in out.columns:
+        out["Package"] = ""
+    if "Category" not in out.columns:
+        out["Category"] = ""
+    if "Product" not in out.columns:
+        out["Product"] = ""
+    if "Base Price" not in out.columns:
+        out["Base Price"] = None
+
+    out["Product"] = out["Product"].fillna("").astype(str).str.strip()
+    out["Base Price"] = out["Base Price"].apply(_clean_pdf_price_candidate)
+    out["Price"] = out["Base Price"]
+
+    out = out[
+        ~(
+            out["Product"].eq("")
+            & pd.isna(out["Base Price"])
+        )
+    ].reset_index(drop=True)
+
+    out = _postprocess_pdf_source_rows(out)
+    return out[_source_generator_output_columns()].copy()
+
+
+def _postprocess_pdf_source_rows(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame(columns=_source_generator_output_columns())
+
+    working = df.copy()
+    for col in ["SAP", "Product", "MM", "Package", "Category"]:
+        if col not in working.columns:
+            working[col] = ""
+        working[col] = working[col].fillna("").astype(str).str.strip()
+
+    if "Base Price" not in working.columns:
+        working["Base Price"] = None
+    working["Base Price"] = working["Base Price"].apply(_clean_pdf_price_candidate)
+    working["Price"] = working["Base Price"]
+
+    header_like_values = {
+        "περιγραφή", "description", "product", "products", "sap", "κωδικός", "κωδικος",
+        "κωδικός sap", "base price", "price", "τιμή", "τιμη", "mm", "package", "συσκευασία",
+        "category", "κατηγορία", "κατηγορια"
+    }
+
+    rows = []
+    current_category = ""
+    pending_product = ""
+    pending_sap = ""
+    pending_mm = ""
+    pending_package = ""
+
+    def _clean_text(v):
+        text = str(v or "").strip()
+        text = re.sub(r"\s+", " ", text)
+        return text
+
+    for _, row in working.iterrows():
+        sap = _clean_text(row.get("SAP", ""))
+        product = _clean_text(row.get("Product", ""))
+        mm = _clean_text(row.get("MM", ""))
+        package = _clean_text(row.get("Package", ""))
+        category = _clean_text(row.get("Category", ""))
+        base_price = row.get("Base Price", None)
+
+        product_lower = product.lower().strip(" :;-")
+        if product_lower in header_like_values:
+            continue
+
+        # Detect section/category titles and skip them as products
+        title_values = [sap, product, mm, package]
+        if pd.isna(base_price) and product and _is_section_title_row(title_values):
+            current_category = product
+            continue
+
+        # Handle continuation rows without price: keep text and merge into next priced row
+        if pd.isna(base_price):
+            if product and product_lower not in header_like_values:
+                pending_product = f"{pending_product} {product}".strip() if pending_product else product
+            if sap and not pending_sap:
+                pending_sap = sap
+            if mm and not pending_mm:
+                pending_mm = mm
+            if package and not pending_package:
+                pending_package = package
+            if category and not current_category:
+                current_category = category
+            continue
+
+        final_product = product
+        if pending_product:
+            if final_product:
+                if pending_product.lower() not in final_product.lower():
+                    final_product = f"{pending_product} {final_product}".strip()
+            else:
+                final_product = pending_product
+
+        final_sap = sap or pending_sap
+        final_mm = mm or pending_mm
+        final_package = package or pending_package
+        final_category = category or current_category
+
+        if not final_product:
+            pending_product = ""
+            pending_sap = ""
+            pending_mm = ""
+            pending_package = ""
+            continue
+
+        rows.append({
+            "SAP": final_sap,
+            "Product": final_product,
+            "Base Price": base_price,
+            "Price": base_price,
+            "MM": final_mm,
+            "Package": final_package,
+            "Category": final_category,
+        })
+
+        pending_product = ""
+        pending_sap = ""
+        pending_mm = ""
+        pending_package = ""
+
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return pd.DataFrame(columns=_source_generator_output_columns())
+
+    for col in ["SAP", "Product", "MM", "Package", "Category"]:
+        out[col] = out[col].fillna("").astype(str).str.strip()
+    out["Base Price"] = pd.to_numeric(out["Base Price"], errors="coerce")
+    out["Price"] = out["Base Price"]
+
+    out = out[
+        ~(
+            out["Product"].eq("")
+            & out["Base Price"].isna()
+        )
+    ].reset_index(drop=True)
+
+    return out
+
 def analyze_pdf_pricelist(file_bytes: bytes, page_range_text="all"):
     total_pages = get_pdf_page_count(file_bytes)
     pages_to_read = parse_pdf_page_range(page_range_text, total_pages)
@@ -5037,7 +5411,11 @@ def convert_pdf_tables_to_source(analyzed_pdf):
             continue
 
         try:
-            raw_df = df.copy()
+            raw_df = _normalize_pdf_table_for_conversion(df.copy())
+            if raw_df.empty:
+                skipped_tables.append(f"Page {table['page']} Table {table['table_index']} (normalized empty)")
+                continue
+
             header_row = _detect_supplier_header_row(raw_df)
             normalized_df = _normalize_supplier_dataframe_from_raw(raw_df, header_row=header_row)
 
@@ -5055,6 +5433,24 @@ def convert_pdf_tables_to_source(analyzed_pdf):
                 if canonical_name not in normalized_df.columns and original_col in normalized_df.columns:
                     normalized_df = normalized_df.rename(columns={original_col: canonical_name})
 
+            if "Base Price" not in normalized_df.columns:
+                fallback_price_col = _detect_pdf_base_price_column(normalized_df)
+                if fallback_price_col is not None:
+                    normalized_df = normalized_df.rename(columns={fallback_price_col: "Base Price"})
+
+            if "Product" not in normalized_df.columns:
+                text_scores = []
+                for col in normalized_df.columns:
+                    series = normalized_df[col].fillna("").astype(str)
+                    non_empty = series.str.strip().ne("").sum()
+                    alpha_count = series.str.contains(r"[A-Za-zΑ-Ωα-ω]", regex=True).sum()
+                    numeric_like = series.apply(lambda x: _clean_pdf_price_candidate(x) is not None).sum()
+                    score = alpha_count + non_empty - (numeric_like * 2)
+                    text_scores.append((score, col))
+                if text_scores:
+                    text_scores.sort(reverse=True)
+                    normalized_df = normalized_df.rename(columns={text_scores[0][1]: "Product"})
+
             if "Product" not in normalized_df.columns or "Base Price" not in normalized_df.columns:
                 skipped_tables.append(f"Page {table['page']} Table {table['table_index']} (missing Product/Base Price)")
                 continue
@@ -5067,7 +5463,7 @@ def convert_pdf_tables_to_source(analyzed_pdf):
             out = pd.DataFrame()
             out["SAP"] = normalized_df["SAP"].fillna("").astype(str).str.strip()
             out["Product"] = normalized_df["Product"].fillna("").astype(str).str.strip()
-            out["Base Price"] = pd.to_numeric(normalized_df["Base Price"], errors="coerce")
+            out["Base Price"] = normalized_df["Base Price"].apply(_clean_pdf_price_candidate)
             out["Price"] = out["Base Price"]
             out["MM"] = normalized_df["MM"].fillna("").astype(str).str.strip() if "MM" in normalized_df.columns else ""
             out["Package"] = normalized_df["Package"].fillna("").astype(str).str.strip() if "Package" in normalized_df.columns else ""
@@ -5079,6 +5475,8 @@ def convert_pdf_tables_to_source(analyzed_pdf):
                     & out["Base Price"].isna()
                 )
             ].reset_index(drop=True)
+
+            out = _postprocess_pdf_source_rows(out)
 
             if out.empty:
                 skipped_tables.append(f"Page {table['page']} Table {table['table_index']} (all rows invalid)")
@@ -5106,7 +5504,6 @@ def convert_pdf_tables_to_source(analyzed_pdf):
         "skipped_tables": skipped_tables,
         "total_rows": len(source_df),
     }
-
 
 def render_pdf_source_import(company_display_map):
     st.markdown("---")
@@ -5180,6 +5577,7 @@ def render_pdf_source_import(company_display_map):
             table_options.append(label)
             table_lookup[label] = t
 
+        selected_table = None
         if table_options:
             selected_table_label = st.selectbox(
                 "Raw extracted table preview",
@@ -5199,6 +5597,50 @@ def render_pdf_source_import(company_display_map):
                 st.session_state["pdf_source_working_df"] = _ensure_preview_row_id(source_df)
                 st.session_state["pdf_source_stats"] = stats
                 st.session_state["pdf_source_origin"] = st.session_state.get("pdf_import_origin", uploaded_pdf.name)
+
+        with st.expander("Manual PDF column override"):
+            if selected_table is not None:
+                manual_pdf_df = _normalize_pdf_table_for_conversion(selected_table["dataframe"])
+                cols = list(manual_pdf_df.columns)
+                optional_choices = ["— None —"] + cols
+
+                mp1, mp2, mp3 = st.columns(3)
+                with mp1:
+                    pdf_sap_col = st.selectbox("SAP", optional_choices, key="pdf_manual_sap_col")
+                    product_choices = cols if cols else ["— None —"]
+                    pdf_product_col = st.selectbox("Product", product_choices, key="pdf_manual_product_col")
+                with mp2:
+                    price_choices = cols if cols else ["— None —"]
+                    pdf_price_col = st.selectbox("Base Price", price_choices, key="pdf_manual_price_col")
+                    pdf_mm_col = st.selectbox("MM", optional_choices, key="pdf_manual_mm_col")
+                with mp3:
+                    pdf_package_col = st.selectbox("Package", optional_choices, key="pdf_manual_package_col")
+                    pdf_category_col = st.selectbox("Category", optional_choices, key="pdf_manual_category_col")
+
+                if st.button("Apply Manual PDF Mapping", key="apply_manual_pdf_mapping", use_container_width=True):
+                    mapping = {
+                        "SAP": None if pdf_sap_col == "— None —" else pdf_sap_col,
+                        "Product": None if pdf_product_col == "— None —" else pdf_product_col,
+                        "Base Price": None if pdf_price_col == "— None —" else pdf_price_col,
+                        "MM": None if pdf_mm_col == "— None —" else pdf_mm_col,
+                        "Package": None if pdf_package_col == "— None —" else pdf_package_col,
+                        "Category": None if pdf_category_col == "— None —" else pdf_category_col,
+                    }
+                    manual_source_df = _apply_manual_pdf_mapping(manual_pdf_df, mapping)
+                    if manual_source_df.empty:
+                        st.error("The selected mapping did not produce valid rows.")
+                    else:
+                        st.session_state["pdf_source_working_df"] = _ensure_preview_row_id(manual_source_df)
+                        st.session_state["pdf_source_stats"] = {
+                            "used_tables": [selected_table_label],
+                            "skipped_tables": [],
+                            "total_rows": len(manual_source_df),
+                        }
+                        st.session_state["pdf_source_origin"] = st.session_state.get("pdf_import_origin", uploaded_pdf.name)
+                        st.success(f"Manual PDF mapping generated {len(manual_source_df)} rows.")
+                        st.rerun()
+            else:
+                st.caption("Analyze the PDF first and select a raw extracted table.")
 
     if "pdf_source_working_df" in st.session_state and uploaded_pdf is not None:
         current_pdf_origin = st.session_state.get("pdf_import_origin", uploaded_pdf.name)
@@ -5266,6 +5708,9 @@ def render_pdf_source_import(company_display_map):
 def render_sources():
     st.markdown('<div class="app-card">', unsafe_allow_html=True)
     st.markdown("## Sources")
+    render_onboarding_banner()
+    render_trial_conversion_nudge()
+    render_usage_stats()
 
     company_display_map = {
         f"{row['name']} ({row['code']})": row["code"] for _, row in companies_df.iterrows()
@@ -5648,6 +6093,9 @@ def render_comparisons():
 
     st.markdown('<div class="app-card">', unsafe_allow_html=True)
     st.markdown("## Comparisons")
+    render_onboarding_banner()
+    render_trial_conversion_nudge()
+    render_usage_stats()
 
     mode = st.session_state.get("comparison_mode", "menu")
     if mode not in {"menu", "load", "edit"}:
