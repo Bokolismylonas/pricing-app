@@ -1777,10 +1777,14 @@ def get_comparison_lock_info(comparison_file: Path, comparison_id: str):
 def comparison_lock_owned_by_current_session(lock_payload: dict) -> bool:
     if not lock_payload:
         return False
-    return (
-        str(lock_payload.get("session_id", "")) == str(get_current_session_id())
-        and str(lock_payload.get("owner_email", "")) == str(get_current_user_email())
-    )
+
+    lock_email = str(lock_payload.get("owner_email", "") or "").strip().lower()
+    current_email = str(get_current_user_email() or "").strip().lower()
+
+    if lock_email and current_email and lock_email == current_email:
+        return True
+
+    return str(lock_payload.get("session_id", "")) == str(get_current_session_id())
 
 
 def acquire_comparison_lock(comparison_file: Path, comparison_id: str, comparison_name: str = ""):
@@ -1849,6 +1853,30 @@ def release_comparison_lock(comparison_file: Path | None = None, comparison_id: 
 
     st.session_state["locked_comparison_id"] = None
     st.session_state["locked_comparison_file"] = None
+
+
+
+
+def duplicate_saved_comparison(comparison_file: Path, comparison_id: str):
+    try:
+        original = get_comparison(comparison_file, comparison_id)
+        if not original:
+            return False, "Comparison not found.", None
+
+        new_record = json.loads(json.dumps(original, ensure_ascii=False, default=str))
+        new_record["id"] = str(uuid.uuid4())
+        original_name = str(original.get("name", "") or "Comparison").strip()
+        new_record["name"] = f"Copy of {original_name}"
+        new_record["created_at"] = now_iso()
+        new_record["updated_at"] = now_iso()
+
+        ok = save_new_comparison(comparison_file, new_record)
+        if not ok:
+            return False, "Could not duplicate comparison.", None
+
+        return True, "Comparison duplicated.", new_record
+    except Exception as e:
+        return False, f"Could not duplicate comparison: {e}", None
 
 
 def get_all_active_comparison_locks():
