@@ -7,5 +7,4 @@ Authlib==1.3.2
 flask
 stripe
 xlrd
-pdfplumber
-pypdf
+
