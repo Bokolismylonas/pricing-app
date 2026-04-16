@@ -1165,6 +1165,8 @@ def ensure_company_fields(company_row):
         company_row["max_seats"] = 0
     if "is_active" not in company_row:
         company_row["is_active"] = True
+    if "shared_workspace_enabled" not in company_row:
+        company_row["shared_workspace_enabled"] = False
     if "trial_start" not in company_row:
         company_row["trial_start"] = now_iso()
     if "trial_end" not in company_row:
@@ -1581,6 +1583,7 @@ def upsert_company(
     is_active=True,
     billing_status="trialing",
     owner_email="",
+    shared_workspace_enabled=False,
 ):
     companies = load_companies_registry()
     normalized_key = normalize_company_key(company_key)
@@ -1598,6 +1601,7 @@ def upsert_company(
         "stripe_customer_id": None,
         "stripe_subscription_id": None,
         "owner_email": owner_email.strip().lower(),
+        "shared_workspace_enabled": bool(shared_workspace_enabled),
         "updated_at": now_iso(),
     }
 
@@ -1613,6 +1617,7 @@ def upsert_company(
         payload["trial_end"] = existing.get("trial_end", payload["trial_end"])
         if not owner_email:
             payload["owner_email"] = existing.get("owner_email", "")
+        payload["shared_workspace_enabled"] = bool(shared_workspace_enabled)
         companies[idx] = payload
 
     save_companies_registry(companies)
@@ -1660,9 +1665,165 @@ TRASH_COMPARISONS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def get_current_user_comparisons_file():
+    company = get_current_user_company()
+    if company and bool(company.get("shared_workspace_enabled", False)):
+        company_key = normalize_company_key(company.get("key", "workspace"))
+        return COMPARISONS_DIR / f"company_{company_key}.json"
+
     raw_user = get_current_user_id() or get_current_user_email() or "anonymous"
     safe_user = normalize_company_key(raw_user)
     return COMPARISONS_DIR / f"{safe_user}.json"
+
+COMPARISON_LOCK_STALE_MINUTES = 120
+
+
+def get_comparison_lock_file(comparison_file: Path) -> Path:
+    comparison_file = Path(comparison_file)
+    return comparison_file.with_name(f"{comparison_file.stem}__locks.json")
+
+
+def load_comparison_locks(comparison_file: Path) -> dict:
+    lock_file = get_comparison_lock_file(comparison_file)
+    if not lock_file.exists():
+        return {}
+    try:
+        data = json.loads(lock_file.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_comparison_locks(comparison_file: Path, data: dict):
+    lock_file = get_comparison_lock_file(comparison_file)
+    lock_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _comparison_lock_is_stale(lock_payload: dict) -> bool:
+    if not isinstance(lock_payload, dict):
+        return True
+    last_seen = parse_iso(lock_payload.get("last_seen", ""))
+    if last_seen is None:
+        return True
+    return (now_utc() - last_seen) > timedelta(minutes=COMPARISON_LOCK_STALE_MINUTES)
+
+
+def get_comparison_lock_info(comparison_file: Path, comparison_id: str):
+    locks = load_comparison_locks(comparison_file)
+    lock_payload = locks.get(str(comparison_id))
+    if not lock_payload:
+        return None
+    if _comparison_lock_is_stale(lock_payload):
+        locks.pop(str(comparison_id), None)
+        save_comparison_locks(comparison_file, locks)
+        return None
+    return lock_payload
+
+
+def comparison_lock_owned_by_current_session(lock_payload: dict) -> bool:
+    if not lock_payload:
+        return False
+    return (
+        str(lock_payload.get("session_id", "")) == str(get_current_session_id())
+        and str(lock_payload.get("owner_email", "")) == str(get_current_user_email())
+    )
+
+
+def acquire_comparison_lock(comparison_file: Path, comparison_id: str, comparison_name: str = ""):
+    comparison_id = str(comparison_id or "").strip()
+    if not comparison_id:
+        return False, "Invalid comparison."
+
+    locks = load_comparison_locks(comparison_file)
+    existing = locks.get(comparison_id)
+
+    if existing and _comparison_lock_is_stale(existing):
+        locks.pop(comparison_id, None)
+        existing = None
+
+    if existing and not comparison_lock_owned_by_current_session(existing):
+        holder = existing.get("owner_name") or existing.get("owner_email") or "another user"
+        return False, f"This comparison is currently being edited by {holder}."
+
+    lock_payload = {
+        "comparison_id": comparison_id,
+        "comparison_name": comparison_name or "",
+        "owner_email": get_current_user_email(),
+        "owner_name": get_current_user_name(),
+        "session_id": get_current_session_id(),
+        "locked_at": existing.get("locked_at", now_iso()) if existing else now_iso(),
+        "last_seen": now_iso(),
+    }
+    locks[comparison_id] = lock_payload
+    save_comparison_locks(comparison_file, locks)
+    st.session_state["locked_comparison_id"] = comparison_id
+    st.session_state["locked_comparison_file"] = str(comparison_file)
+    return True, ""
+
+
+def touch_current_comparison_lock():
+    comparison_id = str(st.session_state.get("locked_comparison_id", "") or "").strip()
+    comparison_file_str = str(st.session_state.get("locked_comparison_file", "") or "").strip()
+    if not comparison_id or not comparison_file_str:
+        return
+
+    comparison_file = Path(comparison_file_str)
+    locks = load_comparison_locks(comparison_file)
+    existing = locks.get(comparison_id)
+    if not existing or not comparison_lock_owned_by_current_session(existing):
+        return
+
+    existing["last_seen"] = now_iso()
+    locks[comparison_id] = existing
+    save_comparison_locks(comparison_file, locks)
+
+
+def release_comparison_lock(comparison_file: Path | None = None, comparison_id: str | None = None):
+    cid = str(comparison_id or st.session_state.get("locked_comparison_id", "") or "").strip()
+    cfile = str(comparison_file or st.session_state.get("locked_comparison_file", "") or "").strip()
+    if not cid or not cfile:
+        st.session_state["locked_comparison_id"] = None
+        st.session_state["locked_comparison_file"] = None
+        return
+
+    lock_file_target = Path(cfile)
+    locks = load_comparison_locks(lock_file_target)
+    existing = locks.get(cid)
+    if existing and comparison_lock_owned_by_current_session(existing):
+        locks.pop(cid, None)
+        save_comparison_locks(lock_file_target, locks)
+
+    st.session_state["locked_comparison_id"] = None
+    st.session_state["locked_comparison_file"] = None
+
+
+def get_all_active_comparison_locks():
+    rows = []
+    for lock_file in sorted(COMPARISONS_DIR.glob("*__locks.json")):
+        try:
+            lock_map = json.loads(lock_file.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(lock_map, dict):
+            continue
+        changed = False
+        for comparison_id, lock_payload in list(lock_map.items()):
+            if _comparison_lock_is_stale(lock_payload):
+                lock_map.pop(comparison_id, None)
+                changed = True
+                continue
+            rows.append({
+                "Comparison ID": comparison_id,
+                "Comparison": lock_payload.get("comparison_name", ""),
+                "Locked By": lock_payload.get("owner_name") or lock_payload.get("owner_email", ""),
+                "Email": lock_payload.get("owner_email", ""),
+                "Locked At": lock_payload.get("locked_at", ""),
+                "Last Seen": lock_payload.get("last_seen", ""),
+                "Lock File": lock_file.name,
+            })
+        if changed:
+            lock_file.write_text(json.dumps(lock_map, ensure_ascii=False, indent=2), encoding="utf-8")
+    return rows
+
 
 
 # -------------------------------------------------
@@ -2590,6 +2751,7 @@ def restore_comparison_state_payload(payload: dict):
 
 
 def clear_current_comparison_state():
+    release_comparison_lock()
     keys_to_clear = [
         key for key in list(st.session_state.keys())
         if key.startswith("row_") or key.startswith("select_") or key.startswith("carry_forward_") or key.startswith("widget_row_")
@@ -2630,6 +2792,13 @@ def load_selected_comparison_record(selected_record):
     if not selected_record:
         return False, "Could not load comparison."
 
+    comparison_file = get_current_user_comparisons_file()
+    comparison_id = selected_record.get("id")
+    comparison_name = selected_record.get("name", "")
+    ok_lock, lock_msg = acquire_comparison_lock(comparison_file, comparison_id, comparison_name)
+    if not ok_lock:
+        return False, lock_msg
+
     state_payload = selected_record.get("state", {}) or {}
     st.session_state["active_loaded_state_payload"] = dict(state_payload)
     st.session_state["pending_load_payload"] = state_payload
@@ -2655,6 +2824,11 @@ def save_or_update_current_comparison(selected_codes):
     current_id = st.session_state.get("current_comparison_id")
 
     if current_id:
+        comparison_lock = get_comparison_lock_info(comparison_file, current_id)
+        if comparison_lock and not comparison_lock_owned_by_current_session(comparison_lock):
+            holder = comparison_lock.get("owner_name") or comparison_lock.get("owner_email") or "another user"
+            return False, f"This comparison is currently locked by {holder}."
+
         ok = update_comparison(
             comparison_file,
             comparison_id=current_id,
@@ -2719,6 +2893,7 @@ def save_current_comparison_from_state(force_new: bool = False, override_name: s
             state=payload_state,
         )
         if ok:
+            acquire_comparison_lock(comparison_file, current_id, comparison_name)
             st.session_state["pending_comparison_name_input"] = comparison_name
             st.session_state["active_comparison_label"] = comparison_name
             st.session_state["active_loaded_state_payload"] = dict(payload_state)
@@ -2738,6 +2913,7 @@ def save_current_comparison_from_state(force_new: bool = False, override_name: s
         source_files=payload_sources,
         state=payload_state,
     )
+    acquire_comparison_lock(comparison_file, comparison_id, comparison_name)
     st.session_state["current_comparison_id"] = comparison_id
     st.session_state["pending_comparison_name_input"] = comparison_name
     st.session_state["active_comparison_label"] = comparison_name
@@ -2857,6 +3033,7 @@ def execute_pending_leave_action():
     st.session_state["pending_save_as_exit_name"] = ""
 
     if action_type == "switch_view" and target_view:
+        release_comparison_lock()
         st.session_state["committed_view"] = target_view
         if target_view == "Comparisons":
             st.session_state["comparison_mode"] = "menu"
@@ -2867,11 +3044,14 @@ def execute_pending_leave_action():
             st.session_state["pending_inline_save_as_name"] = ""
             st.session_state["pending_save_as_exit_name"] = ""
     elif action_type == "logout":
+        release_comparison_lock()
         logout_current_user()
     elif action_type == "clear_comparison":
+        release_comparison_lock()
         st.session_state["show_new_comparison_confirm"] = False
         st.session_state["pending_clear_comparison"] = True
     elif action_type == "load_comparison" and payload:
+        release_comparison_lock()
         st.session_state["pending_load_payload"] = payload.get("state_payload")
         st.session_state["pending_loaded_comparison_id"] = payload.get("comparison_id")
         st.session_state["pending_loaded_comparison_name"] = payload.get("comparison_name", "")
@@ -5162,6 +5342,14 @@ def render_comparisons():
                             if source_line:
                                 st.caption("Source files: " + source_line)
 
+                            selected_lock = get_comparison_lock_info(comparison_file, selected_record.get("id"))
+                            if selected_lock:
+                                holder = selected_lock.get("owner_name") or selected_lock.get("owner_email") or "another user"
+                                if comparison_lock_owned_by_current_session(selected_lock):
+                                    st.info("🔒 This comparison is currently locked by you for editing.")
+                                else:
+                                    st.warning(f"🔒 Locked by {holder}")
+
                             load_c1, load_c2 = st.columns(2)
                             with load_c1:
                                 if st.button("Load Selected", use_container_width=True, key="load_selected_comparison_btn_popover"):
@@ -5201,21 +5389,39 @@ def render_comparisons():
 
                             with load_c2:
                                 if st.button("🗑️ Delete", use_container_width=True, key="delete_selected_comparison_btn_popover"):
-                                    ok = delete_comparison(comparison_file, selected_record.get("id"))
-                                    if ok:
-                                        if st.session_state.get("current_comparison_id") == selected_record.get("id"):
-                                            st.session_state["current_comparison_id"] = None
-                                        st.success("Comparison deleted successfully.")
-                                        st.rerun()
+                                    delete_lock = get_comparison_lock_info(comparison_file, selected_record.get("id"))
+                                    if delete_lock and not comparison_lock_owned_by_current_session(delete_lock):
+                                        holder = delete_lock.get("owner_name") or delete_lock.get("owner_email") or "another user"
+                                        st.warning(f"Cannot delete while locked by {holder}.")
                                     else:
-                                        st.warning("Could not delete comparison.")
+                                        ok = delete_comparison(comparison_file, selected_record.get("id"))
+                                        release_comparison_lock(comparison_file, selected_record.get("id"))
+                                        if ok:
+                                            if st.session_state.get("current_comparison_id") == selected_record.get("id"):
+                                                st.session_state["current_comparison_id"] = None
+                                            st.success("Comparison deleted successfully.")
+                                            st.rerun()
+                                        else:
+                                            st.warning("Could not delete comparison.")
 
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
+    touch_current_comparison_lock()
+
     current_name = st.session_state.get("comparison_name_input", "").strip()
     if current_name:
         st.info(f"📊 Working on: {current_name}")
+
+    current_lock_id = st.session_state.get("current_comparison_id")
+    if current_lock_id:
+        current_lock = get_comparison_lock_info(get_current_user_comparisons_file(), current_lock_id)
+        if current_lock:
+            holder = current_lock.get("owner_name") or current_lock.get("owner_email") or "another user"
+            if comparison_lock_owned_by_current_session(current_lock):
+                st.caption("🔒 Editing lock active for this comparison.")
+            else:
+                st.warning(f"🔒 This comparison is currently locked by {holder}.")
 
     loaded_msg = st.session_state.get("comparison_loaded_success_message", "")
     if loaded_msg:
@@ -5797,6 +6003,13 @@ def render_admin_panel():
     st.markdown('<div class="app-card">', unsafe_allow_html=True)
     st.markdown("## 8. Admin Panel")
 
+    active_lock_rows = get_all_active_comparison_locks()
+    if active_lock_rows:
+        st.markdown("### Active Comparison Locks")
+        st.dataframe(pd.DataFrame(active_lock_rows), use_container_width=True)
+    else:
+        st.caption("No active comparison locks.")
+
     users_registry = load_users_registry()
     if users_registry:
         users_for_view = []
@@ -5994,6 +6207,7 @@ def render_admin_panel():
                 "Seats": format_company_seats(company),
                 "Max Seats": company.get("max_seats", 0),
                 "Owner Email": company.get("owner_email", ""),
+                "Shared Workspace": company.get("shared_workspace_enabled", False),
                 "Active": company.get("is_active", True),
                 "Trial End": company.get("trial_end", ""),
             }
@@ -6049,6 +6263,12 @@ def render_admin_panel():
         value=True,
         key="company_active_input",
     )
+    company_shared_workspace_input = st.checkbox(
+        "Enable Shared Company Workspace",
+        value=False,
+        key="company_shared_workspace_input",
+        help="When enabled, users of this company share the same saved Comparisons.",
+    )
 
     ccu1, ccu2 = st.columns(2)
 
@@ -6073,6 +6293,7 @@ def render_admin_panel():
                     company_active_input,
                     "trialing",
                     company_owner_email,
+                    company_shared_workspace_input,
                 )
                 st.success(f"Company workspace saved: {company_name_input}")
                 st.rerun()
