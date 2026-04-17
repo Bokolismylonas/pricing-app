@@ -2026,6 +2026,152 @@ def get_all_active_comparison_locks():
 
 
 # -------------------------------------------------
+# MATERIAL EQUIVALENCE LAYER
+# -------------------------------------------------
+EQUIV_FILE = ADMIN_DIR / "material_equivalences.json"
+
+def _load_equivalences():
+    if not EQUIV_FILE.exists():
+        return {"compiled": {}}
+    try:
+        data = json.loads(EQUIV_FILE.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            data.setdefault("compiled", {})
+            return data
+    except Exception:
+        pass
+    return {"compiled": {}}
+
+def _save_equivalences(data):
+    EQUIV_FILE.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+def _record_equivalence_pair(compiled: dict, source_product: str, target_company: str, target_product: str):
+    if not _products_are_compatible(source_product, target_product):
+        return
+
+    company_key = str(target_company or "").strip().upper()
+    source_keys = _core_history_keys_for_product(source_product)
+    target_keys = _core_history_keys_for_product(target_product)
+
+    source_core = _normalize_match_text(_extract_core_product_name(source_product))
+    target_core = _normalize_match_text(_extract_core_product_name(target_product))
+    if source_core:
+        source_keys.extend(_core_variant_keys(source_core))
+    if target_core:
+        target_keys.extend(_core_variant_keys(target_core))
+
+    source_seen = []
+    for s in source_keys:
+        s = _normalize_match_text(s)
+        if s and s not in source_seen:
+            source_seen.append(s)
+
+    target_seen = []
+    for t in target_keys:
+        t = _normalize_match_text(t)
+        if t and t not in target_seen:
+            target_seen.append(t)
+
+    for s_key in source_seen:
+        bucket = compiled.setdefault(s_key, {}).setdefault(company_key, {})
+        for t_key in target_seen:
+            bucket[t_key] = int(bucket.get(t_key, 0)) + 1
+
+def rebuild_material_equivalences_from_saved_comparisons():
+    equivalences = {"compiled": {}}
+    compiled = equivalences["compiled"]
+
+    display_to_code = {
+        f"{row['name']} ({row['code']})": row["code"]
+        for _, row in companies_df.iterrows()
+    }
+
+    for comparison_file in sorted(COMPARISONS_DIR.glob("*.json")):
+        try:
+            records = list_comparisons(comparison_file)
+        except Exception:
+            continue
+
+        for record in records:
+            state = record.get("state", {}) or {}
+            row_ids = state.get("row_ids", []) or []
+            if not isinstance(row_ids, list) or not row_ids:
+                continue
+
+            selected_codes = []
+            for display in state.get("comparison_company_selection", []) or []:
+                if display in display_to_code:
+                    selected_codes.append(display_to_code[display])
+
+            if len(selected_codes) < 2:
+                continue
+
+            for row_id in row_ids:
+                row_products = []
+                for code in selected_codes:
+                    display_value = str(state.get(f"row_{row_id}_{code}_product", "") or "").strip()
+                    if display_value:
+                        row_products.append((code, display_value.split("| SAP")[0].strip()))
+
+                if len(row_products) < 2:
+                    continue
+
+                for source_code, source_product in row_products:
+                    for target_code, target_product in row_products:
+                        if source_code == target_code:
+                            continue
+                        _record_equivalence_pair(
+                            compiled,
+                            source_product,
+                            target_code,
+                            target_product,
+                        )
+
+    _save_equivalences(equivalences)
+    st.session_state["_equivalence_cache_ready"] = True
+
+def _equivalence_hits_for_candidate(source_product: str, target_company: str, target_product: str) -> int:
+    data = _load_equivalences()
+    compiled = data.get("compiled", {})
+
+    source_keys = _core_history_keys_for_product(source_product)
+    target_keys = _core_history_keys_for_product(target_product)
+
+    source_core = _normalize_match_text(_extract_core_product_name(source_product))
+    target_core = _normalize_match_text(_extract_core_product_name(target_product))
+    if source_core:
+        source_keys.extend(_core_variant_keys(source_core))
+    if target_core:
+        target_keys.extend(_core_variant_keys(target_core))
+
+    company_key = str(target_company or "").strip().upper()
+    best_hits = 0
+
+    seen_source = []
+    for s in source_keys:
+        s = _normalize_match_text(s)
+        if s and s not in seen_source:
+            seen_source.append(s)
+
+    seen_target = []
+    for t in target_keys:
+        t = _normalize_match_text(t)
+        if t and t not in seen_target:
+            seen_target.append(t)
+
+    for s_key in seen_source:
+        company_bucket = compiled.get(s_key, {}).get(company_key, {})
+        if not isinstance(company_bucket, dict):
+            continue
+        for t_key in seen_target:
+            best_hits = max(best_hits, int(company_bucket.get(t_key, 0)))
+
+    return best_hits
+
+# -------------------------------------------------
 # SMART PRODUCT MATCHING (BETA)
 # -------------------------------------------------
 MATCH_HISTORY_FILE = ADMIN_DIR / "match_history.json"
@@ -2378,6 +2524,9 @@ def _backfill_match_history_from_saved_comparisons():
     if touched:
         _save_match_history(history)
 
+    if not st.session_state.get("_equivalence_cache_ready", False) or not EQUIV_FILE.exists():
+        rebuild_material_equivalences_from_saved_comparisons()
+
     st.session_state["_smart_match_backfill_done"] = True
 
 def rebuild_match_history_from_scratch():
@@ -2432,6 +2581,7 @@ def rebuild_match_history_from_scratch():
                         )
 
     _save_match_history(history)
+    rebuild_material_equivalences_from_saved_comparisons()
     st.session_state["_smart_match_backfill_done"] = True
 
 
@@ -2491,13 +2641,19 @@ def _score_product_match_history_aware(user_email: str, source_row: dict, target
             target_company=target_company,
             target_product=product_b,
         )
+        equivalence_hits = _equivalence_hits_for_candidate(
+            source_product=product_a,
+            target_company=target_company,
+            target_product=product_b,
+        )
     else:
-        personal_hits, global_hits, learned_core_hits = 0, 0, 0
+        personal_hits, global_hits, learned_core_hits, equivalence_hits = 0, 0, 0, 0
 
     # HISTORY FIRST, but still combined with names + characteristics
     personal_history_score = min(personal_hits * 30.0, 60.0)
     global_history_score = min(global_hits * 15.0, 50.0)
     learned_core_score = min(learned_core_hits * 18.0, 55.0)
+    equivalence_score = min(equivalence_hits * 35.0, 140.0)
 
     full_name_score = _text_similarity(product_a, product_b) * 6.0
     core_name_score = _text_similarity(_extract_core_product_name(product_a), _extract_core_product_name(product_b)) * 14.0
@@ -2570,7 +2726,8 @@ def _score_product_match_history_aware(user_email: str, source_row: dict, target
             learned_core_score *= 0.2
 
     score = (
-        personal_history_score
+        equivalence_score
+        + personal_history_score
         + global_history_score
         + learned_core_score
         + name_score
@@ -6990,14 +7147,19 @@ def render_admin_panel():
         st.caption("No active comparison locks.")
 
     st.markdown("### 🧠 Smart Matching")
-    smart_c1, smart_c2 = st.columns([1, 3])
+    smart_c1, smart_c2, smart_c3 = st.columns([1, 1, 2])
     with smart_c1:
         if st.button("Rebuild Smart Matching History", use_container_width=True, key="admin_rebuild_smart_matching_history"):
             with st.spinner("Rebuilding history from saved comparisons..."):
                 rebuild_match_history_from_scratch()
             st.success("Smart Matching history rebuilt successfully.")
     with smart_c2:
-        st.caption("History is built only from saved comparisons, not from temporary live selections.")
+        if st.button("Rebuild Material Equivalences", use_container_width=True, key="admin_rebuild_material_equivalences"):
+            with st.spinner("Rebuilding equivalence memory from saved comparisons..."):
+                rebuild_material_equivalences_from_saved_comparisons()
+            st.success("Material equivalence memory rebuilt successfully.")
+    with smart_c3:
+        st.caption("History and equivalence memory are built only from saved comparisons, not from temporary live selections.")
 
     st.markdown("### 📁 Source Files Per User")
 
