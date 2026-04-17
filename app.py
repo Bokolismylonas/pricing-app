@@ -997,6 +997,7 @@ def save_companies_registry(data):
 # -------------------------------------------------
 TRIAL_DAYS = 2
 MAX_ACTIVE_SESSIONS = 2
+STALE_SESSION_TIMEOUT_HOURS = 12
 
 
 def get_stripe_subscription_row(email: str):
@@ -1369,13 +1370,30 @@ def get_current_session_id():
     return st.session_state["app_session_id"]
 
 
+def cleanup_stale_active_sessions(sessions):
+    cleaned = []
+    now_dt = now_utc()
+
+    for s in sessions or []:
+        last_seen_raw = s.get("last_seen")
+        last_seen_dt = parse_iso(last_seen_raw)
+
+        if last_seen_dt is None:
+            continue
+
+        if now_dt - last_seen_dt < timedelta(hours=STALE_SESSION_TIMEOUT_HOURS):
+            cleaned.append(s)
+
+    return cleaned
+
+
 def register_current_session():
     idx, row, users = get_current_user_registry_row()
     if row is None:
         return True, 0
 
     current_session_id = get_current_session_id()
-    sessions = row.get("active_sessions", [])
+    sessions = cleanup_stale_active_sessions(row.get("active_sessions", []))
     allowed_sessions = get_user_max_active_sessions(row)
 
     for s in sessions:
@@ -1386,6 +1404,8 @@ def register_current_session():
             return True, len(sessions)
 
     if len(sessions) >= allowed_sessions:
+        users[idx]["active_sessions"] = sessions
+        save_users_registry(users)
         return False, len(sessions)
 
     sessions.append({"session_id": current_session_id, "last_seen": now_iso()})
@@ -1417,13 +1437,16 @@ def touch_current_session():
     if row is None:
         return
     current_session_id = get_current_session_id()
-    sessions = row.get("active_sessions", [])
-    changed = False
+    original_sessions = row.get("active_sessions", [])
+    sessions = cleanup_stale_active_sessions(original_sessions)
+    changed = len(sessions) != len(original_sessions)
+
     for s in sessions:
         if s.get("session_id") == current_session_id:
             s["last_seen"] = now_iso()
             changed = True
             break
+
     if changed:
         users[idx]["active_sessions"] = sessions
         save_users_registry(users)
