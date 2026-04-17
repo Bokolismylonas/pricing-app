@@ -734,6 +734,12 @@ def parse_iso(value):
         return None
 
 
+
+def short_session_id(sid):
+    try:
+        return str(sid)[:6]
+    except:
+        return "-"
 def format_duration_from_iso(iso_str):
     dt = parse_iso(iso_str)
     if dt is None:
@@ -750,10 +756,12 @@ def format_duration_from_iso(iso_str):
 def summarize_active_sessions(sessions):
     items = []
     for idx, s in enumerate(sessions or [], start=1):
+        sid = short_session_id(s.get("session_id"))
         items.append(
-            f"S{idx}: {format_duration_from_iso(s.get('started_at', ''))} / {format_duration_from_iso(s.get('last_seen', ''))} ago"
+            f"S{idx} ({sid}): {format_duration_from_iso(s.get('started_at', ''))} / {format_duration_from_iso(s.get('last_seen', ''))} ago"
         )
     return " | ".join(items)
+
 
 
 def get_comparison_state_signature():
@@ -3794,7 +3802,7 @@ with st.sidebar:
         remaining_sessions = max(0, allowed_sessions_count - active_sessions_count)
         st.warning("⚠️ Please logout before closing the app to free your session.")
         st.caption(
-            f"Active sessions: {active_sessions_count}/{allowed_sessions_count} • Remaining available: {remaining_sessions}"
+            f"You already have an active session on another device.\nActive sessions: {active_sessions_count}/{allowed_sessions_count} • Remaining available: {remaining_sessions}"
         )
 
 
