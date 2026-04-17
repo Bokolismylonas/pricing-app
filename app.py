@@ -1423,6 +1423,7 @@ def register_current_session():
         return True, 0
 
     current_session_id = get_current_session_id()
+    force_replace = st.session_state.get("force_replace_session", False)
     sessions = cleanup_stale_active_sessions(row.get("active_sessions", []))
     allowed_sessions = get_user_max_active_sessions(row)
 
@@ -1432,6 +1433,17 @@ def register_current_session():
             users[idx]["active_sessions"] = sessions
             save_users_registry(users)
             return True, len(sessions)
+
+    if force_replace:
+        sessions = [{
+            "session_id": current_session_id,
+            "last_seen": now_iso(),
+            "started_at": now_iso(),
+        }]
+        users[idx]["active_sessions"] = sessions
+        save_users_registry(users)
+        st.session_state["force_replace_session"] = False
+        return True, 1
 
     if len(sessions) >= allowed_sessions:
         users[idx]["active_sessions"] = sessions
