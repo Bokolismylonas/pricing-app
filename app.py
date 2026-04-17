@@ -2056,22 +2056,24 @@ def _extract_match_dimensions(text):
     except Exception:
         return None
 
-def _strip_board_dimensions_tail(text):
+def _strip_dimension_tails(text):
     text = str(text or "").strip()
-    text = re.sub(r"\b\d{3,4}\s*[x×]\s*\d{3,4}\s*mm\b", " ", text, flags=re.IGNORECASE)
-    text = re.sub(r"\b\d{3,4}\s*[x×]\s*\d{3,4}\b", " ", text, flags=re.IGNORECASE)
+    text = text.replace(",", ".")
+    text = re.sub(r"\b\d{2,4}\s*[x×]\s*\d{2,4}(?:\s*[x×]\s*\d{2,4})?\s*mm\b", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b\d{2,4}\s*[x×]\s*\d{2,4}(?:\s*[x×]\s*\d{2,4})?\b", " ", text, flags=re.IGNORECASE)
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
-def _extract_board_core_name(text):
-    text = _strip_board_dimensions_tail(text)
-    text = re.sub(r"\b(?:mm|m2|m²)\b", " ", text, flags=re.IGNORECASE)
+def _extract_core_product_name(text):
+    text = str(text or "").replace(",", ".")
+    text = _strip_dimension_tails(text)
+    text = re.sub(r"\b(?:mm|m2|m²|kg|gr|g|lt|l|ml|cm|tmx|τεμ|τεμ\.|pcs|pc)\b", " ", text, flags=re.IGNORECASE)
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
 def _core_history_keys_for_product(product_text):
     full_key = _normalize_match_text(product_text)
-    core_key = _normalize_match_text(_extract_board_core_name(product_text))
+    core_key = _normalize_match_text(_extract_core_product_name(product_text))
     keys = []
     if full_key:
         keys.append(full_key)
@@ -2109,21 +2111,35 @@ def _history_hits_for_candidate(history, user_email, source_product, target_comp
 
     return personal_hits, global_hits
 
+def _learned_core_hits_for_candidate(history, source_product, target_company, target_product):
+    source_core = _normalize_match_text(_extract_core_product_name(source_product))
+    target_core = _normalize_match_text(_extract_core_product_name(target_product))
+    if not source_core or not target_core:
+        return 0
+
+    return int(
+        history.get("learned_core", {})
+        .get(source_core, {})
+        .get(str(target_company or "").strip().upper(), {})
+        .get(target_core, 0)
+    )
+
 def _text_similarity(a, b):
     return SequenceMatcher(None, _normalize_match_text(a), _normalize_match_text(b)).ratio()
 
 def _load_match_history():
     if not MATCH_HISTORY_FILE.exists():
-        return {"personal": {}, "global": {}}
+        return {"personal": {}, "global": {}, "learned_core": {}}
     try:
         data = json.loads(MATCH_HISTORY_FILE.read_text(encoding="utf-8"))
         if isinstance(data, dict):
             data.setdefault("personal", {})
             data.setdefault("global", {})
+            data.setdefault("learned_core", {})
             return data
     except Exception:
         pass
-    return {"personal": {}, "global": {}}
+    return {"personal": {}, "global": {}, "learned_core": {}}
 
 def _save_match_history(data):
     MATCH_HISTORY_FILE.write_text(
@@ -2133,27 +2149,40 @@ def _save_match_history(data):
 
 def _record_match_pair_to_history(history: dict, user_email: str, source_product: str, target_company: str, target_product: str):
     user_email = str(user_email or "").strip().lower()
-    source_key = _normalize_match_text(source_product)
-    target_key = _normalize_match_text(target_product)
     target_company = str(target_company or "").strip().upper()
 
-    if not user_email or not source_key or not target_key or not target_company:
+    source_keys = _core_history_keys_for_product(source_product)
+    target_keys = _core_history_keys_for_product(target_product)
+
+    if not user_email or not source_keys or not target_keys or not target_company:
         return
 
-    personal_targets = (
-        history.setdefault("personal", {})
-        .setdefault(user_email, {})
-        .setdefault(source_key, {})
-        .setdefault(target_company, {})
-    )
-    personal_targets[target_key] = int(personal_targets.get(target_key, 0)) + 1
+    for source_key in source_keys:
+        personal_targets = (
+            history.setdefault("personal", {})
+            .setdefault(user_email, {})
+            .setdefault(source_key, {})
+            .setdefault(target_company, {})
+        )
+        global_targets = (
+            history.setdefault("global", {})
+            .setdefault(source_key, {})
+            .setdefault(target_company, {})
+        )
 
-    global_targets = (
-        history.setdefault("global", {})
-        .setdefault(source_key, {})
-        .setdefault(target_company, {})
-    )
-    global_targets[target_key] = int(global_targets.get(target_key, 0)) + 1
+        for target_key in target_keys:
+            personal_targets[target_key] = int(personal_targets.get(target_key, 0)) + 1
+            global_targets[target_key] = int(global_targets.get(target_key, 0)) + 1
+
+    source_core = _normalize_match_text(_extract_core_product_name(source_product))
+    target_core = _normalize_match_text(_extract_core_product_name(target_product))
+    if source_core and target_core:
+        learned_targets = (
+            history.setdefault("learned_core", {})
+            .setdefault(source_core, {})
+            .setdefault(target_company, {})
+        )
+        learned_targets[target_core] = int(learned_targets.get(target_core, 0)) + 1
 
 def _backfill_match_history_from_saved_comparisons():
     if st.session_state.get("_smart_match_backfill_done", False):
@@ -2211,7 +2240,7 @@ def _backfill_match_history_from_saved_comparisons():
     st.session_state["_smart_match_backfill_done"] = True
 
 def rebuild_match_history_from_scratch():
-    history = {"personal": {}, "global": {}}
+    history = {"personal": {}, "global": {}, "learned_core": {}}
     display_to_code = {
         f"{row['name']} ({row['code']})": row["code"]
         for _, row in companies_df.iterrows()
@@ -2276,19 +2305,20 @@ def _score_product_match_history_aware(user_email: str, source_row: dict, target
         target_company=target_company,
         target_product=product_b,
     )
+    learned_core_hits = _learned_core_hits_for_candidate(
+        history=history,
+        source_product=product_a,
+        target_company=target_company,
+        target_product=product_b,
+    )
 
-    # HISTORY FIRST
+    # HISTORY FIRST, but still combined with names + characteristics
     personal_history_score = min(personal_hits * 30.0, 60.0)
     global_history_score = min(global_hits * 15.0, 50.0)
-
-    # Detect gypsum/plasterboards so core name + thickness dominate, not sheet dimensions
-    gypsum_context = f"{category_a} {category_b} {product_a} {product_b}".lower()
-    is_gypsum_board = any(token in gypsum_context for token in [
-        "gypsum", "plasterboard", "drywall", "board", "γυψο", "γυψοσαν"
-    ])
+    learned_core_score = min(learned_core_hits * 18.0, 55.0)
 
     full_name_score = _text_similarity(product_a, product_b) * 6.0
-    core_name_score = _text_similarity(_extract_board_core_name(product_a), _extract_board_core_name(product_b)) * 10.0
+    core_name_score = _text_similarity(_extract_core_product_name(product_a), _extract_core_product_name(product_b)) * 14.0
     name_score = full_name_score + core_name_score
 
     dim_score = 0.0
@@ -2296,9 +2326,9 @@ def _score_product_match_history_aware(user_email: str, source_row: dict, target
     dim_b = _extract_match_dimensions(product_b)
     if dim_a and dim_b:
         if dim_a == dim_b:
-            dim_score += 8.0
+            dim_score += 6.0
         elif sorted(dim_a) == sorted(dim_b):
-            dim_score += 4.0
+            dim_score += 3.0
 
     thickness_score = 0.0
     thick_a = _extract_match_mm(product_a + " " + mm_a)
@@ -2318,20 +2348,30 @@ def _score_product_match_history_aware(user_email: str, source_row: dict, target
         if str(mm_a).strip().lower() == str(mm_b).strip().lower():
             mm_score += 3.0
 
-    # Package is intentionally last priority
+    # Package remains very low priority
     package_score = _text_similarity(package_a, package_b) * 1.5
 
+    # General rule: dimensions and packaging are weak signals, core name is stronger.
+    dim_score *= 0.35
+    package_score *= 0.8
+
+    # Special strengthening for gypsum/plasterboards
+    product_context = f"{category_a} {category_b} {product_a} {product_b}".lower()
+    is_gypsum_board = any(token in product_context for token in [
+        "gypsum", "plasterboard", "drywall", "board", "γυψο", "γυψοσαν"
+    ])
     if is_gypsum_board:
-        # For boards, dimensions matter very little. Core name + thickness matter much more.
-        dim_score *= 0.08
-        thickness_score *= 2.2
+        dim_score *= 0.15
+        thickness_score *= 2.4
         category_score *= 1.4
-        core_name_score *= 2.0
+        full_name_score *= 0.6
+        core_name_score *= 2.4
         name_score = full_name_score + core_name_score
 
     score = (
         personal_history_score
         + global_history_score
+        + learned_core_score
         + name_score
         + dim_score
         + thickness_score
