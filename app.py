@@ -734,6 +734,28 @@ def parse_iso(value):
         return None
 
 
+def format_duration_from_iso(iso_str):
+    dt = parse_iso(iso_str)
+    if dt is None:
+        return "-"
+    delta = now_utc() - dt
+    total_seconds = int(max(0, delta.total_seconds()))
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    if hours > 0:
+        return f"{hours}h {minutes}m"
+    return f"{minutes}m"
+
+
+def summarize_active_sessions(sessions):
+    items = []
+    for idx, s in enumerate(sessions or [], start=1):
+        items.append(
+            f"S{idx}: {format_duration_from_iso(s.get('started_at', ''))} / {format_duration_from_iso(s.get('last_seen', ''))} ago"
+        )
+    return " | ".join(items)
+
+
 def get_comparison_state_signature():
     relevant = {}
     prefixes = ("row_", "select_", "carry_forward_")
@@ -1408,7 +1430,7 @@ def register_current_session():
         save_users_registry(users)
         return False, len(sessions)
 
-    sessions.append({"session_id": current_session_id, "last_seen": now_iso()})
+    sessions.append({"session_id": current_session_id, "last_seen": now_iso(), "started_at": now_iso()})
     users[idx]["active_sessions"] = sessions
     save_users_registry(users)
     return True, len(sessions)
@@ -1423,6 +1445,20 @@ def unregister_current_session():
     sessions = [s for s in sessions if s.get("session_id") != current_session_id]
     users[idx]["active_sessions"] = sessions
     save_users_registry(users)
+
+
+def replace_with_current_session_only():
+    idx, row, users = get_current_user_registry_row()
+    if row is None:
+        return False
+    current_session_id = get_current_session_id()
+    users[idx]["active_sessions"] = [{
+        "session_id": current_session_id,
+        "last_seen": now_iso(),
+        "started_at": now_iso(),
+    }]
+    save_users_registry(users)
+    return True
 
 
 def touch_current_user():
@@ -6199,7 +6235,8 @@ def render_admin_panel():
                     "Company": row.get("company_name", "") or "",
                     "Role": row.get("role", "member"),
                     "Active Sessions": f"{sessions_count}/{get_user_max_active_sessions(row)}",
-                    "Max Sessions": get_user_max_active_sessions(row),
+                    "Session Details": summarize_active_sessions(row.get("active_sessions", [])),
+                        "Max Sessions": get_user_max_active_sessions(row),
                     "First Seen": row.get("first_seen", ""),
                     "Last Login": row.get("last_login", ""),
                     "Last Seen": row.get("last_seen", ""),
