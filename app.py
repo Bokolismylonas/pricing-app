@@ -2081,6 +2081,33 @@ def _core_history_keys_for_product(product_text):
         keys.append(core_key)
     return keys
 
+def _core_variant_keys(core_text: str):
+    core_text = _normalize_match_text(core_text)
+    if not core_text:
+        return []
+    parts = core_text.split()
+    variants = [core_text]
+
+    # prefix variants to let "nida flam plus" inherit from "nida flam"
+    if len(parts) >= 2:
+        variants.append(" ".join(parts[:2]))
+    if len(parts) >= 3:
+        variants.append(" ".join(parts[:3]))
+
+    # remove common commercial suffixes
+    removable = {"plus", "pro", "ultra", "max", "smart", "expert", "premium", "basic"}
+    trimmed_parts = list(parts)
+    while len(trimmed_parts) > 1 and trimmed_parts[-1] in removable:
+        trimmed_parts = trimmed_parts[:-1]
+        variants.append(" ".join(trimmed_parts))
+
+    out = []
+    for v in variants:
+        v = _normalize_match_text(v)
+        if v and v not in out:
+            out.append(v)
+    return out
+
 def _history_hits_for_candidate(history, user_email, source_product, target_company, target_product):
     source_keys = _core_history_keys_for_product(source_product)
     target_keys = _core_history_keys_for_product(target_product)
@@ -2117,12 +2144,24 @@ def _learned_core_hits_for_candidate(history, source_product, target_company, ta
     if not source_core or not target_core:
         return 0
 
-    return int(
-        history.get("learned_core", {})
-        .get(source_core, {})
-        .get(str(target_company or "").strip().upper(), {})
-        .get(target_core, 0)
-    )
+    company_key = str(target_company or "").strip().upper()
+    best_hits = 0
+    source_variants = _core_variant_keys(source_core)
+    target_variants = _core_variant_keys(target_core)
+
+    for s_var in source_variants:
+        for t_var in target_variants:
+            best_hits = max(
+                best_hits,
+                int(
+                    history.get("learned_core", {})
+                    .get(s_var, {})
+                    .get(company_key, {})
+                    .get(t_var, 0)
+                ),
+            )
+
+    return best_hits
 
 def _text_similarity(a, b):
     return SequenceMatcher(None, _normalize_match_text(a), _normalize_match_text(b)).ratio()
@@ -2177,12 +2216,14 @@ def _record_match_pair_to_history(history: dict, user_email: str, source_product
     source_core = _normalize_match_text(_extract_core_product_name(source_product))
     target_core = _normalize_match_text(_extract_core_product_name(target_product))
     if source_core and target_core:
-        learned_targets = (
-            history.setdefault("learned_core", {})
-            .setdefault(source_core, {})
-            .setdefault(target_company, {})
-        )
-        learned_targets[target_core] = int(learned_targets.get(target_core, 0)) + 1
+        for s_var in _core_variant_keys(source_core):
+            learned_targets = (
+                history.setdefault("learned_core", {})
+                .setdefault(s_var, {})
+                .setdefault(target_company, {})
+            )
+            for t_var in _core_variant_keys(target_core):
+                learned_targets[t_var] = int(learned_targets.get(t_var, 0)) + 1
 
 def _backfill_match_history_from_saved_comparisons():
     if st.session_state.get("_smart_match_backfill_done", False):
