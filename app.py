@@ -2307,11 +2307,15 @@ def _apply_smart_product_suggestions_for_row(row_id: int, selected_codes: list, 
 
     for target_code in selected_codes[1:]:
         note_key = f"{row_id}|{target_code}"
+        previous_note = suggestion_notes.get(note_key, "")
+        previous_suggested_display = suggestion_targets.get(note_key, "")
+
         suggestion_notes.pop(note_key, None)
         score_notes.pop(note_key, None)
         suggestion_targets.pop(note_key, None)
 
         target_key = f"row_{row_id}_{target_code}_product"
+        widget_key = get_product_widget_key(row_id, target_code)
         existing_target = str(st.session_state.get(target_key, "") or "").strip()
 
         best_row, best_score = _generate_smart_product_suggestion(
@@ -2328,9 +2332,19 @@ def _apply_smart_product_suggestions_for_row(row_id: int, selected_codes: list, 
         if not suggested_display:
             continue
 
-        if not existing_target:
+        # If current target is empty OR it still holds the previous auto-suggested value,
+        # replace it immediately with the new fresh suggestion.
+        should_replace_existing = (
+            not existing_target
+            or (
+                previous_suggested_display
+                and existing_target == previous_suggested_display
+                and previous_note in ("Suggested", "Better match available")
+            )
+        )
+
+        if should_replace_existing:
             st.session_state[target_key] = suggested_display
-            widget_key = get_product_widget_key(row_id, target_code)
             st.session_state[widget_key] = suggested_display
             suggestion_notes[note_key] = "Suggested"
             score_notes[note_key] = best_score
