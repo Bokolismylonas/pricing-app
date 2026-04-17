@@ -2402,7 +2402,8 @@ def _score_product_match_history_aware(user_email: str, source_row: dict, target
         "gypsum", "plasterboard", "drywall", "board", "γυψο", "γυψοσαν"
     ])
     if is_gypsum_board:
-        dim_score *= 0.15
+        # For gypsum boards, sheet dimensions should not affect matching.
+        dim_score = 0.0
         thickness_score *= 2.4
         category_score *= 1.4
         full_name_score *= 0.6
