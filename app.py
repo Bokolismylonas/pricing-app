@@ -2157,6 +2157,54 @@ def _backfill_match_history_from_saved_comparisons():
 
     st.session_state["_smart_match_backfill_done"] = True
 
+def rebuild_match_history_from_scratch():
+    history = {"personal": {}, "global": {}}
+    display_to_code = {
+        f"{row['name']} ({row['code']})": row["code"]
+        for _, row in companies_df.iterrows()
+    }
+
+    for comparison_file in sorted(COMPARISONS_DIR.glob("*.json")):
+        try:
+            records = list_comparisons(comparison_file)
+        except Exception:
+            continue
+
+        for record in records:
+            state = record.get("state", {}) or {}
+            row_ids = state.get("row_ids", []) or []
+            if not isinstance(row_ids, list) or not row_ids:
+                continue
+
+            selected_codes = []
+            for display in state.get("comparison_company_selection", []) or []:
+                if display in display_to_code:
+                    selected_codes.append(display_to_code[display])
+
+            if len(selected_codes) < 2:
+                continue
+
+            source_code = selected_codes[0]
+            owner_email = str(record.get("owner_email", "") or "").strip().lower() or get_current_user_email()
+
+            for row_id in row_ids:
+                source_display = str(state.get(f"row_{row_id}_{source_code}_product", "") or "").strip()
+                if not source_display:
+                    continue
+
+                source_product = source_display.split("| SAP")[0].strip()
+
+                for target_code in selected_codes[1:]:
+                    target_display = str(state.get(f"row_{row_id}_{target_code}_product", "") or "").strip()
+                    if not target_display:
+                        continue
+
+                    target_product = target_display.split("| SAP")[0].strip()
+                    _record_match_pair_to_history(history, owner_email, source_product, target_code, target_product)
+
+    _save_match_history(history)
+    st.session_state["_smart_match_backfill_done"] = True
+
 def _score_product_match_history_aware(user_email: str, source_row: dict, target_row: dict, target_company: str) -> float:
     product_a = str(source_row.get("Product", "") or "")
     product_b = str(target_row.get("Product", "") or "")
@@ -2188,6 +2236,12 @@ def _score_product_match_history_aware(user_email: str, source_row: dict, target
     # HISTORY FIRST
     personal_history_score = min(personal_hits * 30.0, 60.0)
     global_history_score = min(global_hits * 15.0, 50.0)
+
+    # Detect gypsum/plasterboards so type + thickness dominate, not sheet dimensions
+    gypsum_context = f"{category_a} {category_b} {product_a} {product_b}".lower()
+    is_gypsum_board = any(token in gypsum_context for token in [
+        "gypsum", "plasterboard", "drywall", "board", "γυψο", "γυψοσαν"
+    ])
 
     # Product signals stay secondary
     name_score = _text_similarity(product_a, product_b) * 10.0
@@ -2221,6 +2275,13 @@ def _score_product_match_history_aware(user_email: str, source_row: dict, target
 
     # Package is intentionally last priority
     package_score = _text_similarity(package_a, package_b) * 1.5
+
+    if is_gypsum_board:
+        # For gypsum boards, sheet dimensions should matter much less than thickness/type
+        dim_score *= 0.2
+        thickness_score *= 1.8
+        category_score *= 1.5
+        name_score *= 1.1
 
     score = (
         personal_history_score
@@ -2359,16 +2420,6 @@ def _apply_smart_product_suggestions_for_row(row_id: int, selected_codes: list, 
                 score_notes[note_key] = best_score
                 suggestion_targets[note_key] = suggested_display
 
-        final_target = str(st.session_state.get(target_key, "") or "").strip()
-        if final_target:
-            target_row = get_catalog_row(catalogs.get(target_code), final_target)
-            if target_row is not None:
-                _record_match_history_once_per_session(
-                    user_email=user_email,
-                    source_product=str(source_row.get("Product", "") or ""),
-                    target_company=target_code,
-                    target_product=str(target_row.get("Product", "") or ""),
-                )
 
 # -------------------------------------------------
 # SAFE COMPANIES LOADING
@@ -3466,6 +3517,7 @@ def save_current_comparison_from_state(force_new: bool = False, override_name: s
             st.session_state["comparison_dirty"] = False
             st.session_state["comparison_user_modified"] = False
             st.session_state["comparison_clean_generation"] = st.session_state.get("comparison_edit_generation", 0)
+            rebuild_match_history_from_scratch()
             return True, "Comparison updated successfully."
         return False, "This comparison no longer exists. Save it again as new."
 
@@ -3487,6 +3539,7 @@ def save_current_comparison_from_state(force_new: bool = False, override_name: s
     st.session_state["comparison_dirty"] = False
     st.session_state["comparison_user_modified"] = False
     st.session_state["comparison_clean_generation"] = st.session_state.get("comparison_edit_generation", 0)
+    rebuild_match_history_from_scratch()
     return True, "Comparison saved successfully."
 
 
@@ -6641,6 +6694,16 @@ def render_admin_panel():
         st.dataframe(pd.DataFrame(active_lock_rows), use_container_width=True)
     else:
         st.caption("No active comparison locks.")
+
+    st.markdown("### 🧠 Smart Matching")
+    smart_c1, smart_c2 = st.columns([1, 3])
+    with smart_c1:
+        if st.button("Rebuild Smart Matching History", use_container_width=True, key="admin_rebuild_smart_matching_history"):
+            with st.spinner("Rebuilding history from saved comparisons..."):
+                rebuild_match_history_from_scratch()
+            st.success("Smart Matching history rebuilt successfully.")
+    with smart_c2:
+        st.caption("History is built only from saved comparisons, not from temporary live selections.")
 
     st.markdown("### 📁 Source Files Per User")
 
