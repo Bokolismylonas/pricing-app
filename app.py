@@ -6377,9 +6377,6 @@ def render_comparisons():
                             row_final_prices[code] = None
                             st.info("No data")
 
-            if st.session_state.get("smart_matching_enabled", False) and len(selected_codes) >= 2:
-                _apply_smart_product_suggestions_for_row(row_id, selected_codes, catalogs)
-
             if row_final_prices:
                 valid = {k: v for k, v in row_final_prices.items() if v is not None}
                 if valid:
