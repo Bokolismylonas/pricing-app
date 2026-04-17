@@ -2365,10 +2365,13 @@ def _apply_smart_product_suggestions_for_row(row_id: int, selected_codes: list, 
     suggestion_notes = st.session_state.setdefault("smart_match_notes", {})
     score_notes = st.session_state.setdefault("smart_match_scores", {})
     suggestion_targets = st.session_state.setdefault("smart_match_target_display", {})
+    auto_source_map = st.session_state.setdefault("smart_match_auto_source_display", {})
+    auto_target_map = st.session_state.setdefault("smart_match_auto_target_display", {})
 
     for target_code in selected_codes[1:]:
         note_key = f"{row_id}|{target_code}"
-        previous_note = suggestion_notes.get(note_key, "")
+        previous_auto_source = auto_source_map.get(note_key, "")
+        previous_auto_target = auto_target_map.get(note_key, "")
         previous_suggested_display = suggestion_targets.get(note_key, "")
 
         suggestion_notes.pop(note_key, None)
@@ -2393,14 +2396,15 @@ def _apply_smart_product_suggestions_for_row(row_id: int, selected_codes: list, 
         if not suggested_display:
             continue
 
-        # If current target is empty OR it still holds the previous auto-suggested value,
-        # replace it immediately with the new fresh suggestion.
+        source_changed_from_previous_auto = previous_auto_source and previous_auto_source != source_display
+
         should_replace_existing = (
             not existing_target
+            or (previous_auto_target and existing_target == previous_auto_target)
             or (
-                previous_suggested_display
+                source_changed_from_previous_auto
+                and previous_suggested_display
                 and existing_target == previous_suggested_display
-                and previous_note in ("Suggested", "Better match available")
             )
         )
 
@@ -2410,6 +2414,8 @@ def _apply_smart_product_suggestions_for_row(row_id: int, selected_codes: list, 
             suggestion_notes[note_key] = "Suggested"
             score_notes[note_key] = best_score
             suggestion_targets[note_key] = suggested_display
+            auto_source_map[note_key] = source_display
+            auto_target_map[note_key] = suggested_display
         else:
             if existing_target != suggested_display:
                 suggestion_notes[note_key] = "Better match available"
