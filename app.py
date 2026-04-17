@@ -2536,7 +2536,7 @@ def row_result_dict(visible_index, row_id, catalogs, selected_codes):
             base_price = round(float(row["Price"]), 2)
             final_price, final_is_manual = get_effective_final_price(row_id, code, row["Price"], discs)
             final_prices[code] = final_price
-            total_discounts_text = format_total_discounts(discs)
+            total_discounts_text = "Manual Price" if final_is_manual else format_total_discounts(discs)
 
             result[f"{label} Product"] = row["Product"]
             result[f"{label} SAP"] = row["SAP"]
