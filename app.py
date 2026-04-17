@@ -2078,6 +2078,85 @@ def _save_match_history(data):
         encoding="utf-8",
     )
 
+def _record_match_pair_to_history(history: dict, user_email: str, source_product: str, target_company: str, target_product: str):
+    user_email = str(user_email or "").strip().lower()
+    source_key = _normalize_match_text(source_product)
+    target_key = _normalize_match_text(target_product)
+    target_company = str(target_company or "").strip().upper()
+
+    if not user_email or not source_key or not target_key or not target_company:
+        return
+
+    personal_targets = (
+        history.setdefault("personal", {})
+        .setdefault(user_email, {})
+        .setdefault(source_key, {})
+        .setdefault(target_company, {})
+    )
+    personal_targets[target_key] = int(personal_targets.get(target_key, 0)) + 1
+
+    global_targets = (
+        history.setdefault("global", {})
+        .setdefault(source_key, {})
+        .setdefault(target_company, {})
+    )
+    global_targets[target_key] = int(global_targets.get(target_key, 0)) + 1
+
+def _backfill_match_history_from_saved_comparisons():
+    if st.session_state.get("_smart_match_backfill_done", False):
+        return
+
+    history = _load_match_history()
+    touched = False
+    display_to_code = {
+        f"{row['name']} ({row['code']})": row["code"]
+        for _, row in companies_df.iterrows()
+    }
+
+    for comparison_file in sorted(COMPARISONS_DIR.glob("*.json")):
+        try:
+            records = list_comparisons(comparison_file)
+        except Exception:
+            continue
+
+        for record in records:
+            state = record.get("state", {}) or {}
+            row_ids = state.get("row_ids", []) or []
+            if not isinstance(row_ids, list) or not row_ids:
+                continue
+
+            selected_codes = []
+            for display in state.get("comparison_company_selection", []) or []:
+                if display in display_to_code:
+                    selected_codes.append(display_to_code[display])
+
+            if len(selected_codes) < 2:
+                continue
+
+            source_code = selected_codes[0]
+            owner_email = str(record.get("owner_email", "") or "").strip().lower() or get_current_user_email()
+
+            for row_id in row_ids:
+                source_display = str(state.get(f"row_{row_id}_{source_code}_product", "") or "").strip()
+                if not source_display:
+                    continue
+
+                source_product = source_display.split("| SAP")[0].strip()
+
+                for target_code in selected_codes[1:]:
+                    target_display = str(state.get(f"row_{row_id}_{target_code}_product", "") or "").strip()
+                    if not target_display:
+                        continue
+
+                    target_product = target_display.split("| SAP")[0].strip()
+                    _record_match_pair_to_history(history, owner_email, source_product, target_code, target_product)
+                    touched = True
+
+    if touched:
+        _save_match_history(history)
+
+    st.session_state["_smart_match_backfill_done"] = True
+
 def _score_product_match_history_aware(user_email: str, source_row: dict, target_row: dict, target_company: str) -> float:
     product_a = str(source_row.get("Product", "") or "")
     product_b = str(target_row.get("Product", "") or "")
@@ -2085,34 +2164,8 @@ def _score_product_match_history_aware(user_email: str, source_row: dict, target
     category_b = str(target_row.get("Category", "") or "")
     mm_a = str(source_row.get("MM", "") or "")
     mm_b = str(target_row.get("MM", "") or "")
-
-    # Keep naming weight intentionally lower than history
-    score = _text_similarity(product_a, product_b) * 20.0
-
-    dim_a = _extract_match_dimensions(product_a)
-    dim_b = _extract_match_dimensions(product_b)
-    if dim_a and dim_b:
-        if dim_a == dim_b:
-            score += 10
-        elif sorted(dim_a) == sorted(dim_b):
-            score += 6
-
-    thick_a = _extract_match_mm(product_a + " " + mm_a)
-    thick_b = _extract_match_mm(product_b + " " + mm_b)
-    if thick_a is not None and thick_b is not None:
-        if abs(thick_a - thick_b) < 0.01:
-            score += 8
-        elif abs(thick_a - thick_b) <= 0.5:
-            score += 3
-        else:
-            score -= 4
-
-    cat_sim = _text_similarity(category_a, category_b)
-    score += cat_sim * 8.0
-
-    if str(mm_a).strip() and str(mm_b).strip():
-        if str(mm_a).strip().lower() == str(mm_b).strip().lower():
-            score += 4
+    package_a = str(source_row.get("Package", "") or "")
+    package_b = str(target_row.get("Package", "") or "")
 
     history = _load_match_history()
     source_key = _normalize_match_text(product_a)
@@ -2132,9 +2185,53 @@ def _score_product_match_history_aware(user_email: str, source_row: dict, target
         .get(target_key, 0)
     )
 
-    # Heavy weight on learned behavior
-    score += min(personal_hits * 18.0, 45.0)
-    score += min(global_hits * 9.0, 40.0)
+    # HISTORY FIRST
+    personal_history_score = min(personal_hits * 30.0, 60.0)
+    global_history_score = min(global_hits * 15.0, 50.0)
+
+    # Product signals stay secondary
+    name_score = _text_similarity(product_a, product_b) * 10.0
+
+    dim_score = 0.0
+    dim_a = _extract_match_dimensions(product_a)
+    dim_b = _extract_match_dimensions(product_b)
+    if dim_a and dim_b:
+        if dim_a == dim_b:
+            dim_score += 8.0
+        elif sorted(dim_a) == sorted(dim_b):
+            dim_score += 4.0
+
+    thickness_score = 0.0
+    thick_a = _extract_match_mm(product_a + " " + mm_a)
+    thick_b = _extract_match_mm(product_b + " " + mm_b)
+    if thick_a is not None and thick_b is not None:
+        if abs(thick_a - thick_b) < 0.01:
+            thickness_score += 6.0
+        elif abs(thick_a - thick_b) <= 0.5:
+            thickness_score += 2.0
+        else:
+            thickness_score -= 3.0
+
+    category_score = _text_similarity(category_a, category_b) * 6.0
+
+    mm_score = 0.0
+    if str(mm_a).strip() and str(mm_b).strip():
+        if str(mm_a).strip().lower() == str(mm_b).strip().lower():
+            mm_score += 3.0
+
+    # Package is intentionally last priority
+    package_score = _text_similarity(package_a, package_b) * 1.5
+
+    score = (
+        personal_history_score
+        + global_history_score
+        + name_score
+        + dim_score
+        + thickness_score
+        + category_score
+        + mm_score
+        + package_score
+    )
 
     return round(score, 2)
 
@@ -2206,8 +2303,14 @@ def _apply_smart_product_suggestions_for_row(row_id: int, selected_codes: list, 
     user_email = get_current_user_email()
     suggestion_notes = st.session_state.setdefault("smart_match_notes", {})
     score_notes = st.session_state.setdefault("smart_match_scores", {})
+    suggestion_targets = st.session_state.setdefault("smart_match_target_display", {})
 
     for target_code in selected_codes[1:]:
+        note_key = f"{row_id}|{target_code}"
+        suggestion_notes.pop(note_key, None)
+        score_notes.pop(note_key, None)
+        suggestion_targets.pop(note_key, None)
+
         target_key = f"row_{row_id}_{target_code}_product"
         existing_target = str(st.session_state.get(target_key, "") or "").strip()
 
@@ -2218,17 +2321,29 @@ def _apply_smart_product_suggestions_for_row(row_id: int, selected_codes: list, 
             target_company=target_code,
         )
 
-        if best_row is None or best_score < 28:
+        if best_row is None or best_score < 22:
+            continue
+
+        suggested_display = str(best_row.get("DISPLAY", "") or "").strip()
+        if not suggested_display:
             continue
 
         if not existing_target:
-            suggested_display = str(best_row.get("DISPLAY", "") or "").strip()
-            if suggested_display:
-                st.session_state[target_key] = suggested_display
-                widget_key = get_product_widget_key(row_id, target_code)
-                st.session_state[widget_key] = suggested_display
-                suggestion_notes[f"{row_id}|{target_code}"] = "Suggested"
-                score_notes[f"{row_id}|{target_code}"] = best_score
+            st.session_state[target_key] = suggested_display
+            widget_key = get_product_widget_key(row_id, target_code)
+            st.session_state[widget_key] = suggested_display
+            suggestion_notes[note_key] = "Suggested"
+            score_notes[note_key] = best_score
+            suggestion_targets[note_key] = suggested_display
+        else:
+            if existing_target != suggested_display:
+                suggestion_notes[note_key] = "Better match available"
+                score_notes[note_key] = best_score
+                suggestion_targets[note_key] = suggested_display
+            else:
+                suggestion_notes[note_key] = "Suggested"
+                score_notes[note_key] = best_score
+                suggestion_targets[note_key] = suggested_display
 
         final_target = str(st.session_state.get(target_key, "") or "").strip()
         if final_target:
@@ -6078,6 +6193,7 @@ def render_comparisons():
     if not selected_codes:
         st.info("Select companies first to start comparison.")
     else:
+        _backfill_match_history_from_saved_comparisons()
         st.info(f"Current rows: {len(st.session_state.row_ids)}")
 
         row_ids_list = list(st.session_state.get("row_ids", []))
@@ -6171,11 +6287,15 @@ def render_comparisons():
 
                             smart_note = st.session_state.get("smart_match_notes", {}).get(f"{row_id}|{code}", "")
                             smart_score = st.session_state.get("smart_match_scores", {}).get(f"{row_id}|{code}", "")
+                            smart_target_display = st.session_state.get("smart_match_target_display", {}).get(f"{row_id}|{code}", "")
                             if smart_note:
+                                target_hint = ""
+                                if smart_note == "Better match available" and smart_target_display:
+                                    target_hint = f" → {smart_target_display}"
                                 try:
-                                    st.caption(f"{smart_note} by Smart Matching (score: {float(smart_score):.1f})")
+                                    st.caption(f"{smart_note} by Smart Matching{target_hint} (score: {float(smart_score):.1f})")
                                 except Exception:
-                                    st.caption(f"{smart_note} by Smart Matching")
+                                    st.caption(f"{smart_note} by Smart Matching{target_hint}")
 
                             if row is not None:
                                 st.write("SAP:", row["SAP"])
