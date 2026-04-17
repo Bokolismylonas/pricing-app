@@ -2434,6 +2434,34 @@ def rebuild_match_history_from_scratch():
     _save_match_history(history)
     st.session_state["_smart_match_backfill_done"] = True
 
+
+def _infer_board_functional_family(product_text: str, category_text: str = ""):
+    text = _normalize_match_text(f"{product_text} {category_text}")
+
+    is_fire = any(tok in text for tok in [
+        "flam", "fire", "πυραντ", " df ", " dfh", "rf", "type f", "f1"
+    ])
+    is_moisture = any(tok in text for tok in [
+        "hydro", "h2", "ανθυγρ", "moist", "aqua"
+    ])
+    is_acoustic = any(tok in text for tok in [
+        "acoustic", "sound", "phon", "silent", "ηχο"
+    ])
+
+    tags = []
+    if is_fire:
+        tags.append("fire")
+    if is_moisture:
+        tags.append("moisture")
+    if is_acoustic:
+        tags.append("acoustic")
+
+    if not tags:
+        return "standard"
+
+    tags.sort()
+    return "+".join(tags)
+
 def _score_product_match_history_aware(user_email: str, source_row: dict, target_row: dict, target_company: str) -> float:
     product_a = str(source_row.get("Product", "") or "")
     product_b = str(target_row.get("Product", "") or "")
@@ -2465,12 +2493,6 @@ def _score_product_match_history_aware(user_email: str, source_row: dict, target
         )
     else:
         personal_hits, global_hits, learned_core_hits = 0, 0, 0
-
-    # If a strong exact saved-comparison history already exists, trust it first.
-    strong_exact_history = (personal_hits >= 1) or (global_hits >= 2)
-    history_lock_score = 0.0
-    if compatible_for_history and strong_exact_history:
-        history_lock_score = 10000.0 + (personal_hits * 120.0) + (global_hits * 40.0) + (learned_core_hits * 12.0)
 
     # HISTORY FIRST, but still combined with names + characteristics
     personal_history_score = min(personal_hits * 30.0, 60.0)
@@ -2520,8 +2542,10 @@ def _score_product_match_history_aware(user_email: str, source_row: dict, target
     is_gypsum_board = any(token in product_context for token in [
         "gypsum", "plasterboard", "drywall", "board", "γυψο", "γυψοσαν"
     ])
+
+    functional_family_score = 0.0
     if is_gypsum_board:
-        # For gypsum boards, sheet dimensions should not affect matching.
+        # For gypsum boards, dimensions should not affect matching.
         dim_score = 0.0
         thickness_score *= 2.4
         category_score *= 1.4
@@ -2529,9 +2553,24 @@ def _score_product_match_history_aware(user_email: str, source_row: dict, target
         core_name_score *= 2.4
         name_score = full_name_score + core_name_score
 
+        fam_a = _infer_board_functional_family(product_a, category_a)
+        fam_b = _infer_board_functional_family(product_b, category_b)
+
+        if fam_a == fam_b:
+            functional_family_score += 30.0
+        elif fam_a == "standard" or fam_b == "standard":
+            functional_family_score -= 8.0
+        else:
+            functional_family_score -= 28.0
+
+        # If the board functional family clearly disagrees, history should not dominate.
+        if fam_a != fam_b and fam_a != "standard" and fam_b != "standard":
+            personal_history_score *= 0.2
+            global_history_score *= 0.2
+            learned_core_score *= 0.2
+
     score = (
-        history_lock_score
-        + personal_history_score
+        personal_history_score
         + global_history_score
         + learned_core_score
         + name_score
@@ -2540,6 +2579,7 @@ def _score_product_match_history_aware(user_email: str, source_row: dict, target
         + category_score
         + mm_score
         + package_score
+        + functional_family_score
     )
 
     return round(score, 2)
