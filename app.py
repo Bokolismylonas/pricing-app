@@ -2108,6 +2108,87 @@ def _core_variant_keys(core_text: str):
             out.append(v)
     return out
 
+def _infer_product_family(product_text: str, category_text: str = "", mm_text: str = ""):
+    text = _normalize_match_text(f"{product_text} {category_text}")
+    mm_norm = _normalize_match_text(mm_text)
+
+    board_tokens = ["γυψο", "γυψοσαν", "gypsum", "plasterboard", "drywall", "habito", "vidiwall", "massivbauplatte"]
+    profile_tokens = ["profil", "profile", "προφιλ", "ορθοστατ", "στρωτηρ", "uw", "cw", "ud", "cd"]
+    waterproof_tokens = ["aquamat", "sikaelastic", "mapelastic", "στεγαν", "waterproof", "hydro", "aqua"]
+    adhesive_tokens = ["adhes", "glue", "κολλα", "tilefix", "fix", "τσιμεντοκολλα"]
+    insulation_tokens = ["insulation", "μονω", "xps", "eps", "πετροβαμβ", "ορυκτοβαμβ"]
+    accessory_tokens = ["ντιζ", "anker", "anchor", "βιδ", "screw", "washer", "γωνιοκρανο", "tape", "joint"]
+
+    def has_any(tokens):
+        return any(tok in text for tok in tokens)
+
+    if has_any(profile_tokens):
+        return "profile"
+    if has_any(accessory_tokens):
+        return "accessory"
+    if has_any(board_tokens):
+        return "board"
+    if has_any(waterproof_tokens):
+        return "waterproofing"
+    if has_any(adhesive_tokens):
+        return "adhesive"
+    if has_any(insulation_tokens):
+        return "insulation"
+
+    if mm_norm in {"m", "meter", "μέτρο"}:
+        return "profile"
+    if mm_norm in {"τεμαχιο", "τεμαχια", "piece", "pcs", "pc"} and has_any(accessory_tokens):
+        return "accessory"
+    if mm_norm in {"m2", "m²"} and has_any(board_tokens):
+        return "board"
+
+    return "unknown"
+
+def _normalize_mm_unit(mm_text: str):
+    t = _normalize_match_text(mm_text)
+    if not t:
+        return ""
+    if t in {"m2", "m²", "sqm", "sq m", "τετρ μετρο", "τετραγωνικο μετρο"}:
+        return "m2"
+    if t in {"m", "meter", "metre", "μετρο", "μέτρο"}:
+        return "m"
+    if t in {"tmx", "temaxio", "temachio", "temaxia", "temachia", "τεμ", "τεμ.", "τεμαχιο", "τεμαχια", "piece", "pieces", "pc", "pcs"}:
+        return "piece"
+    return t
+
+def _mm_units_compatible(source_mm: str, target_mm: str):
+    a = _normalize_mm_unit(source_mm)
+    b = _normalize_mm_unit(target_mm)
+    if not a or not b:
+        return True
+    return a == b
+
+def _products_are_compatible(source_product: str, target_product: str, source_category: str = "", target_category: str = "", source_mm: str = "", target_mm: str = ""):
+    if not _mm_units_compatible(source_mm, target_mm):
+        return False
+
+    fam_a = _infer_product_family(source_product, source_category, source_mm)
+    fam_b = _infer_product_family(target_product, target_category, target_mm)
+
+    if fam_a != "unknown" and fam_b != "unknown" and fam_a != fam_b:
+        return False
+
+    # Extra hard stop for board/profile accidental mixes even when one side is unknown
+    text_a = _normalize_match_text(f"{source_product} {source_category}")
+    text_b = _normalize_match_text(f"{target_product} {target_category}")
+    board_markers = ["γυψο", "γυψοσαν", "gypsum", "plasterboard", "drywall", "habito", "vidiwall", "massivbauplatte"]
+    profile_markers = ["profil", "profile", "προφιλ", "uw", "cw", "ud", "cd", "ορθοστατ", "στρωτηρ"]
+
+    a_board = any(t in text_a for t in board_markers)
+    b_board = any(t in text_b for t in board_markers)
+    a_profile = any(t in text_a for t in profile_markers)
+    b_profile = any(t in text_b for t in profile_markers)
+
+    if (a_board and b_profile) or (a_profile and b_board):
+        return False
+
+    return True
+
 def _history_hits_for_candidate(history, user_email, source_product, target_company, target_product):
     source_keys = _core_history_keys_for_product(source_product)
     target_keys = _core_history_keys_for_product(target_product)
@@ -2186,7 +2267,17 @@ def _save_match_history(data):
         encoding="utf-8",
     )
 
-def _record_match_pair_to_history(history: dict, user_email: str, source_product: str, target_company: str, target_product: str):
+def _record_match_pair_to_history(
+    history: dict,
+    user_email: str,
+    source_product: str,
+    target_company: str,
+    target_product: str,
+    source_category: str = "",
+    target_category: str = "",
+    source_mm: str = "",
+    target_mm: str = "",
+):
     user_email = str(user_email or "").strip().lower()
     target_company = str(target_company or "").strip().upper()
 
@@ -2194,6 +2285,9 @@ def _record_match_pair_to_history(history: dict, user_email: str, source_product
     target_keys = _core_history_keys_for_product(target_product)
 
     if not user_email or not source_keys or not target_keys or not target_company:
+        return
+
+    if not _products_are_compatible(source_product, target_product, source_category, target_category, source_mm, target_mm):
         return
 
     for source_key in source_keys:
@@ -2256,24 +2350,30 @@ def _backfill_match_history_from_saved_comparisons():
             if len(selected_codes) < 2:
                 continue
 
-            source_code = selected_codes[0]
             owner_email = str(record.get("owner_email", "") or "").strip().lower() or get_current_user_email()
 
             for row_id in row_ids:
-                source_display = str(state.get(f"row_{row_id}_{source_code}_product", "") or "").strip()
-                if not source_display:
+                row_products = []
+                for code in selected_codes:
+                    display_value = str(state.get(f"row_{row_id}_{code}_product", "") or "").strip()
+                    if display_value:
+                        row_products.append((code, display_value.split("| SAP")[0].strip()))
+
+                if len(row_products) < 2:
                     continue
 
-                source_product = source_display.split("| SAP")[0].strip()
-
-                for target_code in selected_codes[1:]:
-                    target_display = str(state.get(f"row_{row_id}_{target_code}_product", "") or "").strip()
-                    if not target_display:
-                        continue
-
-                    target_product = target_display.split("| SAP")[0].strip()
-                    _record_match_pair_to_history(history, owner_email, source_product, target_code, target_product)
-                    touched = True
+                for source_code, source_product in row_products:
+                    for target_code, target_product in row_products:
+                        if source_code == target_code:
+                            continue
+                        _record_match_pair_to_history(
+                            history,
+                            owner_email,
+                            source_product,
+                            target_code,
+                            target_product,
+                        )
+                        touched = True
 
     if touched:
         _save_match_history(history)
@@ -2307,23 +2407,29 @@ def rebuild_match_history_from_scratch():
             if len(selected_codes) < 2:
                 continue
 
-            source_code = selected_codes[0]
             owner_email = str(record.get("owner_email", "") or "").strip().lower() or get_current_user_email()
 
             for row_id in row_ids:
-                source_display = str(state.get(f"row_{row_id}_{source_code}_product", "") or "").strip()
-                if not source_display:
+                row_products = []
+                for code in selected_codes:
+                    display_value = str(state.get(f"row_{row_id}_{code}_product", "") or "").strip()
+                    if display_value:
+                        row_products.append((code, display_value.split("| SAP")[0].strip()))
+
+                if len(row_products) < 2:
                     continue
 
-                source_product = source_display.split("| SAP")[0].strip()
-
-                for target_code in selected_codes[1:]:
-                    target_display = str(state.get(f"row_{row_id}_{target_code}_product", "") or "").strip()
-                    if not target_display:
-                        continue
-
-                    target_product = target_display.split("| SAP")[0].strip()
-                    _record_match_pair_to_history(history, owner_email, source_product, target_code, target_product)
+                for source_code, source_product in row_products:
+                    for target_code, target_product in row_products:
+                        if source_code == target_code:
+                            continue
+                        _record_match_pair_to_history(
+                            history,
+                            owner_email,
+                            source_product,
+                            target_code,
+                            target_product,
+                        )
 
     _save_match_history(history)
     st.session_state["_smart_match_backfill_done"] = True
@@ -2339,19 +2445,26 @@ def _score_product_match_history_aware(user_email: str, source_row: dict, target
     package_b = str(target_row.get("Package", "") or "")
 
     history = _load_match_history()
-    personal_hits, global_hits = _history_hits_for_candidate(
-        history=history,
-        user_email=user_email,
-        source_product=product_a,
-        target_company=target_company,
-        target_product=product_b,
+    compatible_for_history = _products_are_compatible(
+        product_a, product_b, category_a, category_b, mm_a, mm_b
     )
-    learned_core_hits = _learned_core_hits_for_candidate(
-        history=history,
-        source_product=product_a,
-        target_company=target_company,
-        target_product=product_b,
-    )
+
+    if compatible_for_history:
+        personal_hits, global_hits = _history_hits_for_candidate(
+            history=history,
+            user_email=user_email,
+            source_product=product_a,
+            target_company=target_company,
+            target_product=product_b,
+        )
+        learned_core_hits = _learned_core_hits_for_candidate(
+            history=history,
+            source_product=product_a,
+            target_company=target_company,
+            target_product=product_b,
+        )
+    else:
+        personal_hits, global_hits, learned_core_hits = 0, 0, 0
 
     # HISTORY FIRST, but still combined with names + characteristics
     personal_history_score = min(personal_hits * 30.0, 60.0)
