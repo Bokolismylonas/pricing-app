@@ -2072,6 +2072,27 @@ def normalize_code(text):
     return text
 
 
+def workspace_slug_from_user_row(user_row):
+    raw_user = user_row.get("sub") or user_row.get("email") or ""
+    return (
+        str(raw_user)
+        .replace("@", "_")
+        .replace(".", "_")
+        .replace("/", "_")
+        .replace("\\", "_")
+    )
+
+
+def resolve_workspace_label(workspace_name, users_registry):
+    for row in users_registry or []:
+        try:
+            if workspace_slug_from_user_row(row) == workspace_name:
+                return row.get("email", workspace_name)
+        except Exception:
+            pass
+    return workspace_name
+
+
 companies_df = load_companies_safe()
 for _, row in companies_df.iterrows():
     (UPLOADS_DIR / row["code"]).mkdir(parents=True, exist_ok=True)
@@ -6275,16 +6296,25 @@ def render_admin_panel():
                     )
 
     if admin_source_rows:
+        users_registry = load_users_registry()
         available_users = sorted({item["workspace"] for item in admin_source_rows})
+        workspace_label_map = {
+            workspace_name: resolve_workspace_label(workspace_name, users_registry)
+            for workspace_name in available_users
+        }
+
         selected_source_user = st.selectbox(
             "Source files per user",
             options=available_users,
             key="admin_selected_source_user",
+            format_func=lambda x: workspace_label_map.get(x, x),
         )
 
         selected_rows = [item for item in admin_source_rows if item["workspace"] == selected_source_user]
 
         if selected_rows:
+            selected_user_label = workspace_label_map.get(selected_source_user, selected_source_user)
+            st.caption(f"User: {selected_user_label}")
             for item in selected_rows:
                 with open(item["path"], "rb") as file_data:
                     st.download_button(
