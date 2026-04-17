@@ -2056,6 +2056,59 @@ def _extract_match_dimensions(text):
     except Exception:
         return None
 
+def _strip_board_dimensions_tail(text):
+    text = str(text or "").strip()
+    text = re.sub(r"\b\d{3,4}\s*[x×]\s*\d{3,4}\s*mm\b", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\b\d{3,4}\s*[x×]\s*\d{3,4}\b", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+def _extract_board_core_name(text):
+    text = _strip_board_dimensions_tail(text)
+    text = re.sub(r"\b(?:mm|m2|m²)\b", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+def _core_history_keys_for_product(product_text):
+    full_key = _normalize_match_text(product_text)
+    core_key = _normalize_match_text(_extract_board_core_name(product_text))
+    keys = []
+    if full_key:
+        keys.append(full_key)
+    if core_key and core_key not in keys:
+        keys.append(core_key)
+    return keys
+
+def _history_hits_for_candidate(history, user_email, source_product, target_company, target_product):
+    source_keys = _core_history_keys_for_product(source_product)
+    target_keys = _core_history_keys_for_product(target_product)
+    personal_hits = 0
+    global_hits = 0
+
+    for s_key in source_keys:
+        for t_key in target_keys:
+            personal_hits = max(
+                personal_hits,
+                int(
+                    history.get("personal", {})
+                    .get(str(user_email or "").strip().lower(), {})
+                    .get(s_key, {})
+                    .get(target_company, {})
+                    .get(t_key, 0)
+                ),
+            )
+            global_hits = max(
+                global_hits,
+                int(
+                    history.get("global", {})
+                    .get(s_key, {})
+                    .get(target_company, {})
+                    .get(t_key, 0)
+                ),
+            )
+
+    return personal_hits, global_hits
+
 def _text_similarity(a, b):
     return SequenceMatcher(None, _normalize_match_text(a), _normalize_match_text(b)).ratio()
 
@@ -2216,35 +2269,27 @@ def _score_product_match_history_aware(user_email: str, source_row: dict, target
     package_b = str(target_row.get("Package", "") or "")
 
     history = _load_match_history()
-    source_key = _normalize_match_text(product_a)
-    target_key = _normalize_match_text(product_b)
-
-    personal_hits = (
-        history.get("personal", {})
-        .get(str(user_email or "").strip().lower(), {})
-        .get(source_key, {})
-        .get(target_company, {})
-        .get(target_key, 0)
-    )
-    global_hits = (
-        history.get("global", {})
-        .get(source_key, {})
-        .get(target_company, {})
-        .get(target_key, 0)
+    personal_hits, global_hits = _history_hits_for_candidate(
+        history=history,
+        user_email=user_email,
+        source_product=product_a,
+        target_company=target_company,
+        target_product=product_b,
     )
 
     # HISTORY FIRST
     personal_history_score = min(personal_hits * 30.0, 60.0)
     global_history_score = min(global_hits * 15.0, 50.0)
 
-    # Detect gypsum/plasterboards so type + thickness dominate, not sheet dimensions
+    # Detect gypsum/plasterboards so core name + thickness dominate, not sheet dimensions
     gypsum_context = f"{category_a} {category_b} {product_a} {product_b}".lower()
     is_gypsum_board = any(token in gypsum_context for token in [
         "gypsum", "plasterboard", "drywall", "board", "γυψο", "γυψοσαν"
     ])
 
-    # Product signals stay secondary
-    name_score = _text_similarity(product_a, product_b) * 10.0
+    full_name_score = _text_similarity(product_a, product_b) * 6.0
+    core_name_score = _text_similarity(_extract_board_core_name(product_a), _extract_board_core_name(product_b)) * 10.0
+    name_score = full_name_score + core_name_score
 
     dim_score = 0.0
     dim_a = _extract_match_dimensions(product_a)
@@ -2260,11 +2305,11 @@ def _score_product_match_history_aware(user_email: str, source_row: dict, target
     thick_b = _extract_match_mm(product_b + " " + mm_b)
     if thick_a is not None and thick_b is not None:
         if abs(thick_a - thick_b) < 0.01:
-            thickness_score += 6.0
+            thickness_score += 8.0
         elif abs(thick_a - thick_b) <= 0.5:
-            thickness_score += 2.0
+            thickness_score += 3.0
         else:
-            thickness_score -= 3.0
+            thickness_score -= 5.0
 
     category_score = _text_similarity(category_a, category_b) * 6.0
 
@@ -2277,11 +2322,12 @@ def _score_product_match_history_aware(user_email: str, source_row: dict, target
     package_score = _text_similarity(package_a, package_b) * 1.5
 
     if is_gypsum_board:
-        # For gypsum boards, sheet dimensions should matter much less than thickness/type
-        dim_score *= 0.2
-        thickness_score *= 1.8
-        category_score *= 1.5
-        name_score *= 1.1
+        # For boards, dimensions matter very little. Core name + thickness matter much more.
+        dim_score *= 0.08
+        thickness_score *= 2.2
+        category_score *= 1.4
+        core_name_score *= 2.0
+        name_score = full_name_score + core_name_score
 
     score = (
         personal_history_score
