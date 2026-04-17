@@ -3592,6 +3592,8 @@ if current_user_is_blocked():
 
 if not is_admin_user():
     session_allowed, active_count = register_current_session()
+    dynamic_session_limit = get_user_max_active_sessions(get_current_user_registry_row()[1])
+
     if not session_allowed:
         st.markdown(
             """
@@ -3605,6 +3607,11 @@ if not is_admin_user():
             """,
             unsafe_allow_html=True,
         )
+        st.info("You already have an active session on another device.")
+        st.info(f"Active sessions: {active_count}/{dynamic_session_limit}.")
+        if st.button("🔄 Replace previous session and continue", use_container_width=True, key="replace_session_limit_btn"):
+            st.session_state["force_replace_session"] = True
+            st.rerun()
         st.button(
             "Logout",
             on_click=logout_current_user,
@@ -6239,6 +6246,46 @@ def render_admin_panel():
         st.dataframe(pd.DataFrame(active_lock_rows), use_container_width=True)
     else:
         st.caption("No active comparison locks.")
+
+    st.markdown("### 📁 Download User Sources")
+
+    admin_source_rows = []
+    for workspace_dir in sorted(PERSIST_ROOT.iterdir()):
+        if not workspace_dir.is_dir() or workspace_dir.name == "_admin":
+            continue
+
+        uploads_dir = workspace_dir / "uploads"
+        if not uploads_dir.exists():
+            continue
+
+        for company_dir in sorted(uploads_dir.iterdir()):
+            if not company_dir.is_dir():
+                continue
+
+            for f in sorted(company_dir.glob("*.*"), reverse=True):
+                if f.suffix.lower() in [".xlsx", ".xlsm"]:
+                    admin_source_rows.append(
+                        {
+                            "workspace": workspace_dir.name,
+                            "company": company_dir.name,
+                            "path": f,
+                            "filename": f.name,
+                            "modified": datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M"),
+                        }
+                    )
+
+    if admin_source_rows:
+        for item in admin_source_rows:
+            with open(item["path"], "rb") as file_data:
+                st.download_button(
+                    label=f"{item['workspace']} | {item['company']} | {item['filename']} ({item['modified']})",
+                    data=file_data.read(),
+                    file_name=item["filename"],
+                    key=f"admin_download_{item['workspace']}_{item['company']}_{item['filename']}",
+                    use_container_width=True,
+                )
+    else:
+        st.caption("No source files found.")
 
     users_registry = load_users_registry()
     if users_registry:
