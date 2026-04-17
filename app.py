@@ -5,6 +5,7 @@ import json
 import re
 import uuid
 import shutil
+from difflib import SequenceMatcher
 from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
 
@@ -2022,6 +2023,223 @@ def get_all_active_comparison_locks():
     return rows
 
 
+
+
+# -------------------------------------------------
+# SMART PRODUCT MATCHING (BETA)
+# -------------------------------------------------
+MATCH_HISTORY_FILE = ADMIN_DIR / "match_history.json"
+
+def _normalize_match_text(text):
+    text = str(text or "").lower().strip()
+    text = re.sub(r"[^a-z0-9α-ωάέήίόύώϊϋΐΰ\s]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+def _extract_match_mm(text):
+    text = str(text or "").lower().replace(",", ".")
+    m = re.search(r"(\d+(?:\.\d+)?)\s*mm", text)
+    if not m:
+        return None
+    try:
+        return float(m.group(1))
+    except Exception:
+        return None
+
+def _extract_match_dimensions(text):
+    text = str(text or "").lower().replace("×", "x")
+    m = re.search(r"(\d{3,4})\s*x\s*(\d{3,4})", text)
+    if not m:
+        return None
+    try:
+        return (int(m.group(1)), int(m.group(2)))
+    except Exception:
+        return None
+
+def _text_similarity(a, b):
+    return SequenceMatcher(None, _normalize_match_text(a), _normalize_match_text(b)).ratio()
+
+def _load_match_history():
+    if not MATCH_HISTORY_FILE.exists():
+        return {"personal": {}, "global": {}}
+    try:
+        data = json.loads(MATCH_HISTORY_FILE.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            data.setdefault("personal", {})
+            data.setdefault("global", {})
+            return data
+    except Exception:
+        pass
+    return {"personal": {}, "global": {}}
+
+def _save_match_history(data):
+    MATCH_HISTORY_FILE.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+def _score_product_match_history_aware(user_email: str, source_row: dict, target_row: dict, target_company: str) -> float:
+    product_a = str(source_row.get("Product", "") or "")
+    product_b = str(target_row.get("Product", "") or "")
+    category_a = str(source_row.get("Category", "") or "")
+    category_b = str(target_row.get("Category", "") or "")
+    mm_a = str(source_row.get("MM", "") or "")
+    mm_b = str(target_row.get("MM", "") or "")
+
+    # Keep naming weight intentionally lower than history
+    score = _text_similarity(product_a, product_b) * 20.0
+
+    dim_a = _extract_match_dimensions(product_a)
+    dim_b = _extract_match_dimensions(product_b)
+    if dim_a and dim_b:
+        if dim_a == dim_b:
+            score += 10
+        elif sorted(dim_a) == sorted(dim_b):
+            score += 6
+
+    thick_a = _extract_match_mm(product_a + " " + mm_a)
+    thick_b = _extract_match_mm(product_b + " " + mm_b)
+    if thick_a is not None and thick_b is not None:
+        if abs(thick_a - thick_b) < 0.01:
+            score += 8
+        elif abs(thick_a - thick_b) <= 0.5:
+            score += 3
+        else:
+            score -= 4
+
+    cat_sim = _text_similarity(category_a, category_b)
+    score += cat_sim * 8.0
+
+    if str(mm_a).strip() and str(mm_b).strip():
+        if str(mm_a).strip().lower() == str(mm_b).strip().lower():
+            score += 4
+
+    history = _load_match_history()
+    source_key = _normalize_match_text(product_a)
+    target_key = _normalize_match_text(product_b)
+
+    personal_hits = (
+        history.get("personal", {})
+        .get(str(user_email or "").strip().lower(), {})
+        .get(source_key, {})
+        .get(target_company, {})
+        .get(target_key, 0)
+    )
+    global_hits = (
+        history.get("global", {})
+        .get(source_key, {})
+        .get(target_company, {})
+        .get(target_key, 0)
+    )
+
+    # Heavy weight on learned behavior
+    score += min(personal_hits * 18.0, 45.0)
+    score += min(global_hits * 9.0, 40.0)
+
+    return round(score, 2)
+
+def _generate_smart_product_suggestion(user_email: str, source_row: dict, target_df: pd.DataFrame, target_company: str):
+    if source_row is None or target_df is None or target_df.empty:
+        return None, 0.0
+
+    best_row = None
+    best_score = -1.0
+    for _, row in target_df.iterrows():
+        row_dict = row.to_dict()
+        score = _score_product_match_history_aware(user_email, source_row, row_dict, target_company)
+        if score > best_score:
+            best_score = score
+            best_row = row_dict
+
+    return best_row, best_score
+
+def _record_match_history_once_per_session(user_email: str, source_product: str, target_company: str, target_product: str):
+    user_email = str(user_email or "").strip().lower()
+    source_key = _normalize_match_text(source_product)
+    target_key = _normalize_match_text(target_product)
+    target_company = str(target_company or "").strip().upper()
+
+    if not user_email or not source_key or not target_key or not target_company:
+        return
+
+    event_sig = f"{user_email}|{source_key}|{target_company}|{target_key}"
+    seen = st.session_state.setdefault("_smart_match_recorded_events", set())
+    if event_sig in seen:
+        return
+
+    history = _load_match_history()
+
+    personal_targets = (
+        history.setdefault("personal", {})
+        .setdefault(user_email, {})
+        .setdefault(source_key, {})
+        .setdefault(target_company, {})
+    )
+    personal_targets[target_key] = int(personal_targets.get(target_key, 0)) + 1
+
+    global_targets = (
+        history.setdefault("global", {})
+        .setdefault(source_key, {})
+        .setdefault(target_company, {})
+    )
+    global_targets[target_key] = int(global_targets.get(target_key, 0)) + 1
+
+    _save_match_history(history)
+    seen.add(event_sig)
+
+def _apply_smart_product_suggestions_for_row(row_id: int, selected_codes: list, catalogs: dict):
+    if not st.session_state.get("smart_matching_enabled", False):
+        return
+
+    if len(selected_codes) < 2:
+        return
+
+    source_code = selected_codes[0]
+    source_display = str(st.session_state.get(f"row_{row_id}_{source_code}_product", "") or "").strip()
+    if not source_display:
+        return
+
+    source_row = get_catalog_row(catalogs.get(source_code), source_display)
+    if source_row is None:
+        return
+
+    user_email = get_current_user_email()
+    suggestion_notes = st.session_state.setdefault("smart_match_notes", {})
+    score_notes = st.session_state.setdefault("smart_match_scores", {})
+
+    for target_code in selected_codes[1:]:
+        target_key = f"row_{row_id}_{target_code}_product"
+        existing_target = str(st.session_state.get(target_key, "") or "").strip()
+
+        best_row, best_score = _generate_smart_product_suggestion(
+            user_email=user_email,
+            source_row=source_row.to_dict() if hasattr(source_row, "to_dict") else dict(source_row),
+            target_df=catalogs.get(target_code),
+            target_company=target_code,
+        )
+
+        if best_row is None or best_score < 28:
+            continue
+
+        if not existing_target:
+            suggested_display = str(best_row.get("DISPLAY", "") or "").strip()
+            if suggested_display:
+                st.session_state[target_key] = suggested_display
+                widget_key = get_product_widget_key(row_id, target_code)
+                st.session_state[widget_key] = suggested_display
+                suggestion_notes[f"{row_id}|{target_code}"] = "Suggested"
+                score_notes[f"{row_id}|{target_code}"] = best_score
+
+        final_target = str(st.session_state.get(target_key, "") or "").strip()
+        if final_target:
+            target_row = get_catalog_row(catalogs.get(target_code), final_target)
+            if target_row is not None:
+                _record_match_history_once_per_session(
+                    user_email=user_email,
+                    source_product=str(source_row.get("Product", "") or ""),
+                    target_company=target_code,
+                    target_product=str(target_row.get("Product", "") or ""),
+                )
 
 # -------------------------------------------------
 # SAFE COMPANIES LOADING
@@ -5844,6 +6062,16 @@ def render_comparisons():
                         on_change=mark_comparison_dirty,
                     )
 
+        st.markdown("")
+        st.checkbox(
+            "Smart Product Matching (Beta)",
+            key="smart_matching_enabled",
+            help="When enabled, selecting a product in the first company can suggest equivalent products for the other selected companies based on learned comparison history and supporting product signals. Suggestions remain fully editable.",
+        )
+        st.caption(
+            "This feature is optional. Suggestions never replace the sales user's judgment and remain fully editable."
+        )
+
     st.markdown("---")
     st.markdown("### 6. Multi-Line Comparison")
 
@@ -5932,10 +6160,22 @@ def render_comparisons():
                                 f"{label} product",
                                 options,
                                 key=product_widget_key,
-                                on_change=lambda r=row_id, c=code: (sync_product_widget_to_data(r, c), mark_comparison_dirty()),
+                                on_change=lambda r=row_id, c=code, sc=selected_codes, cats=catalogs: (
+                                    sync_product_widget_to_data(r, c),
+                                    _apply_smart_product_suggestions_for_row(r, sc, cats) if (len(sc) > 0 and c == sc[0] and st.session_state.get("smart_matching_enabled", False)) else None,
+                                    mark_comparison_dirty()
+                                ),
                             )
                             selected_product = st.session_state.get(f"row_{row_id}_{code}_product", "")
                             row = get_catalog_row(df, selected_product)
+
+                            smart_note = st.session_state.get("smart_match_notes", {}).get(f"{row_id}|{code}", "")
+                            smart_score = st.session_state.get("smart_match_scores", {}).get(f"{row_id}|{code}", "")
+                            if smart_note:
+                                try:
+                                    st.caption(f"{smart_note} by Smart Matching (score: {float(smart_score):.1f})")
+                                except Exception:
+                                    st.caption(f"{smart_note} by Smart Matching")
 
                             if row is not None:
                                 st.write("SAP:", row["SAP"])
@@ -6002,6 +6242,9 @@ def render_comparisons():
                         else:
                             row_final_prices[code] = None
                             st.info("No data")
+
+            if st.session_state.get("smart_matching_enabled", False) and len(selected_codes) >= 2:
+                _apply_smart_product_suggestions_for_row(row_id, selected_codes, catalogs)
 
             if row_final_prices:
                 valid = {k: v for k, v in row_final_prices.items() if v is not None}
