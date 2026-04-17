@@ -6247,7 +6247,7 @@ def render_admin_panel():
     else:
         st.caption("No active comparison locks.")
 
-    st.markdown("### 📁 Download User Sources")
+    st.markdown("### 📁 Source Files Per User")
 
     admin_source_rows = []
     for workspace_dir in sorted(PERSIST_ROOT.iterdir()):
@@ -6275,15 +6275,27 @@ def render_admin_panel():
                     )
 
     if admin_source_rows:
-        for item in admin_source_rows:
-            with open(item["path"], "rb") as file_data:
-                st.download_button(
-                    label=f"{item['workspace']} | {item['company']} | {item['filename']} ({item['modified']})",
-                    data=file_data.read(),
-                    file_name=item["filename"],
-                    key=f"admin_download_{item['workspace']}_{item['company']}_{item['filename']}",
-                    use_container_width=True,
-                )
+        available_users = sorted({item["workspace"] for item in admin_source_rows})
+        selected_source_user = st.selectbox(
+            "Source files per user",
+            options=available_users,
+            key="admin_selected_source_user",
+        )
+
+        selected_rows = [item for item in admin_source_rows if item["workspace"] == selected_source_user]
+
+        if selected_rows:
+            for item in selected_rows:
+                with open(item["path"], "rb") as file_data:
+                    st.download_button(
+                        label=f"{item['company']} | {item['filename']} ({item['modified']})",
+                        data=file_data.read(),
+                        file_name=item["filename"],
+                        key=f"admin_download_{item['workspace']}_{item['company']}_{item['filename']}",
+                        use_container_width=True,
+                    )
+        else:
+            st.caption("No source files found for this user.")
     else:
         st.caption("No source files found.")
 
