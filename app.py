@@ -2466,6 +2466,12 @@ def _score_product_match_history_aware(user_email: str, source_row: dict, target
     else:
         personal_hits, global_hits, learned_core_hits = 0, 0, 0
 
+    # If a strong exact saved-comparison history already exists, trust it first.
+    strong_exact_history = (personal_hits >= 1) or (global_hits >= 2)
+    history_lock_score = 0.0
+    if compatible_for_history and strong_exact_history:
+        history_lock_score = 10000.0 + (personal_hits * 120.0) + (global_hits * 40.0) + (learned_core_hits * 12.0)
+
     # HISTORY FIRST, but still combined with names + characteristics
     personal_history_score = min(personal_hits * 30.0, 60.0)
     global_history_score = min(global_hits * 15.0, 50.0)
@@ -2524,7 +2530,8 @@ def _score_product_match_history_aware(user_email: str, source_row: dict, target
         name_score = full_name_score + core_name_score
 
     score = (
-        personal_history_score
+        history_lock_score
+        + personal_history_score
         + global_history_score
         + learned_core_score
         + name_score
