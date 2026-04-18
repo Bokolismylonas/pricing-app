@@ -462,9 +462,33 @@ class CentralMatchEngine:
     def lookup(self, source_row: Dict[str, Any], target_company: str) -> Tuple[str, int]:
         data = self.load()
         source_key = choice_key_from_row(source_row)
-        entry = data.get("stable", {}).get(source_key, {}).get(str(target_company or "").strip().upper(), {})
+        company_key = str(target_company or "").strip().upper()
+
+        entry = data.get("stable", {}).get(source_key, {}).get(company_key, {})
         if isinstance(entry, dict):
-            return str(entry.get("target_key", "") or ""), int(entry.get("hits", 0))
+            target_key = str(entry.get("target_key", "") or "")
+            hits = int(entry.get("hits", 0))
+            if target_key and hits >= 2:
+                return target_key, hits
+
+        # Provisional lookup from raw register data so suggestions can appear
+        # before the table has accumulated enough volume to become "stable".
+        target_map = data.get("register", {}).get(source_key, {}).get(company_key, {})
+        if isinstance(target_map, dict) and target_map:
+            valid = []
+            for target_key, payload in target_map.items():
+                hits = int(payload.get("hits", 0)) if isinstance(payload, dict) else int(payload or 0)
+                ok, _ = self.restrictions_pass(source_key, target_key)
+                if ok and hits > 0:
+                    valid.append((target_key, hits))
+
+            if valid:
+                valid.sort(key=lambda x: x[1], reverse=True)
+                top_target, top_hits = valid[0]
+                second_hits = valid[1][1] if len(valid) > 1 else 0
+                if top_hits >= 2 and (second_hits == 0 or top_hits >= second_hits + 1):
+                    return top_target, top_hits
+
         return "", 0
 
 
