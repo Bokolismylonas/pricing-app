@@ -2588,7 +2588,7 @@ def _score_product_match_history_aware(user_email: str, source_row: dict, target
 
 def _generate_smart_product_suggestion(user_email: str, source_row: dict, target_df: pd.DataFrame, target_company: str):
     if source_row is None or target_df is None or target_df.empty:
-        return None, 0.0
+        return None, 0.0, "", ""
 
     source_engine_row = {
         "Product": str(source_row.get("Product", "") or ""),
@@ -2606,14 +2606,14 @@ def _generate_smart_product_suggestion(user_email: str, source_row: dict, target
             "_full_row": row_dict,
         })
 
-    match, score, mode = suggest_product(CENTRAL_ENGINE, source_engine_row, target_company, target_rows)
+    match, score, mode, confidence = suggest_product(CENTRAL_ENGINE, source_engine_row, target_company, target_rows)
     if match is None:
-        return None, 0.0
+        return None, 0.0, "", ""
 
     full_row = match.get("_full_row") if isinstance(match, dict) else None
     if isinstance(full_row, dict):
-        return full_row, float(score)
-    return None, 0.0
+        return full_row, float(score), str(mode or ""), str(confidence or "")
+    return None, 0.0, "", ""
 
 def _record_match_history_once_per_session(user_email: str, source_product: str, target_company: str, target_product: str):
     user_email = str(user_email or "").strip().lower()
@@ -2668,6 +2668,8 @@ def _apply_smart_product_suggestions_for_row(row_id: int, selected_codes: list, 
     user_email = get_current_user_email()
     suggestion_notes = st.session_state.setdefault("smart_match_notes", {})
     score_notes = st.session_state.setdefault("smart_match_scores", {})
+    confidence_notes = st.session_state.setdefault("smart_match_confidence", {})
+    mode_notes = st.session_state.setdefault("smart_match_mode", {})
     suggestion_targets = st.session_state.setdefault("smart_match_target_display", {})
     auto_source_map = st.session_state.setdefault("smart_match_auto_source_display", {})
     auto_target_map = st.session_state.setdefault("smart_match_auto_target_display", {})
@@ -2680,13 +2682,15 @@ def _apply_smart_product_suggestions_for_row(row_id: int, selected_codes: list, 
 
         suggestion_notes.pop(note_key, None)
         score_notes.pop(note_key, None)
+        confidence_notes.pop(note_key, None)
+        mode_notes.pop(note_key, None)
         suggestion_targets.pop(note_key, None)
 
         target_key = f"row_{row_id}_{target_code}_product"
         widget_key = get_product_widget_key(row_id, target_code)
         existing_target = str(st.session_state.get(target_key, "") or "").strip()
 
-        best_row, best_score = _generate_smart_product_suggestion(
+        best_row, best_score, best_mode, best_confidence = _generate_smart_product_suggestion(
             user_email=user_email,
             source_row=source_row.to_dict() if hasattr(source_row, "to_dict") else dict(source_row),
             target_df=catalogs.get(target_code),
@@ -2717,6 +2721,8 @@ def _apply_smart_product_suggestions_for_row(row_id: int, selected_codes: list, 
             st.session_state[widget_key] = suggested_display
             suggestion_notes[note_key] = "Suggested"
             score_notes[note_key] = best_score
+            confidence_notes[note_key] = best_confidence or ("medium" if best_score >= 2 else "low")
+            mode_notes[note_key] = best_mode or "table"
             suggestion_targets[note_key] = suggested_display
             auto_source_map[note_key] = source_display
             auto_target_map[note_key] = suggested_display
@@ -2724,10 +2730,14 @@ def _apply_smart_product_suggestions_for_row(row_id: int, selected_codes: list, 
             if existing_target != suggested_display:
                 suggestion_notes[note_key] = "Better match available"
                 score_notes[note_key] = best_score
+                confidence_notes[note_key] = best_confidence or ("medium" if best_score >= 2 else "low")
+                mode_notes[note_key] = best_mode or "table"
                 suggestion_targets[note_key] = suggested_display
             else:
                 suggestion_notes[note_key] = "Suggested"
                 score_notes[note_key] = best_score
+                confidence_notes[note_key] = best_confidence or ("medium" if best_score >= 2 else "low")
+                mode_notes[note_key] = best_mode or "table"
                 suggestion_targets[note_key] = suggested_display
 
 
@@ -3393,7 +3403,19 @@ def rebuild_central_match_table_from_comparisons():
         for _, row in companies_df.iterrows()
     }
 
-    for comparison_file in sorted(COMPARISONS_DIR.glob("*.json")):
+    all_comparison_files = []
+    for workspace_dir in sorted(PERSIST_ROOT.iterdir()):
+        if not workspace_dir.is_dir() or workspace_dir.name == "_admin":
+            continue
+
+        comparisons_dir = workspace_dir / "_saved_comparisons"
+        if not comparisons_dir.exists():
+            continue
+
+        for comparison_file in sorted(comparisons_dir.glob("*.json")):
+            all_comparison_files.append(comparison_file)
+
+    for comparison_file in all_comparison_files:
         try:
             records = list_comparisons(comparison_file)
         except Exception:
@@ -6780,15 +6802,19 @@ def render_comparisons():
 
                             smart_note = st.session_state.get("smart_match_notes", {}).get(f"{row_id}|{code}", "")
                             smart_score = st.session_state.get("smart_match_scores", {}).get(f"{row_id}|{code}", "")
+                            smart_confidence = str(st.session_state.get("smart_match_confidence", {}).get(f"{row_id}|{code}", "") or "").upper()
+                            smart_mode = str(st.session_state.get("smart_match_mode", {}).get(f"{row_id}|{code}", "") or "")
                             smart_target_display = st.session_state.get("smart_match_target_display", {}).get(f"{row_id}|{code}", "")
                             if smart_note:
                                 target_hint = ""
                                 if smart_note == "Better match available" and smart_target_display:
                                     target_hint = f" → {smart_target_display}"
+                                mode_hint = f" [{smart_mode}]" if smart_mode else ""
+                                confidence_hint = f" [{smart_confidence}]" if smart_confidence else ""
                                 try:
-                                    st.caption(f"{smart_note} by Smart Matching{target_hint} (score: {float(smart_score):.1f})")
+                                    st.caption(f"{smart_note} by Smart Matching{confidence_hint}{mode_hint}{target_hint} (score: {float(smart_score):.1f})")
                                 except Exception:
-                                    st.caption(f"{smart_note} by Smart Matching{target_hint}")
+                                    st.caption(f"{smart_note} by Smart Matching{confidence_hint}{mode_hint}{target_hint}")
 
                             if row is not None:
                                 st.write("SAP:", row["SAP"])

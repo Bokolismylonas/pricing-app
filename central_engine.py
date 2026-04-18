@@ -163,6 +163,15 @@ def extract_core_product_name(text: str) -> str:
     return text.strip()
 
 
+def strip_profile_length_keep_width(text: str) -> str:
+    text = str(text or "").replace(",", ".")
+    text = re.sub(r'(?<![x×])\b(2500|2700|2800|3000|3500|3600|3700|3800|4000|4500|6000)\s*mm\b', ' ', text, flags=re.IGNORECASE)
+    text = re.sub(r'(?<![x×])\b(2500|2700|2800|3000|3500|3600|3700|3800|4000|4500|6000)\b', ' ', text, flags=re.IGNORECASE)
+    text = re.sub(r'(?<!\d)(2\.5|2\.7|2\.8|3(?:\.0|\.5|\.6|\.7|\.8)?|4(?:\.0|\.5)?|6(?:\.0)?)\s*m\b', ' ', text, flags=re.IGNORECASE)
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
+
+
 def board_canonical_core(product_text: str = "", category_text: str = "", mm_text: str = "") -> str:
     text = strip_board_sheet_dimensions_keep_thickness(product_text)
     text = extract_core_product_name(text)
@@ -216,7 +225,10 @@ def simple_profile_subtype(product_text: str = "", category_text: str = "") -> s
 
 def simple_profile_width(product_text: str = "", mm_text: str = "") -> str:
     text = normalize_text(f"{product_text} {mm_text}")
-    m = re.search(r'\b(28|48|50|60|70|75|90|100|125|150)\b', text)
+    m = re.search(r'\b(?:uw|cw|ud|cd|ua)?\s*(28|48|50|60|70|75|90|100|125|150)\b', text)
+    if m:
+        return m.group(1)
+    m = re.search(r'\b(?:uw|cw|ud|cd|ua)(28|48|50|60|70|75|90|100|125|150)\b', text)
     return m.group(1) if m else ""
 
 
@@ -248,7 +260,9 @@ def make_choice_key(product_text: str, category_text: str = "", mm_text: str = "
     if family == "profile":
         subtype = simple_profile_subtype(product_text, category_text)
         width = simple_profile_width(product_text, mm_text)
-        core = normalize_text(extract_core_product_name(product_text))
+        core = normalize_text(extract_core_product_name(strip_profile_length_keep_width(product_text)))
+        core = re.sub(r'\b(?:mm|m)\b', ' ', core).strip()
+        core = re.sub(r'\s+', ' ', core).strip()
         return " | ".join([p for p in [family, subtype, width, unit, core] if p])
 
     func = simple_functional_tag(product_text, category_text, mm_text)
@@ -543,16 +557,18 @@ def suggest_product(
     source_row: Dict[str, Any],
     target_company: str,
     target_rows: Iterable[Dict[str, Any]],
-) -> Tuple[Optional[Dict[str, Any]], float, str]:
+) -> Tuple[Optional[Dict[str, Any]], float, str, str]:
     target_key, hits = engine.lookup(source_row, target_company)
 
     if target_key:
+        confidence = "high" if hits >= 4 else "medium" if hits >= 2 else "low"
         for row in target_rows:
             if choice_key_from_row(row) == target_key:
-                return row, float(hits), "table"
+                return row, float(hits), "table", confidence
 
     row, score = simple_clean_fallback(source_row, target_rows)
     if row is not None:
-        return row, score, "fallback"
+        confidence = "high" if score >= 9 else "medium" if score >= 6 else "low"
+        return row, score, "fallback", confidence
 
-    return None, 0.0, "none"
+    return None, 0.0, "none", ""
