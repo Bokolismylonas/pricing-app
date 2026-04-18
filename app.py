@@ -2842,6 +2842,55 @@ def _infer_board_functional_family(product_text: str, category_text: str = ""):
     tags.sort()
     return "+".join(tags)
 
+
+def _is_same_normalized_thickness(a, b):
+    ta = _extract_match_mm(str(a or ""))
+    tb = _extract_match_mm(str(b or ""))
+    if ta is None or tb is None:
+        return False
+    return abs(float(ta) - float(tb)) <= 0.11
+
+def _board_type_key(product_text: str, category_text: str = ""):
+    return _infer_board_functional_family(product_text, category_text)
+
+def _exact_saved_match_hard_stop_score(source_row: dict, target_row: dict, target_company: str) -> float | None:
+    product_a = str(source_row.get("Product", "") or "")
+    product_b = str(target_row.get("Product", "") or "")
+    category_a = str(source_row.get("Category", "") or "")
+    category_b = str(target_row.get("Category", "") or "")
+    mm_a = str(source_row.get("MM", "") or "")
+    mm_b = str(target_row.get("MM", "") or "")
+
+    # First: exact saved-comparison lookup should happen before all other logic,
+    # but still only for same target company bucket.
+    exact_hits = _exact_template_hits_for_candidate(
+        source_product=product_a,
+        target_company=target_company,
+        target_product=product_b,
+    )
+    if exact_hits < 1:
+        return None
+
+    # For gypsum boards: type first, thickness second, dimensions ignored.
+    source_is_board = any(token in f"{category_a} {product_a}".lower() for token in ["gypsum", "plasterboard", "drywall", "board", "γυψο", "γυψοσαν"])
+    target_is_board = any(token in f"{category_b} {product_b}".lower() for token in ["gypsum", "plasterboard", "drywall", "board", "γυψο", "γυψοσαν"])
+
+    if source_is_board and target_is_board:
+        type_a = _board_type_key(product_a, category_a)
+        type_b = _board_type_key(product_b, category_b)
+        if type_a != type_b:
+            return None
+        if not _is_same_normalized_thickness(f"{product_a} {mm_a}", f"{product_b} {mm_b}"):
+            return None
+        # HARD STOP: exact saved compatible board mapping wins immediately.
+        return 100000.0 + (exact_hits * 100.0)
+
+    # For non-boards, still require compatibility before hard stop.
+    if not _products_are_compatible(product_a, product_b, category_a, category_b, mm_a, mm_b):
+        return None
+
+    return 100000.0 + (exact_hits * 100.0)
+
 def _score_product_match_history_aware(user_email: str, source_row: dict, target_row: dict, target_company: str) -> float:
     product_a = str(source_row.get("Product", "") or "")
     product_b = str(target_row.get("Product", "") or "")
@@ -2852,6 +2901,16 @@ def _score_product_match_history_aware(user_email: str, source_row: dict, target
     package_a = str(source_row.get("Package", "") or "")
     package_b = str(target_row.get("Package", "") or "")
 
+    # 1) EXACT SAVED COMPARISON HARD STOP
+    exact_saved_stop = _exact_saved_match_hard_stop_score(
+        source_row=source_row,
+        target_row=target_row,
+        target_company=target_company,
+    )
+    if exact_saved_stop is not None:
+        return exact_saved_stop
+
+    # 2) RESTRICTIONS / COMPATIBILITY
     # Functional-first identity filter for gypsum boards:
     # If the source board is clearly specialized (fire / moisture / acoustic),
     # generic or conflicting target boards must be rejected before any recall/history scoring.
@@ -7437,7 +7496,7 @@ def render_admin_panel():
                 rebuild_material_equivalences_from_saved_comparisons()
             st.success("Material equivalence memory rebuilt successfully.")
     with smart_c3:
-        st.caption("A stable equivalence list is rebuilt only from saved comparisons. Repeated evidence updates the stable list, while exact saved-comparison templates can recall already validated compatible mappings per target company before the threshold is reached.")
+        st.caption("Priority order: 1) exact saved comparisons (hard stop), 2) restrictions, 3) stable equivalence, 4) history, 5) fallback. For gypsum boards: type first, thickness second, dimensions ignored.")
 
     st.markdown("### 📁 Source Files Per User")
 
