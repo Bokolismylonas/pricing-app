@@ -2029,19 +2029,22 @@ def get_all_active_comparison_locks():
 # MATERIAL EQUIVALENCE LAYER
 # -------------------------------------------------
 EQUIV_FILE = ADMIN_DIR / "material_equivalences.json"
+EQUIV_REEVAL_THRESHOLD = 10
 
 def _load_equivalences():
     if not EQUIV_FILE.exists():
-        return {"raw": {}, "compiled": {}}
+        return {"raw": {}, "compiled": {}, "meta": {"reeval_threshold": EQUIV_REEVAL_THRESHOLD}}
     try:
         data = json.loads(EQUIV_FILE.read_text(encoding="utf-8"))
         if isinstance(data, dict):
             data.setdefault("raw", {})
             data.setdefault("compiled", {})
+            data.setdefault("meta", {})
+            data["meta"].setdefault("reeval_threshold", EQUIV_REEVAL_THRESHOLD)
             return data
     except Exception:
         pass
-    return {"raw": {}, "compiled": {}}
+    return {"raw": {}, "compiled": {}, "meta": {"reeval_threshold": EQUIV_REEVAL_THRESHOLD}}
 
 def _save_equivalences(data):
     EQUIV_FILE.write_text(
@@ -2099,17 +2102,21 @@ def _compile_equivalences_from_raw(raw_store: dict):
             if not ranked:
                 continue
 
+            total_hits = sum(v for _, v in ranked)
             top_target, top_hits = ranked[0]
             second_hits = ranked[1][1] if len(ranked) > 1 else 0
 
-            # Confidence guardrails:
-            # - keep only repeated/credible mappings
-            # - avoid storing weak ambiguous winners
+            # Stable-list logic:
+            # 1) do not even reevaluate this source/company bucket until enough evidence exists
+            if total_hits < EQUIV_REEVAL_THRESHOLD:
+                continue
+
+            # 2) keep only strong, not-ambiguous winners
             if top_hits < 2:
                 continue
-            if top_hits < 3 and second_hits >= top_hits:
+            if second_hits > 0 and top_hits < second_hits * 1.35:
                 continue
-            if second_hits > 0 and top_hits < second_hits * 1.2:
+            if top_hits < max(3, int(total_hits * 0.35)):
                 continue
 
             compiled.setdefault(source_key, {}).setdefault(company_key, {})[top_target] = top_hits
@@ -2117,7 +2124,11 @@ def _compile_equivalences_from_raw(raw_store: dict):
     return compiled
 
 def rebuild_material_equivalences_from_saved_comparisons():
-    equivalences = {"raw": {}, "compiled": {}}
+    equivalences = {
+        "raw": {},
+        "compiled": {},
+        "meta": {"reeval_threshold": EQUIV_REEVAL_THRESHOLD},
+    }
     raw_store = equivalences["raw"]
 
     display_to_code = {
@@ -7246,7 +7257,7 @@ def render_admin_panel():
                 rebuild_material_equivalences_from_saved_comparisons()
             st.success("Material equivalence memory rebuilt successfully.")
     with smart_c3:
-        st.caption("History and equivalence memory are built only from saved comparisons. Equivalences are stored only when repeated strongly enough to pass confidence filtering.")
+        st.caption("A stable equivalence list is rebuilt only from saved comparisons. It updates only when enough repeated evidence exists (threshold-based re-evaluation), while restrictions keep irrelevant matches out from the start.")
 
     st.markdown("### 📁 Source Files Per User")
 
