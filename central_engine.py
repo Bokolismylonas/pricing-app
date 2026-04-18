@@ -152,8 +152,12 @@ def strip_board_sheet_dimensions_keep_thickness(text: str) -> str:
     text = re.sub(r'(?<!\d)(\d{1,2}(?:\.\d+)?)\s*[x×]\s*\d{3,4}\s*[x×]\s*\d{3,4}\b', r'\1 mm ', text, flags=re.IGNORECASE)
     text = re.sub(r'\b\d{3,4}\s*[x×]\s*\d{3,4}\s*mm\b', ' ', text, flags=re.IGNORECASE)
     text = re.sub(r'\b\d{3,4}\s*[x×]\s*\d{3,4}\b', ' ', text, flags=re.IGNORECASE)
+    # Boards: ignore trailing sheet length whether written as 2500/2800/3000 or 2.5m/2,8m etc.
+    text = re.sub(r'(?<![\dx×])[-–—\s]*\b(2000|2400|2500|2600|2700|2800|3000|3200|3600)\s*mm\b', ' ', text, flags=re.IGNORECASE)
+    text = re.sub(r'(?<![\dx×])[-–—\s]*\b(2000|2400|2500|2600|2700|2800|3000|3200|3600)\b', ' ', text, flags=re.IGNORECASE)
+    text = re.sub(r'(?<![\dx×])[-–—\s]*\b(2(?:\.0|\.4|\.5|\.6|\.7|\.8)?|3(?:\.0|\.2|\.6)?)\s*m\b', ' ', text, flags=re.IGNORECASE)
     text = re.sub(r'\s+', ' ', text)
-    return text.strip()
+    return text.strip(' -_')
 
 
 def extract_core_product_name(text: str) -> str:
