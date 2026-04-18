@@ -2693,7 +2693,12 @@ def _apply_smart_product_suggestions_for_row(row_id: int, selected_codes: list, 
             target_company=target_code,
         )
 
+        # Table-mode suggestions return learned hit counts (often small integers like 2-5),
+        # while fallback-mode suggestions return similarity-like scores. Using a hard threshold
+        # of 22 blocks almost every learned suggestion from ever showing up.
         if best_row is None:
+            continue
+        if best_score < 2:
             continue
 
         suggested_display = str(best_row.get("DISPLAY", "") or "").strip()
@@ -2729,6 +2734,17 @@ def _apply_smart_product_suggestions_for_row(row_id: int, selected_codes: list, 
                 suggestion_notes[note_key] = "Suggested"
                 score_notes[note_key] = best_score
                 suggestion_targets[note_key] = suggested_display
+
+
+def _run_render_loop_suggestions(selected_codes: list, catalogs: dict):
+    if not st.session_state.get("smart_matching_enabled", False):
+        return
+
+    if len(selected_codes) < 2:
+        return
+
+    for row_id in st.session_state.get("row_ids", []) or []:
+        _apply_smart_product_suggestions_for_row(row_id, selected_codes, catalogs)
 
 
 # -------------------------------------------------
@@ -6579,6 +6595,8 @@ def render_comparisons():
             else:
                 catalogs[code] = None
 
+        _run_render_loop_suggestions(selected_codes, catalogs)
+
 
     if selected_codes:
         st.markdown("---")
@@ -6755,11 +6773,12 @@ def render_comparisons():
                                 f"{label} product",
                                 options,
                                 key=product_widget_key,
-                                on_change=lambda: mark_comparison_dirty(),
+                                on_change=lambda r=row_id, c=code, sc=selected_codes, cats=catalogs: (
+                                    sync_product_widget_to_data(r, c),
+                                    _apply_smart_product_suggestions_for_row(r, sc, cats) if (len(sc) > 0 and c == sc[0] and st.session_state.get("smart_matching_enabled", False)) else None,
+                                    mark_comparison_dirty()
+                                ),
                             )
-                            sync_product_widget_to_data(row_id, code)
-                            if len(selected_codes) > 0 and code == selected_codes[0] and st.session_state.get("smart_matching_enabled", False):
-                                _apply_smart_product_suggestions_for_row(row_id, selected_codes, catalogs)
                             selected_product = st.session_state.get(f"row_{row_id}_{code}_product", "")
                             row = get_catalog_row(df, selected_product)
 
