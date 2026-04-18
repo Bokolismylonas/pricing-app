@@ -463,30 +463,29 @@ class CentralMatchEngine:
         data = self.load()
         source_key = choice_key_from_row(source_row)
         company_key = str(target_company or "").strip().upper()
+
         entry = data.get("stable", {}).get(source_key, {}).get(company_key, {})
-        if isinstance(entry, dict) and str(entry.get("target_key", "") or ""):
-            return str(entry.get("target_key", "") or ""), int(entry.get("hits", 0))
+        if isinstance(entry, dict):
+            target_key = str(entry.get("target_key", "") or "")
+            hits = int(entry.get("hits", 0))
+            if target_key:
+                return target_key, hits
 
-        # Early lookup from register so matching starts working before the table becomes fully stable.
-        target_map = data.get("register", {}).get(source_key, {}).get(company_key, {})
-        if not isinstance(target_map, dict) or not target_map:
-            return "", 0
+        register_targets = data.get("register", {}).get(source_key, {}).get(company_key, {})
+        if isinstance(register_targets, dict) and register_targets:
+            ranked = []
+            for target_key, payload in register_targets.items():
+                hits = int(payload.get("hits", 0)) if isinstance(payload, dict) else int(payload or 0)
+                ok, _ = self.restrictions_pass(source_key, target_key)
+                if ok and hits > 0:
+                    ranked.append((target_key, hits))
+            ranked.sort(key=lambda x: x[1], reverse=True)
+            if ranked:
+                top_target, top_hits = ranked[0]
+                second_hits = ranked[1][1] if len(ranked) > 1 else 0
+                if top_hits >= 2 and (second_hits == 0 or top_hits >= second_hits):
+                    return top_target, top_hits
 
-        valid = []
-        for target_key, payload in target_map.items():
-            hits = int(payload.get("hits", 0)) if isinstance(payload, dict) else int(payload or 0)
-            ok, _ = self.restrictions_pass(source_key, target_key)
-            if ok:
-                valid.append((target_key, hits))
-
-        if not valid:
-            return "", 0
-
-        valid.sort(key=lambda x: x[1], reverse=True)
-        top_target, top_hits = valid[0]
-        second_hits = valid[1][1] if len(valid) > 1 else 0
-        if top_hits >= 2 and (second_hits == 0 or top_hits >= second_hits * 1.35):
-            return str(top_target or ""), int(top_hits)
         return "", 0
 
 
