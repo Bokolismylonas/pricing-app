@@ -2129,6 +2129,7 @@ def _compile_equivalences_from_raw(raw_store: dict):
 # -------------------------------------------------
 # STABLE SAVED-COMPARISON TABLE (PRIMARY HARD STOP)
 # -------------------------------------------------
+
 STABLE_TABLE_FILE = ADMIN_DIR / "stable_saved_table.json"
 STABLE_TABLE_REEVAL_THRESHOLD = 10
 
@@ -2137,6 +2138,7 @@ def _load_stable_saved_table():
         return {
             "register": {},
             "entries": {},
+            "quarantine": {},
             "meta": {
                 "reeval_threshold": STABLE_TABLE_REEVAL_THRESHOLD,
                 "total_saved_events": 0,
@@ -2149,6 +2151,7 @@ def _load_stable_saved_table():
         if isinstance(data, dict):
             data.setdefault("register", {})
             data.setdefault("entries", {})
+            data.setdefault("quarantine", {})
             data.setdefault("meta", {})
             data["meta"].setdefault("reeval_threshold", STABLE_TABLE_REEVAL_THRESHOLD)
             data["meta"].setdefault("total_saved_events", 0)
@@ -2160,6 +2163,7 @@ def _load_stable_saved_table():
     return {
         "register": {},
         "entries": {},
+        "quarantine": {},
         "meta": {
             "reeval_threshold": STABLE_TABLE_REEVAL_THRESHOLD,
             "total_saved_events": 0,
@@ -2174,6 +2178,16 @@ def _save_stable_saved_table(data):
         encoding="utf-8",
     )
 
+def _count_total_saved_comparisons():
+    total = 0
+    for comparison_file in sorted(COMPARISONS_DIR.glob("*.json")):
+        try:
+            records = list_comparisons(comparison_file)
+        except Exception:
+            continue
+        total += len(records)
+    return total
+
 def _normalized_board_thickness_key(product_text: str = "", mm_text: str = ""):
     t = _extract_match_mm(f"{product_text} {mm_text}")
     if t is None:
@@ -2186,34 +2200,109 @@ def _normalized_board_thickness_key(product_text: str = "", mm_text: str = ""):
         return "13.0"
     return f"{float(t):.1f}"
 
-def _make_stable_source_key(product_text: str, category_text: str = "", mm_text: str = ""):
+def _is_board_product(product_text: str = "", category_text: str = "", mm_text: str = "") -> bool:
+    text = _normalize_match_text(f"{product_text} {category_text}")
     family = _infer_product_family(product_text, category_text, mm_text)
-    core = _normalize_match_text(_extract_core_product_name(product_text))
-    board_family = ""
-    context = _normalize_match_text(f"{product_text} {category_text}")
-    if any(tok in context for tok in ["gypsum", "plasterboard", "drywall", "board", "γυψο", "γυψοσαν"]):
-        board_family = _infer_board_functional_family(product_text, category_text)
+    return family == "board" or any(tok in text for tok in ["γυψο", "γυψοσαν", "gypsum", "plasterboard", "drywall", "habito", "vidiwall", "massivbauplatte"])
+
+def _strip_board_sheet_dimensions_keep_thickness(text: str):
+    text = str(text or "").replace(",", ".")
+    text = re.sub(r'(?<!\d)(\d{1,2}(?:\.\d+)?)\s*[x×]\s*\d{3,4}\s*[x×]\s*\d{3,4}\s*mm\b', r'\1 mm ', text, flags=re.IGNORECASE)
+    text = re.sub(r'(?<!\d)(\d{1,2}(?:\.\d+)?)\s*[x×]\s*\d{3,4}\s*[x×]\s*\d{3,4}\b', r'\1 mm ', text, flags=re.IGNORECASE)
+    text = re.sub(r'\b\d{3,4}\s*[x×]\s*\d{3,4}\s*mm\b', ' ', text, flags=re.IGNORECASE)
+    text = re.sub(r'\b\d{3,4}\s*[x×]\s*\d{3,4}\b', ' ', text, flags=re.IGNORECASE)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+def _board_canonical_core(product_text: str = "", category_text: str = "", mm_text: str = ""):
+    text = _strip_board_sheet_dimensions_keep_thickness(product_text)
+    text = _extract_core_product_name(text)
+    text = _normalize_match_text(text)
+
     thickness_key = _normalized_board_thickness_key(product_text, mm_text)
-    parts = [p for p in [family, board_family, thickness_key, core] if p]
+    if thickness_key:
+        thickness_variants = {thickness_key, thickness_key.replace(".", ","), thickness_key.replace(".", "")}
+        for tv in thickness_variants:
+            if tv:
+                text = re.sub(rf'(?<!\d){re.escape(tv)}(?!\d)', ' ', text)
+    text = re.sub(r'\bmm\b', ' ', text)
+    text = re.sub(r'\b(?:1200|1250|600|2000|2400|2500|2600|2800|3000)\b', ' ', text)
+    text = re.sub(r'\b(?:ak|hrak|edge|edges|ακρα)\b', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+def _normalize_mm_unit(mm_text: str):
+    t = _normalize_match_text(mm_text)
+    if not t:
+        return ""
+    if t in {"m2", "m²", "sqm", "sq m", "τετρ μετρο", "τετραγωνικο μετρο"}:
+        return "m2"
+    if t in {"m", "meter", "metre", "μετρο", "μέτρο"}:
+        return "m"
+    if t in {"tmx", "temaxio", "temachio", "temaxia", "temachia", "τεμ", "τεμ.", "τεμαχιο", "τεμαχια", "piece", "pieces", "pc", "pcs"}:
+        return "piece"
+    return t
+
+def _simple_profile_subtype(product_text: str = "", category_text: str = ""):
+    text = _normalize_match_text(f"{product_text} {category_text}")
+    for subtype in ["uw", "cw", "ud", "cd"]:
+        if re.search(rf'\b{subtype}\b', text):
+            return subtype
+    if "ορθοστατ" in text or "stud" in text:
+        return "stud"
+    if "στρωτηρ" in text or "track" in text or "οδηγ" in text:
+        return "track"
+    return ""
+
+def _simple_profile_width(product_text: str = "", mm_text: str = ""):
+    text = _normalize_match_text(f"{product_text} {mm_text}")
+    m = re.search(r'\b(48|50|70|75|100|125|150)\b', text)
+    return m.group(1) if m else ""
+
+def _simple_functional_tag(product_text: str = "", category_text: str = "", mm_text: str = ""):
+    family = _infer_product_family(product_text, category_text, mm_text)
+    if family == "board" or _is_board_product(product_text, category_text, mm_text):
+        return _infer_board_functional_family(product_text, category_text)
+
+    text = _normalize_match_text(f"{product_text} {category_text}")
+    tags = []
+    if any(tok in text for tok in ["hydro", "h2", "ανθυγρ", "moist", "aqua"]):
+        tags.append("moisture")
+    if any(tok in text for tok in ["flam", "fire", "πυραντ", " df ", " dfh", "rf", "type f", "smart f"]):
+        tags.append("fire")
+    if any(tok in text for tok in ["acoustic", "sound", "phon", "silent", "ηχο"]):
+        tags.append("acoustic")
+    return "+".join(sorted(tags))
+
+def _make_choice_source_key(product_text: str, category_text: str = "", mm_text: str = ""):
+    family = _infer_product_family(product_text, category_text, mm_text)
+    mm_unit = _normalize_mm_unit(mm_text)
+    if family == "board" or _is_board_product(product_text, category_text, mm_text):
+        core = _board_canonical_core(product_text, category_text, mm_text)
+        board_family = _infer_board_functional_family(product_text, category_text)
+        thickness_key = _normalized_board_thickness_key(product_text, mm_text)
+        parts = [p for p in [family, board_family, thickness_key, core, mm_unit] if p]
+        return " | ".join(parts)
+
+    if family == "profile":
+        subtype = _simple_profile_subtype(product_text, category_text)
+        width = _simple_profile_width(product_text, mm_text)
+        core = _normalize_match_text(_extract_core_product_name(product_text))
+        parts = [p for p in [family, subtype, width, mm_unit, core] if p]
+        return " | ".join(parts)
+
+    core = _normalize_match_text(_extract_core_product_name(product_text))
+    func = _simple_functional_tag(product_text, category_text, mm_text)
+    parts = [p for p in [family, func, mm_unit, core] if p]
     return " | ".join(parts)
 
-def _make_stable_target_key(product_text: str, category_text: str = "", mm_text: str = ""):
-    family = _infer_product_family(product_text, category_text, mm_text)
-    core = _normalize_match_text(_extract_core_product_name(product_text))
-    board_family = ""
-    context = _normalize_match_text(f"{product_text} {category_text}")
-    if any(tok in context for tok in ["gypsum", "plasterboard", "drywall", "board", "γυψο", "γυψοσαν"]):
-        board_family = _infer_board_functional_family(product_text, category_text)
-    thickness_key = _normalized_board_thickness_key(product_text, mm_text)
-    parts = [p for p in [family, board_family, thickness_key, core] if p]
-    return " | ".join(parts)
+def _make_choice_target_key(product_text: str, category_text: str = "", mm_text: str = ""):
+    return _make_choice_source_key(product_text, category_text, mm_text)
 
-def _record_stable_table_pair(register_store: dict, source_product: str, target_company: str, target_product: str):
-    if not _products_are_compatible(source_product, target_product):
-        return
-
-    source_key = _make_stable_source_key(source_product)
-    target_key = _make_stable_target_key(target_product)
+def _record_choice_pair(register_store: dict, source_product: str, target_company: str, target_product: str):
+    # Register user choice simply. Restrictions will be applied during re-evaluation/quarantine.
+    source_key = _make_choice_source_key(source_product)
+    target_key = _make_choice_target_key(target_product)
     company_key = str(target_company or "").strip().upper()
 
     if not source_key or not target_key or not company_key:
@@ -2222,8 +2311,56 @@ def _record_stable_table_pair(register_store: dict, source_product: str, target_
     bucket = register_store.setdefault(source_key, {}).setdefault(company_key, {})
     bucket[target_key] = int(bucket.get(target_key, 0)) + 1
 
+def _choice_target_passes_restrictions(source_key: str, target_key: str) -> bool:
+    # Lightweight key-level safety checks during re-evaluation only.
+    s_parts = [p.strip() for p in str(source_key or "").split("|")]
+    t_parts = [p.strip() for p in str(target_key or "").split("|")]
+    if not s_parts or not t_parts:
+        return False
+
+    source_family = s_parts[0] if len(s_parts) >= 1 else ""
+    target_family = t_parts[0] if len(t_parts) >= 1 else ""
+    if source_family and target_family and source_family != target_family:
+        return False
+
+    # Boards: same board type and same normalized thickness
+    if source_family == "board":
+        s_type = s_parts[1] if len(s_parts) >= 2 else ""
+        t_type = t_parts[1] if len(t_parts) >= 2 else ""
+        s_th = s_parts[2] if len(s_parts) >= 3 else ""
+        t_th = t_parts[2] if len(t_parts) >= 3 else ""
+        if s_type and t_type and s_type != t_type:
+            return False
+        if s_th and t_th and s_th != t_th:
+            return False
+
+    # Profiles: same subtype/width/unit
+    if source_family == "profile":
+        s_sub = s_parts[1] if len(s_parts) >= 2 else ""
+        t_sub = t_parts[1] if len(t_parts) >= 2 else ""
+        s_width = s_parts[2] if len(s_parts) >= 3 else ""
+        t_width = t_parts[2] if len(t_parts) >= 3 else ""
+        s_unit = s_parts[3] if len(s_parts) >= 4 else ""
+        t_unit = t_parts[3] if len(t_parts) >= 4 else ""
+        if s_sub and t_sub and s_sub != t_sub:
+            return False
+        if s_width and t_width and s_width != t_width:
+            return False
+        if s_unit and t_unit and s_unit != t_unit:
+            return False
+
+    # General same unit where encoded
+    if source_family not in {"board", "profile"}:
+        s_unit = s_parts[2] if len(s_parts) >= 3 else ""
+        t_unit = t_parts[2] if len(t_parts) >= 3 else ""
+        if s_unit and t_unit and s_unit != t_unit:
+            return False
+
+    return True
+
 def _compile_stable_saved_table(register_store: dict):
     compiled = {}
+    quarantine = {}
     for source_key, company_map in (register_store or {}).items():
         if not isinstance(company_map, dict):
             continue
@@ -2231,14 +2368,24 @@ def _compile_stable_saved_table(register_store: dict):
             if not isinstance(target_map, dict) or not target_map:
                 continue
 
-            ranked = sorted(
-                [(str(k), int(v)) for k, v in target_map.items() if str(k).strip()],
-                key=lambda x: x[1],
-                reverse=True,
-            )
-            if not ranked:
+            valid_ranked = []
+            quarantine_ranked = []
+            for k, v in target_map.items():
+                item = (str(k), int(v))
+                if _choice_target_passes_restrictions(source_key, k):
+                    valid_ranked.append(item)
+                else:
+                    quarantine_ranked.append(item)
+
+            if quarantine_ranked:
+                quarantine.setdefault(source_key, {}).setdefault(company_key, {})
+                for k, v in quarantine_ranked:
+                    quarantine[source_key][company_key][k] = v
+
+            if not valid_ranked:
                 continue
 
+            ranked = sorted(valid_ranked, key=lambda x: x[1], reverse=True)
             total_hits = sum(v for _, v in ranked)
             top_target, top_hits = ranked[0]
             second_hits = ranked[1][1] if len(ranked) > 1 else 0
@@ -2251,7 +2398,7 @@ def _compile_stable_saved_table(register_store: dict):
                 continue
 
             compiled.setdefault(source_key, {}).setdefault(company_key, {})[top_target] = top_hits
-    return compiled
+    return compiled, quarantine
 
 def _seed_stable_table_register_from_existing_comparisons_if_needed():
     data = _load_stable_saved_table()
@@ -2297,13 +2444,16 @@ def _seed_stable_table_register_from_existing_comparisons_if_needed():
                 if len(row_products) < 2:
                     continue
 
+                # Horizontal pairwise registration in all directions
                 for source_code, source_product in row_products:
                     for target_code, target_product in row_products:
                         if source_code == target_code:
                             continue
-                        _record_stable_table_pair(register_store, source_product, target_code, target_product)
+                        _record_choice_pair(register_store, source_product, target_code, target_product)
 
-    data["entries"] = _compile_stable_saved_table(register_store)
+    compiled, quarantine = _compile_stable_saved_table(register_store)
+    data["entries"] = compiled
+    data["quarantine"] = quarantine
     data["meta"]["total_saved_events"] = max(int(data["meta"].get("total_saved_events", 0)), saved_events)
     data["meta"]["last_compiled_saved_events"] = int(data["meta"].get("total_saved_events", 0))
     data["meta"]["seeded_from_existing_comparisons"] = True
@@ -2328,20 +2478,22 @@ def _register_current_state_to_stable_saved_table(payload_state: dict, selected_
         if len(row_products) < 2:
             continue
 
+        # Horizontal pairwise registration in all directions
         for source_code, source_product in row_products:
             for target_code, target_product in row_products:
                 if source_code == target_code:
                     continue
-                _record_stable_table_pair(register_store, source_product, target_code, target_product)
+                _record_choice_pair(register_store, source_product, target_code, target_product)
 
     data["meta"]["total_saved_events"] = int(data["meta"].get("total_saved_events", 0)) + 1
 
-    # Re-evaluate only every N new saved events
     threshold = int(data.get("meta", {}).get("reeval_threshold", STABLE_TABLE_REEVAL_THRESHOLD))
     total_events = int(data["meta"].get("total_saved_events", 0))
     last_compiled = int(data["meta"].get("last_compiled_saved_events", 0))
     if (total_events - last_compiled) >= threshold or not data.get("entries"):
-        data["entries"] = _compile_stable_saved_table(register_store)
+        compiled, quarantine = _compile_stable_saved_table(register_store)
+        data["entries"] = compiled
+        data["quarantine"] = quarantine
         data["meta"]["last_compiled_saved_events"] = total_events
 
     data["meta"]["seeded_from_existing_comparisons"] = True
@@ -2349,10 +2501,11 @@ def _register_current_state_to_stable_saved_table(payload_state: dict, selected_
     st.session_state["_stable_saved_table_ready"] = True
 
 def rebuild_stable_saved_table_from_comparisons():
-    # Admin rebuild / reset from currently existing comparisons only.
+    # Admin rebuild/reset from currently existing comparisons only.
     data = {
         "register": {},
         "entries": {},
+        "quarantine": {},
         "meta": {
             "reeval_threshold": STABLE_TABLE_REEVAL_THRESHOLD,
             "total_saved_events": 0,
@@ -2401,9 +2554,11 @@ def rebuild_stable_saved_table_from_comparisons():
                     for target_code, target_product in row_products:
                         if source_code == target_code:
                             continue
-                        _record_stable_table_pair(data["register"], source_product, target_code, target_product)
+                        _record_choice_pair(data["register"], source_product, target_code, target_product)
 
-    data["entries"] = _compile_stable_saved_table(data["register"])
+    compiled, quarantine = _compile_stable_saved_table(data["register"])
+    data["entries"] = compiled
+    data["quarantine"] = quarantine
     data["meta"]["last_compiled_saved_events"] = int(data["meta"]["total_saved_events"])
     _save_stable_saved_table(data)
     st.session_state["_stable_saved_table_ready"] = True
@@ -2414,13 +2569,12 @@ def _maybe_rebuild_stable_saved_table():
 def _stable_saved_table_hits_for_candidate(source_product: str, target_company: str, target_product: str) -> int:
     data = _load_stable_saved_table()
     entries = data.get("entries", {})
-    source_key = _make_stable_source_key(source_product)
-    target_key = _make_stable_target_key(target_product)
+    source_key = _make_choice_source_key(source_product)
+    target_key = _make_choice_target_key(target_product)
     company_key = str(target_company or "").strip().upper()
     if not source_key or not target_key or not company_key:
         return 0
     return int(entries.get(source_key, {}).get(company_key, {}).get(target_key, 0))
-
 
 def _make_exact_template_source_key(source_product: str, source_category: str = "", source_mm: str = ""):
     core = _normalize_match_text(_extract_core_product_name(source_product))
