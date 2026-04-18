@@ -2126,19 +2126,10 @@ def _compile_equivalences_from_raw(raw_store: dict):
 
 
 def _make_exact_template_source_key(source_product: str, source_category: str = "", source_mm: str = ""):
-    core = _normalize_match_text(_extract_core_product_name(source_product))
-    family = _infer_product_family(source_product, source_category, source_mm)
-    board_family = ""
-    context = _normalize_match_text(f"{source_product} {source_category}")
-    if any(tok in context for tok in ["gypsum", "plasterboard", "drywall", "board", "γυψο", "γυψοσαν"]):
-        board_family = _infer_board_functional_family(source_product, source_category)
-
-    thickness = _extract_match_mm(f"{source_product} {source_mm}")
-    thickness_key = ""
-    if thickness is not None:
-        thickness_key = f"{thickness:.1f}"
-
-    parts = [p for p in [core, family, board_family, thickness_key] if p]
+    identity = _infer_product_identity(source_product, source_category, source_mm)
+    thickness_key = f"{identity['thickness']:.1f}" if identity.get("thickness") is not None else ""
+    traits_key = "+".join(sorted(identity.get("traits", set()))) if identity.get("traits") else ""
+    parts = [p for p in [identity.get("core", ""), identity.get("family", ""), identity.get("board_family", ""), traits_key, thickness_key] if p]
     return " | ".join(parts)
 
 def _make_exact_template_target_key(target_product: str, target_category: str = "", target_mm: str = ""):
@@ -2763,6 +2754,85 @@ def rebuild_match_history_from_scratch():
     st.session_state["_smart_match_backfill_done"] = True
 
 
+def _infer_functional_traits(product_text: str, category_text: str = ""):
+    text = _normalize_match_text(f"{product_text} {category_text}")
+
+    traits = set()
+
+    groups = {
+        "fire": ["flam", "fire", "πυραντ", " df ", " dfh", "rf", "type f", "f1", "smart f"],
+        "moisture": ["hydro", "h2", "ανθυγρ", "moist", "aqua"],
+        "acoustic": ["acoustic", "sound", "phon", "silent", "ηχο"],
+        "flexible": ["flex", "elastic", "elast", "εύκαμπ", "flexible"],
+        "cementitious": ["cement", "τσιμεντ", "slurry", "mortar", "κονια", "mortar"],
+        "adhesive": ["adhes", "glue", "κολλα", "tilefix", "fix", "τσιμεντοκολλα"],
+        "waterproofing": ["aquamat", "sikaelastic", "mapelastic", "στεγαν", "waterproof", "hydro", "aqua"],
+        "profile_track": ["uw", "ud", "track", "στρωτηρ", "οδηγ"],
+        "profile_stud": ["cw", "cd", "stud", "ορθοστατ"],
+    }
+
+    for trait, tokens in groups.items():
+        if any(tok in text for tok in tokens):
+            traits.add(trait)
+
+    return traits
+
+def _infer_product_identity(product_text: str, category_text: str = "", mm_text: str = ""):
+    family = _infer_product_family(product_text, category_text, mm_text)
+    core = _normalize_match_text(_extract_core_product_name(product_text))
+    thickness = _extract_match_mm(f"{product_text} {mm_text}")
+    traits = _infer_functional_traits(product_text, category_text)
+
+    identity = {
+        "family": family,
+        "core": core,
+        "thickness": thickness,
+        "traits": traits,
+    }
+
+    context = _normalize_match_text(f"{product_text} {category_text}")
+    if any(tok in context for tok in ["gypsum", "plasterboard", "drywall", "board", "γυψο", "γυψοσαν"]):
+        identity["board_family"] = _infer_board_functional_family(product_text, category_text)
+    else:
+        identity["board_family"] = ""
+
+    return identity
+
+def _traits_similarity_bonus(source_identity: dict, target_identity: dict) -> float:
+    s_traits = set(source_identity.get("traits", set()) or set())
+    t_traits = set(target_identity.get("traits", set()) or set())
+
+    if not s_traits and not t_traits:
+        return 0.0
+
+    bonus = 0.0
+    common = s_traits & t_traits
+    if common:
+        bonus += 8.0 * len(common)
+
+    if "fire" in s_traits and "fire" not in t_traits and target_identity.get("family") == source_identity.get("family"):
+        bonus -= 10.0
+    if "moisture" in s_traits and "moisture" not in t_traits and target_identity.get("family") == source_identity.get("family"):
+        bonus -= 8.0
+    if "acoustic" in s_traits and "acoustic" not in t_traits and target_identity.get("family") == source_identity.get("family"):
+        bonus -= 6.0
+
+    return bonus
+
+def _identity_gate_allows(source_identity: dict, target_identity: dict) -> bool:
+    sf = source_identity.get("family", "unknown")
+    tf = target_identity.get("family", "unknown")
+
+    if sf != "unknown" and tf != "unknown" and sf != tf:
+        return False
+
+    sb = source_identity.get("board_family", "")
+    tb = target_identity.get("board_family", "")
+    if sb and tb and sb != tb:
+        return False
+
+    return True
+
 def _infer_board_functional_family(product_text: str, category_text: str = ""):
     text = _normalize_match_text(f"{product_text} {category_text}")
 
@@ -2804,6 +2874,12 @@ def _score_product_match_history_aware(user_email: str, source_row: dict, target
     compatible_for_history = _products_are_compatible(
         product_a, product_b, category_a, category_b, mm_a, mm_b
     )
+    if not compatible_for_history:
+        return -9999.0
+
+    source_identity = _infer_product_identity(product_a, category_a, mm_a)
+    target_identity = _infer_product_identity(product_b, category_b, mm_b)
+    identity_allowed = _identity_gate_allows(source_identity, target_identity)
 
     if compatible_for_history:
         personal_hits, global_hits = _history_hits_for_candidate(
@@ -2837,7 +2913,6 @@ def _score_product_match_history_aware(user_email: str, source_row: dict, target
     else:
         personal_hits, global_hits, learned_core_hits, equivalence_hits, raw_equivalence_hits, exact_template_hits = 0, 0, 0, 0, 0, 0
 
-    # HISTORY FIRST, but still combined with names + characteristics
     personal_history_score = min(personal_hits * 30.0, 60.0)
     global_history_score = min(global_hits * 15.0, 50.0)
     learned_core_score = min(learned_core_hits * 18.0, 55.0)
@@ -2859,8 +2934,8 @@ def _score_product_match_history_aware(user_email: str, source_row: dict, target
             dim_score += 3.0
 
     thickness_score = 0.0
-    thick_a = _extract_match_mm(product_a + " " + mm_a)
-    thick_b = _extract_match_mm(product_b + " " + mm_b)
+    thick_a = source_identity.get("thickness")
+    thick_b = target_identity.get("thickness")
     if thick_a is not None and thick_b is not None:
         if abs(thick_a - thick_b) < 0.01:
             thickness_score += 8.0
@@ -2876,22 +2951,18 @@ def _score_product_match_history_aware(user_email: str, source_row: dict, target
         if str(mm_a).strip().lower() == str(mm_b).strip().lower():
             mm_score += 3.0
 
-    # Package remains very low priority
     package_score = _text_similarity(package_a, package_b) * 1.5
-
-    # General rule: dimensions and packaging are weak signals, core name is stronger.
     dim_score *= 0.35
     package_score *= 0.8
 
-    # Special strengthening for gypsum/plasterboards
+    functional_family_score = _traits_similarity_bonus(source_identity, target_identity)
+
     product_context = f"{category_a} {category_b} {product_a} {product_b}".lower()
     is_gypsum_board = any(token in product_context for token in [
         "gypsum", "plasterboard", "drywall", "board", "γυψο", "γυψοσαν"
     ])
 
-    functional_family_score = 0.0
     if is_gypsum_board:
-        # For gypsum boards, dimensions should not affect matching.
         dim_score = 0.0
         thickness_score *= 2.4
         category_score *= 1.4
@@ -2899,8 +2970,8 @@ def _score_product_match_history_aware(user_email: str, source_row: dict, target
         core_name_score *= 2.4
         name_score = full_name_score + core_name_score
 
-        fam_a = _infer_board_functional_family(product_a, category_a)
-        fam_b = _infer_board_functional_family(product_b, category_b)
+        fam_a = source_identity.get("board_family", "standard") or "standard"
+        fam_b = target_identity.get("board_family", "standard") or "standard"
 
         if fam_a == fam_b:
             functional_family_score += 30.0
@@ -2909,21 +2980,30 @@ def _score_product_match_history_aware(user_email: str, source_row: dict, target
         else:
             functional_family_score -= 28.0
 
-        # If the board functional family clearly disagrees, history should not dominate.
         if fam_a != fam_b and fam_a != "standard" and fam_b != "standard":
             personal_history_score *= 0.2
             global_history_score *= 0.2
             learned_core_score *= 0.2
+            equivalence_score *= 0.2
 
-        # If this exact compatible family has already appeared in saved comparisons even once,
-        # give it a strong but not blind boost so specific prior mappings beat generic alternatives.
         if raw_equivalence_hits >= 1 and fam_a == fam_b:
             raw_equivalence_score = 90.0 + (raw_equivalence_hits * 12.0)
 
-        # Strongest recall: if the same source template has already been saved for this exact company-target pattern,
-        # prefer that validated mapping over generic alternatives.
-        if exact_template_hits >= 1 and fam_a == fam_b:
+        if exact_template_hits >= 1 and fam_a == fam_b and identity_allowed:
             exact_template_score = 180.0 + (exact_template_hits * 20.0)
+    else:
+        if exact_template_hits >= 1 and identity_allowed:
+            exact_template_score = 120.0 + (exact_template_hits * 18.0)
+        if raw_equivalence_hits >= 1 and identity_allowed:
+            raw_equivalence_score = 50.0 + (raw_equivalence_hits * 10.0)
+
+    if not identity_allowed:
+        exact_template_score = 0.0
+        raw_equivalence_score = 0.0
+        equivalence_score *= 0.2
+        personal_history_score *= 0.2
+        global_history_score *= 0.2
+        learned_core_score *= 0.2
 
     score = (
         exact_template_score
