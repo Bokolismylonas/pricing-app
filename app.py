@@ -2698,10 +2698,38 @@ def _apply_smart_product_suggestions_for_row(row_id: int, selected_codes: list, 
         )
 
         if best_row is None or best_score < 2:
+            # No valid learned match for this company: clear only previous auto-filled values,
+            # but do not overwrite a user-selected manual value.
+            if previous_auto_target and existing_target == previous_auto_target:
+                st.session_state[target_key] = ""
+                st.session_state[widget_key] = ""
+                existing_target = ""
+                auto_target_map.pop(note_key, None)
+                auto_source_map.pop(note_key, None)
+
+            if not existing_target:
+                suggestion_notes[note_key] = "No match found"
+                score_notes.pop(note_key, None)
+                confidence_notes.pop(note_key, None)
+                mode_notes.pop(note_key, None)
+                suggestion_targets.pop(note_key, None)
             continue
 
         suggested_display = str(best_row.get("DISPLAY", "") or "").strip()
         if not suggested_display:
+            if previous_auto_target and existing_target == previous_auto_target:
+                st.session_state[target_key] = ""
+                st.session_state[widget_key] = ""
+                existing_target = ""
+                auto_target_map.pop(note_key, None)
+                auto_source_map.pop(note_key, None)
+
+            if not existing_target:
+                suggestion_notes[note_key] = "No match found"
+                score_notes.pop(note_key, None)
+                confidence_notes.pop(note_key, None)
+                mode_notes.pop(note_key, None)
+                suggestion_targets.pop(note_key, None)
             continue
 
         source_changed_from_previous_auto = previous_auto_source and previous_auto_source != source_display
@@ -3403,19 +3431,7 @@ def rebuild_central_match_table_from_comparisons():
         for _, row in companies_df.iterrows()
     }
 
-    all_comparison_files = []
-    for workspace_dir in sorted(PERSIST_ROOT.iterdir()):
-        if not workspace_dir.is_dir() or workspace_dir.name == "_admin":
-            continue
-
-        comparisons_dir = workspace_dir / "_saved_comparisons"
-        if not comparisons_dir.exists():
-            continue
-
-        for comparison_file in sorted(comparisons_dir.glob("*.json")):
-            all_comparison_files.append(comparison_file)
-
-    for comparison_file in all_comparison_files:
+    for comparison_file in sorted(COMPARISONS_DIR.glob("*.json")):
         try:
             records = list_comparisons(comparison_file)
         except Exception:
@@ -6806,15 +6822,18 @@ def render_comparisons():
                             smart_mode = str(st.session_state.get("smart_match_mode", {}).get(f"{row_id}|{code}", "") or "")
                             smart_target_display = st.session_state.get("smart_match_target_display", {}).get(f"{row_id}|{code}", "")
                             if smart_note:
-                                target_hint = ""
-                                if smart_note == "Better match available" and smart_target_display:
-                                    target_hint = f" → {smart_target_display}"
-                                mode_hint = f" [{smart_mode}]" if smart_mode else ""
-                                confidence_hint = f" [{smart_confidence}]" if smart_confidence else ""
-                                try:
-                                    st.caption(f"{smart_note} by Smart Matching{confidence_hint}{mode_hint}{target_hint} (score: {float(smart_score):.1f})")
-                                except Exception:
-                                    st.caption(f"{smart_note} by Smart Matching{confidence_hint}{mode_hint}{target_hint}")
+                                if smart_note == "No match found":
+                                    st.caption("No match found by Smart Matching")
+                                else:
+                                    target_hint = ""
+                                    if smart_note == "Better match available" and smart_target_display:
+                                        target_hint = f" → {smart_target_display}"
+                                    mode_hint = f" [{smart_mode}]" if smart_mode else ""
+                                    confidence_hint = f" [{smart_confidence}]" if smart_confidence else ""
+                                    try:
+                                        st.caption(f"{smart_note} by Smart Matching{confidence_hint}{mode_hint}{target_hint} (score: {float(smart_score):.1f})")
+                                    except Exception:
+                                        st.caption(f"{smart_note} by Smart Matching{confidence_hint}{mode_hint}{target_hint}")
 
                             if row is not None:
                                 st.write("SAP:", row["SAP"])
