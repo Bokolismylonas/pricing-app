@@ -2693,8 +2693,7 @@ def _apply_smart_product_suggestions_for_row(row_id: int, selected_codes: list, 
             target_company=target_code,
         )
 
-        min_score = 2 if isinstance(best_score, (int, float)) and best_score <= 10 else 22
-        if best_row is None or best_score < min_score:
+        if best_row is None or best_score < 2:
             continue
 
         suggested_display = str(best_row.get("DISPLAY", "") or "").strip()
@@ -3954,6 +3953,7 @@ def save_current_comparison_from_state(force_new: bool = False, override_name: s
         source_files=payload_sources,
         state=payload_state,
     )
+    _register_payload_to_central_table(payload_state, selected_codes, comparison_id=str(comparison_id or ""), source_files_map=payload_sources)
     acquire_comparison_lock(comparison_file, comparison_id, comparison_name)
     st.session_state["current_comparison_id"] = comparison_id
     st.session_state["pending_comparison_name_input"] = comparison_name
@@ -3964,7 +3964,6 @@ def save_current_comparison_from_state(force_new: bool = False, override_name: s
     st.session_state["comparison_user_modified"] = False
     st.session_state["comparison_clean_generation"] = st.session_state.get("comparison_edit_generation", 0)
     rebuild_match_history_from_scratch()
-    _register_payload_to_central_table(payload_state, selected_codes, comparison_id=str(comparison_id or ""), source_files_map=payload_sources)
     return True, "Comparison saved successfully."
 
 

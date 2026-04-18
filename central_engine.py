@@ -465,24 +465,23 @@ class CentralMatchEngine:
         company_key = str(target_company or "").strip().upper()
 
         entry = data.get("stable", {}).get(source_key, {}).get(company_key, {})
-        if isinstance(entry, dict):
-            target_key = str(entry.get("target_key", "") or "")
-            hits = int(entry.get("hits", 0))
-            if target_key:
-                return target_key, hits
+        if isinstance(entry, dict) and str(entry.get("target_key", "") or "").strip():
+            return str(entry.get("target_key", "") or ""), int(entry.get("hits", 0))
 
-        register_targets = data.get("register", {}).get(source_key, {}).get(company_key, {})
-        if isinstance(register_targets, dict) and register_targets:
-            ranked = []
-            for target_key, payload in register_targets.items():
-                hits = int(payload.get("hits", 0)) if isinstance(payload, dict) else int(payload or 0)
-                ok, _ = self.restrictions_pass(source_key, target_key)
-                if ok and hits > 0:
-                    ranked.append((target_key, hits))
-            ranked.sort(key=lambda x: x[1], reverse=True)
-            if ranked:
-                top_target, top_hits = ranked[0]
-                second_hits = ranked[1][1] if len(ranked) > 1 else 0
+        provisional = data.get("register", {}).get(source_key, {}).get(company_key, {})
+        if isinstance(provisional, dict):
+            valid = []
+            for target_key, payload in provisional.items():
+                try:
+                    hits = int((payload or {}).get("hits", 0))
+                except Exception:
+                    hits = 0
+                if target_key and hits > 0:
+                    valid.append((str(target_key), hits))
+            if valid:
+                valid.sort(key=lambda x: x[1], reverse=True)
+                top_target, top_hits = valid[0]
+                second_hits = valid[1][1] if len(valid) > 1 else 0
                 if top_hits >= 2 and (second_hits == 0 or top_hits >= second_hits):
                     return top_target, top_hits
 
