@@ -2032,15 +2032,16 @@ EQUIV_FILE = ADMIN_DIR / "material_equivalences.json"
 
 def _load_equivalences():
     if not EQUIV_FILE.exists():
-        return {"compiled": {}}
+        return {"raw": {}, "compiled": {}}
     try:
         data = json.loads(EQUIV_FILE.read_text(encoding="utf-8"))
         if isinstance(data, dict):
+            data.setdefault("raw", {})
             data.setdefault("compiled", {})
             return data
     except Exception:
         pass
-    return {"compiled": {}}
+    return {"raw": {}, "compiled": {}}
 
 def _save_equivalences(data):
     EQUIV_FILE.write_text(
@@ -2048,7 +2049,7 @@ def _save_equivalences(data):
         encoding="utf-8",
     )
 
-def _record_equivalence_pair(compiled: dict, source_product: str, target_company: str, target_product: str):
+def _record_equivalence_pair(raw_store: dict, source_product: str, target_company: str, target_product: str):
     if not _products_are_compatible(source_product, target_product):
         return
 
@@ -2076,13 +2077,48 @@ def _record_equivalence_pair(compiled: dict, source_product: str, target_company
             target_seen.append(t)
 
     for s_key in source_seen:
-        bucket = compiled.setdefault(s_key, {}).setdefault(company_key, {})
+        bucket = raw_store.setdefault(s_key, {}).setdefault(company_key, {})
         for t_key in target_seen:
             bucket[t_key] = int(bucket.get(t_key, 0)) + 1
 
+def _compile_equivalences_from_raw(raw_store: dict):
+    compiled = {}
+    for source_key, company_map in (raw_store or {}).items():
+        if not isinstance(company_map, dict):
+            continue
+
+        for company_key, target_map in company_map.items():
+            if not isinstance(target_map, dict) or not target_map:
+                continue
+
+            ranked = sorted(
+                [(str(k), int(v)) for k, v in target_map.items() if str(k).strip()],
+                key=lambda x: x[1],
+                reverse=True,
+            )
+            if not ranked:
+                continue
+
+            top_target, top_hits = ranked[0]
+            second_hits = ranked[1][1] if len(ranked) > 1 else 0
+
+            # Confidence guardrails:
+            # - keep only repeated/credible mappings
+            # - avoid storing weak ambiguous winners
+            if top_hits < 2:
+                continue
+            if top_hits < 3 and second_hits >= top_hits:
+                continue
+            if second_hits > 0 and top_hits < second_hits * 1.2:
+                continue
+
+            compiled.setdefault(source_key, {}).setdefault(company_key, {})[top_target] = top_hits
+
+    return compiled
+
 def rebuild_material_equivalences_from_saved_comparisons():
-    equivalences = {"compiled": {}}
-    compiled = equivalences["compiled"]
+    equivalences = {"raw": {}, "compiled": {}}
+    raw_store = equivalences["raw"]
 
     display_to_code = {
         f"{row['name']} ({row['code']})": row["code"]
@@ -2124,12 +2160,13 @@ def rebuild_material_equivalences_from_saved_comparisons():
                         if source_code == target_code:
                             continue
                         _record_equivalence_pair(
-                            compiled,
+                            raw_store,
                             source_product,
                             target_code,
                             target_product,
                         )
 
+    equivalences["compiled"] = _compile_equivalences_from_raw(raw_store)
     _save_equivalences(equivalences)
     st.session_state["_equivalence_cache_ready"] = True
 
@@ -2164,6 +2201,44 @@ def _equivalence_hits_for_candidate(source_product: str, target_company: str, ta
 
     for s_key in seen_source:
         company_bucket = compiled.get(s_key, {}).get(company_key, {})
+        if not isinstance(company_bucket, dict):
+            continue
+        for t_key in seen_target:
+            best_hits = max(best_hits, int(company_bucket.get(t_key, 0)))
+
+    return best_hits
+
+def _raw_equivalence_hits_for_candidate(source_product: str, target_company: str, target_product: str) -> int:
+    data = _load_equivalences()
+    raw_store = data.get("raw", {})
+
+    source_keys = _core_history_keys_for_product(source_product)
+    target_keys = _core_history_keys_for_product(target_product)
+
+    source_core = _normalize_match_text(_extract_core_product_name(source_product))
+    target_core = _normalize_match_text(_extract_core_product_name(target_product))
+    if source_core:
+        source_keys.extend(_core_variant_keys(source_core))
+    if target_core:
+        target_keys.extend(_core_variant_keys(target_core))
+
+    company_key = str(target_company or "").strip().upper()
+    best_hits = 0
+
+    seen_source = []
+    for s in source_keys:
+        s = _normalize_match_text(s)
+        if s and s not in seen_source:
+            seen_source.append(s)
+
+    seen_target = []
+    for t in target_keys:
+        t = _normalize_match_text(t)
+        if t and t not in seen_target:
+            seen_target.append(t)
+
+    for s_key in seen_source:
+        company_bucket = raw_store.get(s_key, {}).get(company_key, {})
         if not isinstance(company_bucket, dict):
             continue
         for t_key in seen_target:
@@ -2646,14 +2721,20 @@ def _score_product_match_history_aware(user_email: str, source_row: dict, target
             target_company=target_company,
             target_product=product_b,
         )
+        raw_equivalence_hits = _raw_equivalence_hits_for_candidate(
+            source_product=product_a,
+            target_company=target_company,
+            target_product=product_b,
+        )
     else:
-        personal_hits, global_hits, learned_core_hits, equivalence_hits = 0, 0, 0, 0
+        personal_hits, global_hits, learned_core_hits, equivalence_hits, raw_equivalence_hits = 0, 0, 0, 0, 0
 
     # HISTORY FIRST, but still combined with names + characteristics
     personal_history_score = min(personal_hits * 30.0, 60.0)
     global_history_score = min(global_hits * 15.0, 50.0)
     learned_core_score = min(learned_core_hits * 18.0, 55.0)
     equivalence_score = min(equivalence_hits * 35.0, 140.0)
+    raw_equivalence_score = 0.0
 
     full_name_score = _text_similarity(product_a, product_b) * 6.0
     core_name_score = _text_similarity(_extract_core_product_name(product_a), _extract_core_product_name(product_b)) * 14.0
@@ -2725,8 +2806,14 @@ def _score_product_match_history_aware(user_email: str, source_row: dict, target
             global_history_score *= 0.2
             learned_core_score *= 0.2
 
+        # If this exact compatible family has already appeared in saved comparisons even once,
+        # give it a strong but not blind boost so specific prior mappings beat generic alternatives.
+        if raw_equivalence_hits >= 1 and fam_a == fam_b:
+            raw_equivalence_score = 90.0 + (raw_equivalence_hits * 12.0)
+
     score = (
-        equivalence_score
+        raw_equivalence_score
+        + equivalence_score
         + personal_history_score
         + global_history_score
         + learned_core_score
@@ -7159,7 +7246,7 @@ def render_admin_panel():
                 rebuild_material_equivalences_from_saved_comparisons()
             st.success("Material equivalence memory rebuilt successfully.")
     with smart_c3:
-        st.caption("History and equivalence memory are built only from saved comparisons, not from temporary live selections.")
+        st.caption("History and equivalence memory are built only from saved comparisons. Equivalences are stored only when repeated strongly enough to pass confidence filtering.")
 
     st.markdown("### 📁 Source Files Per User")
 
