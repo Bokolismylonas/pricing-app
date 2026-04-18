@@ -2585,10 +2585,11 @@ def _score_product_match_history_aware(user_email: str, source_row: dict, target
 
     return round(score, 2)
 
-
 def _generate_smart_product_suggestion(user_email: str, source_row: dict, target_df: pd.DataFrame, target_company: str):
     if source_row is None or target_df is None or target_df.empty:
         return None, 0.0
+
+    _ensure_central_match_table_ready()
 
     source_engine_row = {
         "Product": str(source_row.get("Product", "") or ""),
@@ -2612,7 +2613,9 @@ def _generate_smart_product_suggestion(user_email: str, source_row: dict, target
 
     full_row = match.get("_full_row") if isinstance(match, dict) else None
     if isinstance(full_row, dict):
-        return full_row, float(score)
+        if mode == "table":
+            return full_row, 1000.0 + float(score)
+        return full_row, max(30.0, float(score))
     return None, 0.0
 
 def _record_match_history_once_per_session(user_email: str, source_product: str, target_company: str, target_product: str):
@@ -2693,7 +2696,7 @@ def _apply_smart_product_suggestions_for_row(row_id: int, selected_codes: list, 
             target_company=target_code,
         )
 
-        if best_row is None or best_score < 22:
+        if best_row is None or best_score <= 0:
             continue
 
         suggested_display = str(best_row.get("DISPLAY", "") or "").strip()
@@ -3405,6 +3408,16 @@ def rebuild_central_match_table_from_comparisons():
                 source_files_map=rec.get("source_files", {}) or {},
             )
 
+def _ensure_central_match_table_ready():
+    if st.session_state.get("_central_match_table_checked"):
+        return
+    st.session_state["_central_match_table_checked"] = True
+    try:
+        data = CENTRAL_ENGINE.load()
+        if not data.get("stable"):
+            rebuild_central_match_table_from_comparisons()
+    except Exception:
+        pass
 
 
 
@@ -3879,7 +3892,6 @@ def save_or_update_current_comparison(selected_codes):
         state=collect_comparison_state_payload(selected_codes),
     )
     st.session_state["current_comparison_id"] = comparison_id
-    _register_payload_to_central_table(payload_state, selected_codes, comparison_id=str(comparison_id or ""), source_files_map=payload_sources)
     return True, "Comparison saved successfully."
 
 
@@ -3952,6 +3964,7 @@ def save_current_comparison_from_state(force_new: bool = False, override_name: s
     st.session_state["comparison_user_modified"] = False
     st.session_state["comparison_clean_generation"] = st.session_state.get("comparison_edit_generation", 0)
     rebuild_match_history_from_scratch()
+    _register_payload_to_central_table(payload_state, selected_codes, comparison_id=str(comparison_id or ""), source_files_map=payload_sources)
     return True, "Comparison saved successfully."
 
 
