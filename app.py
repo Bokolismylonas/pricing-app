@@ -7257,7 +7257,7 @@ def render_admin_panel():
                 rebuild_material_equivalences_from_saved_comparisons()
             st.success("Material equivalence memory rebuilt successfully.")
     with smart_c3:
-        st.caption("A stable equivalence list is rebuilt only from saved comparisons. It updates only when enough repeated evidence exists (threshold-based re-evaluation), while restrictions keep irrelevant matches out from the start.")
+        st.caption("A stable equivalence list is rebuilt only from saved comparisons. Repeated evidence updates the stable list, while exact saved-comparison recall can still surface already validated compatible mappings before the threshold is reached.")
 
     st.markdown("### 📁 Source Files Per User")
 
