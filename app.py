@@ -2597,6 +2597,64 @@ def rebuild_stable_saved_table_from_comparisons():
 def _maybe_rebuild_stable_saved_table():
     _seed_stable_table_register_from_existing_comparisons_if_needed()
 
+def _clean_similarity(a: str, b: str) -> float:
+    return _text_similarity(str(a or ""), str(b or ""))
+
+def _simple_fallback_score(source_row: dict, target_row: dict) -> float:
+    src_product = str(source_row.get("Product", "") or "")
+    src_category = str(source_row.get("Category", "") or "")
+    src_mm = str(source_row.get("MM", "") or "")
+
+    tgt_product = str(target_row.get("Product", "") or "")
+    tgt_category = str(target_row.get("Category", "") or "")
+    tgt_mm = str(target_row.get("MM", "") or "")
+
+    if not _products_are_compatible(src_product, tgt_product, src_category, tgt_category, src_mm, tgt_mm):
+        return -1.0
+
+    fam = _infer_product_family(src_product, src_category, src_mm)
+    score = 0.0
+
+    if fam == "board":
+        s_type = _infer_board_functional_family(src_product, src_category)
+        t_type = _infer_board_functional_family(tgt_product, tgt_category)
+        s_th = _normalized_board_thickness_key(src_product, src_mm)
+        t_th = _normalized_board_thickness_key(tgt_product, tgt_mm)
+        s_core = _board_canonical_core(src_product, src_category, src_mm)
+        t_core = _board_canonical_core(tgt_product, tgt_category, tgt_mm)
+
+        if s_type == t_type:
+            score += 60.0
+        if s_th == t_th:
+            score += 40.0
+        score += _clean_similarity(s_core, t_core) * 20.0
+        return score
+
+    if fam == "profile":
+        s_sub = _simple_profile_subtype(src_product, src_category)
+        t_sub = _simple_profile_subtype(tgt_product, tgt_category)
+        s_w = _simple_profile_width(src_product, src_mm)
+        t_w = _simple_profile_width(tgt_product, tgt_mm)
+        s_core = _normalize_match_text(_extract_core_product_name(src_product))
+        t_core = _normalize_match_text(_extract_core_product_name(tgt_product))
+
+        if s_sub == t_sub:
+            score += 70.0
+        if s_w == t_w:
+            score += 35.0
+        score += _clean_similarity(s_core, t_core) * 15.0
+        return score
+
+    s_func = _simple_functional_tag(src_product, src_category, src_mm)
+    t_func = _simple_functional_tag(tgt_product, tgt_category, tgt_mm)
+    s_core = _normalize_match_text(_extract_core_product_name(src_product))
+    t_core = _normalize_match_text(_extract_core_product_name(tgt_product))
+    if s_func and s_func == t_func:
+        score += 35.0
+    score += _clean_similarity(s_core, t_core) * 25.0
+    return score
+
+
 def _stable_saved_table_top_target_key(source_product: str, source_category: str, source_mm: str, target_company: str):
     data = _load_stable_saved_table()
     entries = data.get("entries", {})
@@ -3627,17 +3685,17 @@ def _generate_smart_product_suggestion(user_email: str, source_row: dict, target
     if table_row is not None:
         return table_row, 500000.0 + float(table_hits)
 
-    # 2) Hard prefilter before any fallback scoring
+    # 2) Hard prefilter before any fallback logic
     filtered_df = _prefilter_target_df_for_source(source_row, target_df)
     if filtered_df is None or filtered_df.empty:
         return None, 0.0
 
-    # 3) Fallback scoring only on compatible candidates
+    # 3) Simple clean fallback only on compatible candidates
     best_row = None
     best_score = -1.0
     for _, row in filtered_df.iterrows():
         row_dict = row.to_dict()
-        score = _score_product_match_history_aware(user_email, source_row, row_dict, target_company)
+        score = _simple_fallback_score(source_row, row_dict)
         if score > best_score:
             best_score = score
             best_row = row_dict
