@@ -2218,7 +2218,7 @@ def _board_canonical_core(product_text: str = "", category_text: str = "", mm_te
 def _simple_profile_subtype(product_text: str = "", category_text: str = ""):
     text = _normalize_match_text(f"{product_text} {category_text}")
     for subtype in ["uw", "cw", "ud", "cd", "ua"]:
-        if re.search(rf'\b{subtype}\b', text):
+        if re.search(rf'\b{subtype}\b', text) or re.search(rf'\b{subtype}\d+', text):
             return subtype
     if "ορθοστατ" in text or "stud" in text:
         return "stud"
@@ -2273,6 +2273,118 @@ def _choice_key_from_row(row: dict):
         str(row.get("Category", "") or ""),
         str(row.get("MM", "") or ""),
     )
+
+
+def _parse_choice_key(choice_key: str):
+    parts = [p.strip() for p in str(choice_key or "").split("|")]
+    family = parts[0] if len(parts) >= 1 else ""
+    out = {"family": family, "parts": parts, "raw": str(choice_key or "")}
+    if family == "board":
+        out["board_type"] = parts[1] if len(parts) >= 2 else ""
+        out["thickness"] = parts[2] if len(parts) >= 3 else ""
+        out["core"] = parts[3] if len(parts) >= 4 else ""
+        out["unit"] = parts[4] if len(parts) >= 5 else ""
+    elif family == "profile":
+        out["subtype"] = parts[1] if len(parts) >= 2 else ""
+        out["width"] = parts[2] if len(parts) >= 3 else ""
+        out["unit"] = parts[3] if len(parts) >= 4 else ""
+        out["core"] = parts[4] if len(parts) >= 5 else ""
+    else:
+        out["functional"] = parts[1] if len(parts) >= 2 else ""
+        out["unit"] = parts[2] if len(parts) >= 3 else ""
+        out["core"] = parts[3] if len(parts) >= 4 else ""
+    return out
+
+def _row_matches_choice_key(row: dict, choice_key: str) -> bool:
+    row_key = _choice_key_from_row(row)
+    a = _parse_choice_key(row_key)
+    b = _parse_choice_key(choice_key)
+    if a.get("family") != b.get("family"):
+        return False
+
+    fam = a.get("family")
+    if fam == "board":
+        return (
+            a.get("board_type") == b.get("board_type")
+            and a.get("thickness") == b.get("thickness")
+            and a.get("unit") == b.get("unit")
+        )
+    if fam == "profile":
+        return (
+            a.get("subtype") == b.get("subtype")
+            and a.get("width") == b.get("width")
+            and a.get("unit") == b.get("unit")
+        )
+
+    if a.get("unit") and b.get("unit") and a.get("unit") != b.get("unit"):
+        return False
+    return True
+
+def _choice_core_similarity(row: dict, choice_key: str) -> float:
+    row_key = _choice_key_from_row(row)
+    a = _parse_choice_key(row_key)
+    b = _parse_choice_key(choice_key)
+    return _text_similarity(a.get("core", ""), b.get("core", ""))
+
+def _prefilter_target_df_for_source(source_row: dict, target_df: pd.DataFrame):
+    if source_row is None or target_df is None or target_df.empty:
+        return target_df
+
+    src_product = str(source_row.get("Product", "") or "")
+    src_category = str(source_row.get("Category", "") or "")
+    src_mm = str(source_row.get("MM", "") or "")
+    src_family = _infer_product_family(src_product, src_category, src_mm)
+
+    rows = []
+    for _, row in target_df.iterrows():
+        row_dict = row.to_dict()
+        if not _products_are_compatible(
+            src_product,
+            str(row_dict.get("Product", "") or ""),
+            src_category,
+            str(row_dict.get("Category", "") or ""),
+            src_mm,
+            str(row_dict.get("MM", "") or ""),
+        ):
+            continue
+
+        if src_family == "board":
+            src_type = _infer_board_functional_family(src_product, src_category)
+            tgt_type = _infer_board_functional_family(
+                str(row_dict.get("Product", "") or ""),
+                str(row_dict.get("Category", "") or ""),
+            )
+            src_th = _normalized_board_thickness_key(src_product, src_mm)
+            tgt_th = _normalized_board_thickness_key(
+                str(row_dict.get("Product", "") or ""),
+                str(row_dict.get("MM", "") or ""),
+            )
+            if src_type and tgt_type and src_type != tgt_type:
+                continue
+            if src_th and tgt_th and src_th != tgt_th:
+                continue
+
+        if src_family == "profile":
+            src_sub = _simple_profile_subtype(src_product, src_category)
+            tgt_sub = _simple_profile_subtype(
+                str(row_dict.get("Product", "") or ""),
+                str(row_dict.get("Category", "") or ""),
+            )
+            src_w = _simple_profile_width(src_product, src_mm)
+            tgt_w = _simple_profile_width(
+                str(row_dict.get("Product", "") or ""),
+                str(row_dict.get("MM", "") or ""),
+            )
+            if src_sub and tgt_sub and src_sub != tgt_sub:
+                continue
+            if src_w and tgt_w and src_w != tgt_w:
+                continue
+
+        rows.append(row_dict)
+
+    if not rows:
+        return target_df.iloc[0:0].copy()
+    return pd.DataFrame(rows)
 
 def _record_choice_pair(register_store: dict, source_product: str, target_company: str, target_product: str):
     source_key = _make_choice_key(source_product)
@@ -2508,6 +2620,7 @@ def _stable_saved_table_hits_for_candidate(source_product: str, target_company: 
 def _stable_saved_table_match_row(source_row: dict, target_df: pd.DataFrame, target_company: str):
     if source_row is None or target_df is None or target_df.empty:
         return None, 0
+
     target_key = _stable_saved_table_top_target_key(
         str(source_row.get("Product", "") or ""),
         str(source_row.get("Category", "") or ""),
@@ -2516,23 +2629,42 @@ def _stable_saved_table_match_row(source_row: dict, target_df: pd.DataFrame, tar
     )
     if not target_key:
         return None, 0
+
+    # first try exact canonical key match
     matches = []
     for _, row in target_df.iterrows():
         row_dict = row.to_dict()
-        row_key = _choice_key_from_row(row_dict)
-        if row_key == target_key:
+        if _choice_key_from_row(row_dict) == target_key:
             matches.append(row_dict)
+
+    # if exact key not found, do structured match on the key family
+    if not matches:
+        for _, row in target_df.iterrows():
+            row_dict = row.to_dict()
+            if _row_matches_choice_key(row_dict, target_key):
+                matches.append(row_dict)
+
     if not matches:
         return None, 0
-    # same key means same family/type/thickness/core; dimensions are intentionally ignored for boards
+
+    # choose the best row by closest core to stored target key
+    matches = sorted(matches, key=lambda r: _choice_core_similarity(r, target_key), reverse=True)
+    best = matches[0]
+
     data = _load_stable_saved_table()
     source_key = _make_choice_key(
         str(source_row.get("Product", "") or ""),
         str(source_row.get("Category", "") or ""),
         str(source_row.get("MM", "") or ""),
     )
-    hits = int(data.get("entries", {}).get(source_key, {}).get(str(target_company or "").strip().upper(), {}).get("hits", 0))
-    return matches[0], hits
+    hits = int(
+        data.get("entries", {})
+        .get(source_key, {})
+        .get(str(target_company or "").strip().upper(), {})
+        .get("hits", 0)
+    )
+    return best, hits
+
 def _make_exact_template_source_key(source_product: str, source_category: str = "", source_mm: str = ""):
     core = _normalize_match_text(_extract_core_product_name(source_product))
     family = _infer_product_family(source_product, source_category, source_mm)
@@ -3495,10 +3627,15 @@ def _generate_smart_product_suggestion(user_email: str, source_row: dict, target
     if table_row is not None:
         return table_row, 500000.0 + float(table_hits)
 
-    # 2) Fallback scoring only if the central table has no valid hit
+    # 2) Hard prefilter before any fallback scoring
+    filtered_df = _prefilter_target_df_for_source(source_row, target_df)
+    if filtered_df is None or filtered_df.empty:
+        return None, 0.0
+
+    # 3) Fallback scoring only on compatible candidates
     best_row = None
     best_score = -1.0
-    for _, row in target_df.iterrows():
+    for _, row in filtered_df.iterrows():
         row_dict = row.to_dict()
         score = _score_product_match_history_aware(user_email, source_row, row_dict, target_company)
         if score > best_score:
