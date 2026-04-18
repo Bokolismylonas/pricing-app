@@ -2125,6 +2125,204 @@ def _compile_equivalences_from_raw(raw_store: dict):
     return compiled
 
 
+
+# -------------------------------------------------
+# STABLE SAVED-COMPARISON TABLE (PRIMARY HARD STOP)
+# -------------------------------------------------
+STABLE_TABLE_FILE = ADMIN_DIR / "stable_saved_table.json"
+STABLE_TABLE_REEVAL_THRESHOLD = 10
+
+def _load_stable_saved_table():
+    if not STABLE_TABLE_FILE.exists():
+        return {
+            "entries": {},
+            "meta": {"reeval_threshold": STABLE_TABLE_REEVAL_THRESHOLD, "last_saved_count": 0},
+        }
+    try:
+        data = json.loads(STABLE_TABLE_FILE.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            data.setdefault("entries", {})
+            data.setdefault("meta", {})
+            data["meta"].setdefault("reeval_threshold", STABLE_TABLE_REEVAL_THRESHOLD)
+            data["meta"].setdefault("last_saved_count", 0)
+            return data
+    except Exception:
+        pass
+    return {
+        "entries": {},
+        "meta": {"reeval_threshold": STABLE_TABLE_REEVAL_THRESHOLD, "last_saved_count": 0},
+    }
+
+def _save_stable_saved_table(data):
+    STABLE_TABLE_FILE.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+def _count_total_saved_comparisons():
+    total = 0
+    for comparison_file in sorted(COMPARISONS_DIR.glob("*.json")):
+        try:
+            records = list_comparisons(comparison_file)
+        except Exception:
+            continue
+        total += len(records)
+    return total
+
+def _normalized_board_thickness_key(product_text: str = "", mm_text: str = ""):
+    t = _extract_match_mm(f"{product_text} {mm_text}")
+    if t is None:
+        return ""
+    # Treat 12.4 and 12.5 as same practical thickness bucket
+    if abs(float(t) - 12.45) <= 0.15 or abs(float(t) - 12.5) <= 0.15:
+        return "12.5"
+    if abs(float(t) - 15.0) <= 0.15:
+        return "15.0"
+    if abs(float(t) - 13.0) <= 0.15:
+        return "13.0"
+    return f"{float(t):.1f}"
+
+def _make_stable_source_key(product_text: str, category_text: str = "", mm_text: str = ""):
+    family = _infer_product_family(product_text, category_text, mm_text)
+    core = _normalize_match_text(_extract_core_product_name(product_text))
+    board_family = ""
+    context = _normalize_match_text(f"{product_text} {category_text}")
+    if any(tok in context for tok in ["gypsum", "plasterboard", "drywall", "board", "γυψο", "γυψοσαν"]):
+        board_family = _infer_board_functional_family(product_text, category_text)
+    thickness_key = _normalized_board_thickness_key(product_text, mm_text)
+    parts = [p for p in [family, board_family, thickness_key, core] if p]
+    return " | ".join(parts)
+
+def _make_stable_target_key(product_text: str, category_text: str = "", mm_text: str = ""):
+    family = _infer_product_family(product_text, category_text, mm_text)
+    core = _normalize_match_text(_extract_core_product_name(product_text))
+    board_family = ""
+    context = _normalize_match_text(f"{product_text} {category_text}")
+    if any(tok in context for tok in ["gypsum", "plasterboard", "drywall", "board", "γυψο", "γυψοσαν"]):
+        board_family = _infer_board_functional_family(product_text, category_text)
+    thickness_key = _normalized_board_thickness_key(product_text, mm_text)
+    parts = [p for p in [family, board_family, thickness_key, core] if p]
+    return " | ".join(parts)
+
+def _record_stable_table_pair(raw_store: dict, source_product: str, target_company: str, target_product: str):
+    if not _products_are_compatible(source_product, target_product):
+        return
+
+    source_key = _make_stable_source_key(source_product)
+    target_key = _make_stable_target_key(target_product)
+    company_key = str(target_company or "").strip().upper()
+
+    if not source_key or not target_key or not company_key:
+        return
+
+    bucket = raw_store.setdefault(source_key, {}).setdefault(company_key, {})
+    bucket[target_key] = int(bucket.get(target_key, 0)) + 1
+
+def _compile_stable_saved_table(raw_store: dict):
+    compiled = {}
+    for source_key, company_map in (raw_store or {}).items():
+        if not isinstance(company_map, dict):
+            continue
+
+        for company_key, target_map in company_map.items():
+            if not isinstance(target_map, dict) or not target_map:
+                continue
+
+            ranked = sorted(
+                [(str(k), int(v)) for k, v in target_map.items() if str(k).strip()],
+                key=lambda x: x[1],
+                reverse=True,
+            )
+            if not ranked:
+                continue
+
+            total_hits = sum(v for _, v in ranked)
+            top_target, top_hits = ranked[0]
+            second_hits = ranked[1][1] if len(ranked) > 1 else 0
+
+            # Stable table should reflect repeated truth from saved comparisons.
+            if total_hits < STABLE_TABLE_REEVAL_THRESHOLD:
+                continue
+            if top_hits < 2:
+                continue
+            if second_hits > 0 and top_hits < second_hits * 1.35:
+                continue
+
+            compiled.setdefault(source_key, {}).setdefault(company_key, {})[top_target] = top_hits
+    return compiled
+
+def rebuild_stable_saved_table_from_comparisons():
+    table = {
+        "entries": {},
+        "meta": {
+            "reeval_threshold": STABLE_TABLE_REEVAL_THRESHOLD,
+            "last_saved_count": _count_total_saved_comparisons(),
+        },
+    }
+    raw_store = {}
+
+    display_to_code = {
+        f"{row['name']} ({row['code']})": row["code"]
+        for _, row in companies_df.iterrows()
+    }
+
+    for comparison_file in sorted(COMPARISONS_DIR.glob("*.json")):
+        try:
+            records = list_comparisons(comparison_file)
+        except Exception:
+            continue
+
+        for record in records:
+            state = record.get("state", {}) or {}
+            row_ids = state.get("row_ids", []) or []
+            if not isinstance(row_ids, list) or not row_ids:
+                continue
+
+            selected_codes = []
+            for display in state.get("comparison_company_selection", []) or []:
+                if display in display_to_code:
+                    selected_codes.append(display_to_code[display])
+
+            if len(selected_codes) < 2:
+                continue
+
+            for row_id in row_ids:
+                row_products = []
+                for company_code in selected_codes:
+                    display_value = str(state.get(f"row_{row_id}_{company_code}_product", "") or "").strip()
+                    if display_value:
+                        row_products.append((company_code, display_value.split("| SAP")[0].strip()))
+
+                if len(row_products) < 2:
+                    continue
+
+                for source_code, source_product in row_products:
+                    for target_code, target_product in row_products:
+                        if source_code == target_code:
+                            continue
+                        _record_stable_table_pair(raw_store, source_product, target_code, target_product)
+
+    table["entries"] = _compile_stable_saved_table(raw_store)
+    _save_stable_saved_table(table)
+    st.session_state["_stable_saved_table_ready"] = True
+
+def _maybe_rebuild_stable_saved_table():
+    data = _load_stable_saved_table()
+    last_saved_count = int(data.get("meta", {}).get("last_saved_count", 0))
+    current_saved_count = _count_total_saved_comparisons()
+    if (not STABLE_TABLE_FILE.exists()) or (current_saved_count - last_saved_count >= STABLE_TABLE_REEVAL_THRESHOLD):
+        rebuild_stable_saved_table_from_comparisons()
+
+def _stable_saved_table_hits_for_candidate(source_product: str, target_company: str, target_product: str) -> int:
+    data = _load_stable_saved_table()
+    entries = data.get("entries", {})
+    source_key = _make_stable_source_key(source_product)
+    target_key = _make_stable_target_key(target_product)
+    company_key = str(target_company or "").strip().upper()
+    if not source_key or not target_key or not company_key:
+        return 0
+    return int(entries.get(source_key, {}).get(company_key, {}).get(target_key, 0))
+
 def _make_exact_template_source_key(source_product: str, source_category: str = "", source_mm: str = ""):
     core = _normalize_match_text(_extract_core_product_name(source_product))
     family = _infer_product_family(source_product, source_category, source_mm)
@@ -2901,14 +3099,14 @@ def _score_product_match_history_aware(user_email: str, source_row: dict, target
     package_a = str(source_row.get("Package", "") or "")
     package_b = str(target_row.get("Package", "") or "")
 
-    # 1) EXACT SAVED COMPARISON HARD STOP
-    exact_saved_stop = _exact_saved_match_hard_stop_score(
-        source_row=source_row,
-        target_row=target_row,
+    # 1) STABLE SAVED-COMPARISON TABLE HARD STOP
+    stable_table_hits = _stable_saved_table_hits_for_candidate(
+        source_product=product_a,
         target_company=target_company,
+        target_product=product_b,
     )
-    if exact_saved_stop is not None:
-        return exact_saved_stop
+    if stable_table_hits >= 1:
+        return 200000.0 + (stable_table_hits * 100.0)
 
     # 2) RESTRICTIONS / COMPATIBILITY
     # Functional-first identity filter for gypsum boards:
@@ -2928,6 +3126,15 @@ def _score_product_match_history_aware(user_email: str, source_row: dict, target
         elif target_board_family != "standard":
             # Standard source board should not jump to specialized boards by accident.
             return -9999.0
+
+    # 3) EXACT SAVED COMPARISON HARD STOP (only if not found in stable table)
+    exact_saved_stop = _exact_saved_match_hard_stop_score(
+        source_row=source_row,
+        target_row=target_row,
+        target_company=target_company,
+    )
+    if exact_saved_stop is not None:
+        return exact_saved_stop
 
     history = _load_match_history()
     compatible_for_history = _products_are_compatible(
@@ -4306,6 +4513,7 @@ def save_current_comparison_from_state(force_new: bool = False, override_name: s
             st.session_state["comparison_user_modified"] = False
             st.session_state["comparison_clean_generation"] = st.session_state.get("comparison_edit_generation", 0)
             rebuild_match_history_from_scratch()
+            rebuild_stable_saved_table_from_comparisons()
             return True, "Comparison updated successfully."
         return False, "This comparison no longer exists. Save it again as new."
 
@@ -4328,6 +4536,7 @@ def save_current_comparison_from_state(force_new: bool = False, override_name: s
     st.session_state["comparison_user_modified"] = False
     st.session_state["comparison_clean_generation"] = st.session_state.get("comparison_edit_generation", 0)
     rebuild_match_history_from_scratch()
+    rebuild_stable_saved_table_from_comparisons()
     return True, "Comparison saved successfully."
 
 
@@ -7049,6 +7258,7 @@ def render_comparisons():
         st.info("Select companies first to start comparison.")
     else:
         _backfill_match_history_from_saved_comparisons()
+        _maybe_rebuild_stable_saved_table()
         st.info(f"Current rows: {len(st.session_state.row_ids)}")
 
         row_ids_list = list(st.session_state.get("row_ids", []))
