@@ -433,23 +433,17 @@ class CentralMatchEngine:
                 second_hits = valid[1][1] if len(valid) > 1 else 0
 
                 threshold = int(data.get("meta", {}).get("reeval_threshold", self.reeval_threshold))
-                if total_hits < max(1, threshold):
+                if total_hits < threshold:
                     continue
-                if top_hits < 1:
+                if top_hits < 2:
                     continue
-                if second_hits > 0 and top_hits < second_hits * 1.15:
+                if second_hits > 0 and top_hits < second_hits * 1.35:
                     continue
-
-                confidence = "low"
-                if top_hits >= 3 and top_hits >= (second_hits + 1):
-                    confidence = "high"
-                elif top_hits >= 2:
-                    confidence = "medium"
 
                 stable.setdefault(source_key, {})[company_key] = {
                     "target_key": top_target,
                     "hits": top_hits,
-                    "confidence": confidence,
+                    "confidence": "high" if top_hits >= max(3, second_hits + 1) else "medium",
                 }
 
         data["stable"] = stable
@@ -460,7 +454,8 @@ class CentralMatchEngine:
     def maybe_reevaluate(self, data: Dict[str, Any]) -> Dict[str, Any]:
         total_events = int(data.get("meta", {}).get("total_saved_events", 0))
         last_reeval = int(data.get("meta", {}).get("last_reeval_at_saved_event", 0))
-        if not data.get("stable") or total_events != last_reeval:
+        threshold = int(data.get("meta", {}).get("reeval_threshold", self.reeval_threshold))
+        if not data.get("stable") or (total_events - last_reeval) >= threshold:
             return self.reevaluate(data)
         return data
 

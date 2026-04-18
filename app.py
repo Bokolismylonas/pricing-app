@@ -2693,7 +2693,7 @@ def _apply_smart_product_suggestions_for_row(row_id: int, selected_codes: list, 
             target_company=target_code,
         )
 
-        if best_row is None or best_score < 22:
+        if best_row is None:
             continue
 
         suggested_display = str(best_row.get("DISPLAY", "") or "").strip()
@@ -2729,17 +2729,6 @@ def _apply_smart_product_suggestions_for_row(row_id: int, selected_codes: list, 
                 suggestion_notes[note_key] = "Suggested"
                 score_notes[note_key] = best_score
                 suggestion_targets[note_key] = suggested_display
-
-
-def _run_render_loop_suggestions(selected_codes: list, catalogs: dict):
-    if not st.session_state.get("smart_matching_enabled", False):
-        return
-
-    if len(selected_codes) < 2:
-        return
-
-    for row_id in st.session_state.get("row_ids", []) or []:
-        _apply_smart_product_suggestions_for_row(row_id, selected_codes, catalogs)
 
 
 # -------------------------------------------------
@@ -3318,7 +3307,7 @@ def get_catalog_row(df, display_value):
     return rows.iloc[0]
 
 
-CENTRAL_ENGINE = CentralMatchEngine(ADMIN_DIR / "central_match_table.json", 1)
+CENTRAL_ENGINE = CentralMatchEngine(ADMIN_DIR / "central_match_table.json", 10)
 
 def _engine_row_from_catalog_row(row):
     if row is None:
@@ -3417,33 +3406,6 @@ def rebuild_central_match_table_from_comparisons():
             )
 
 
-
-def ensure_central_match_table_ready():
-    try:
-        data = CENTRAL_ENGINE.load()
-    except Exception:
-        rebuild_central_match_table_from_comparisons()
-        return
-
-    has_data = bool(data.get("register")) or bool(data.get("stable"))
-    if has_data:
-        return
-
-    has_any_saved_comparisons = False
-    for comparison_file in sorted(COMPARISONS_DIR.glob("*.json")):
-        try:
-            records = list_comparisons(comparison_file)
-        except Exception:
-            continue
-        if records:
-            has_any_saved_comparisons = True
-            break
-
-    if has_any_saved_comparisons:
-        rebuild_central_match_table_from_comparisons()
-
-
-ensure_central_match_table_ready()
 
 
 def get_row_summary_text(row_id, selected_codes, catalogs):
@@ -3907,16 +3869,14 @@ def save_or_update_current_comparison(selected_codes):
             return True, "Comparison updated successfully."
         return False, "This comparison no longer exists. Save it again as new."
 
-    payload_state = collect_comparison_state_payload(selected_codes)
-    payload_sources = build_source_files_map(selected_codes)
     comparison_id = save_new_comparison(
         comparison_file,
         owner_sub=get_current_user_id(),
         owner_email=get_current_user_email(),
         name=comparison_name,
         companies=[get_company_label(code) for code in selected_codes],
-        source_files=payload_sources,
-        state=payload_state,
+        source_files=build_source_files_map(selected_codes),
+        state=collect_comparison_state_payload(selected_codes),
     )
     st.session_state["current_comparison_id"] = comparison_id
     _register_payload_to_central_table(payload_state, selected_codes, comparison_id=str(comparison_id or ""), source_files_map=payload_sources)
@@ -6619,8 +6579,6 @@ def render_comparisons():
             else:
                 catalogs[code] = None
 
-        _run_render_loop_suggestions(selected_codes, catalogs)
-
 
     if selected_codes:
         st.markdown("---")
@@ -6797,12 +6755,11 @@ def render_comparisons():
                                 f"{label} product",
                                 options,
                                 key=product_widget_key,
-                                on_change=lambda r=row_id, c=code, sc=selected_codes, cats=catalogs: (
-                                    sync_product_widget_to_data(r, c),
-                                    _apply_smart_product_suggestions_for_row(r, sc, cats) if (len(sc) > 0 and c == sc[0] and st.session_state.get("smart_matching_enabled", False)) else None,
-                                    mark_comparison_dirty()
-                                ),
+                                on_change=lambda: mark_comparison_dirty(),
                             )
+                            sync_product_widget_to_data(row_id, code)
+                            if len(selected_codes) > 0 and code == selected_codes[0] and st.session_state.get("smart_matching_enabled", False):
+                                _apply_smart_product_suggestions_for_row(row_id, selected_codes, catalogs)
                             selected_product = st.session_state.get(f"row_{row_id}_{code}_product", "")
                             row = get_catalog_row(df, selected_product)
 
@@ -7162,7 +7119,7 @@ def render_admin_panel():
                 rebuild_central_match_table_from_comparisons()
             st.success("Central match table rebuilt successfully.")
     with smart_c3:
-        st.caption("Runtime path: 1) central table direct lookup and stop, 2) simple clean fallback. Re-evaluation happens on every saved comparison and restrictions apply there.")
+        st.caption("Runtime path: 1) central table direct lookup and stop, 2) simple clean fallback. Re-evaluation happens every 10 saved events and restrictions apply there.")
 
     st.markdown("### 📁 Source Files Per User")
 
