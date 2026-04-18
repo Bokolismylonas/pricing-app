@@ -3035,6 +3035,30 @@ def get_next_version_filename(company, dt, original_name):
     return f"{company}_{yyyy}_{mm}_{dd}_v{max_v + 1}{ext}"
 
 
+def sanitize_source_filename(value: str) -> str:
+    cleaned = re.sub(r'[\/:*?"<>|]+', ' ', str(value or '').strip())
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip().strip('.')
+    return cleaned
+
+
+def build_custom_source_filename(custom_name: str, original_name: str) -> str:
+    raw_name = str(custom_name or '').strip()
+    requested_path = Path(raw_name)
+    ext = requested_path.suffix.lower()
+    if ext not in [".xlsx", ".xlsm"]:
+        ext = Path(original_name).suffix.lower()
+        if ext not in [".xlsx", ".xlsm"]:
+            ext = ".xlsx"
+        stem = raw_name
+    else:
+        stem = requested_path.stem
+
+    stem = sanitize_source_filename(stem)
+    if not stem:
+        return ""
+    return f"{stem}{ext}"
+
+
 def get_company_files(code):
     folder = get_company_folder(code)
     files = []
@@ -6334,17 +6358,53 @@ def render_sources():
     with s3:
         file = st.file_uploader("Upload Ready Source", type=["xlsx", "xlsm"], key="save_file")
 
-    if st.button("Save Ready Source", key="save_source_button", use_container_width=True):
-        if file is None:
-            st.error("Please upload a source file first.")
-        else:
-            name = get_next_version_filename(company_code, date_val, file.name)
-            path = get_company_folder(company_code) / name
-            with open(path, "wb") as f:
-                f.write(file.getbuffer())
-            st.success(f"Saved as: {name}")
-            refresh_source_file_views()
-            st.rerun()
+    default_ready_source_name = get_next_version_filename(company_code, date_val, file.name if file is not None else "source.xlsx")
+    ready_source_signature = (company_code, str(date_val), file.name if file is not None else "")
+    if st.session_state.get("save_source_as_signature") != ready_source_signature:
+        st.session_state["save_source_as_signature"] = ready_source_signature
+        st.session_state["save_source_as_name"] = default_ready_source_name
+
+    save_c1, save_c2 = st.columns(2)
+    with save_c1:
+        if st.button("Save Ready Source", key="save_source_button", use_container_width=True):
+            if file is None:
+                st.error("Please upload a source file first.")
+            else:
+                name = default_ready_source_name
+                path = get_company_folder(company_code) / name
+                with open(path, "wb") as f:
+                    f.write(file.getbuffer())
+                st.success(f"Saved as: {name}")
+                refresh_source_file_views()
+                st.rerun()
+
+    with save_c2:
+        with st.popover("Save As", use_container_width=True):
+            st.text_input(
+                "Source name",
+                key="save_source_as_name",
+                help="Choose a custom name for this source. You can include or omit the Excel extension.",
+            )
+            if st.button("Save As", key="save_source_as_button", use_container_width=True):
+                if file is None:
+                    st.error("Please upload a source file first.")
+                else:
+                    custom_filename = build_custom_source_filename(
+                        st.session_state.get("save_source_as_name", ""),
+                        file.name,
+                    )
+                    if not custom_filename:
+                        st.error("Please enter a valid source name.")
+                    else:
+                        path = get_company_folder(company_code) / custom_filename
+                        if path.exists():
+                            st.error("A source with this name already exists. Please choose a different name.")
+                        else:
+                            with open(path, "wb") as f:
+                                f.write(file.getbuffer())
+                            st.success(f"Saved as: {custom_filename}")
+                            refresh_source_file_views()
+                            st.rerun()
 
     st.info(
         "Download the source template, fill in your products, and upload it back to the platform."
