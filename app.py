@@ -2608,12 +2608,12 @@ def _generate_smart_product_suggestion(user_email: str, source_row: dict, target
 
     match, score, mode = suggest_product(CENTRAL_ENGINE, source_engine_row, target_company, target_rows)
     if match is None:
-        return None, 0.0
+        return None, 0.0, "none"
 
     full_row = match.get("_full_row") if isinstance(match, dict) else None
     if isinstance(full_row, dict):
-        return full_row, float(score)
-    return None, 0.0
+        return full_row, float(score), str(mode or "none")
+    return None, 0.0, "none"
 
 def _record_match_history_once_per_session(user_email: str, source_product: str, target_company: str, target_product: str):
     user_email = str(user_email or "").strip().lower()
@@ -2686,19 +2686,15 @@ def _apply_smart_product_suggestions_for_row(row_id: int, selected_codes: list, 
         widget_key = get_product_widget_key(row_id, target_code)
         existing_target = str(st.session_state.get(target_key, "") or "").strip()
 
-        best_row, best_score = _generate_smart_product_suggestion(
+        best_row, best_score, best_mode = _generate_smart_product_suggestion(
             user_email=user_email,
             source_row=source_row.to_dict() if hasattr(source_row, "to_dict") else dict(source_row),
             target_df=catalogs.get(target_code),
             target_company=target_code,
         )
 
-        # Table-mode suggestions return learned hit counts (often small integers like 2-5),
-        # while fallback-mode suggestions return similarity-like scores. Using a hard threshold
-        # of 22 blocks almost every learned suggestion from ever showing up.
-        if best_row is None:
-            continue
-        if best_score < 2:
+        min_score = 2 if best_mode == "table" else 22
+        if best_row is None or best_score < min_score:
             continue
 
         suggested_display = str(best_row.get("DISPLAY", "") or "").strip()
@@ -3968,6 +3964,7 @@ def save_current_comparison_from_state(force_new: bool = False, override_name: s
     st.session_state["comparison_user_modified"] = False
     st.session_state["comparison_clean_generation"] = st.session_state.get("comparison_edit_generation", 0)
     rebuild_match_history_from_scratch()
+    _register_payload_to_central_table(payload_state, selected_codes, comparison_id=str(comparison_id or ""), source_files_map=payload_sources)
     return True, "Comparison saved successfully."
 
 
