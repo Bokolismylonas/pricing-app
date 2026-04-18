@@ -2585,38 +2585,9 @@ def _score_product_match_history_aware(user_email: str, source_row: dict, target
 
     return round(score, 2)
 
+
 def _generate_smart_product_suggestion(user_email: str, source_row: dict, target_df: pd.DataFrame, target_company: str):
-    if source_row is None or target_df is None or target_df.empty:
-        return None, 0.0
-
-    _ensure_central_match_table_ready()
-
-    source_engine_row = {
-        "Product": str(source_row.get("Product", "") or ""),
-        "Category": str(source_row.get("Category", "") or ""),
-        "MM": str(source_row.get("MM", "") or ""),
-    }
-
-    target_rows = []
-    for _, row in target_df.iterrows():
-        row_dict = row.to_dict()
-        target_rows.append({
-            "Product": str(row_dict.get("Product", "") or ""),
-            "Category": str(row_dict.get("Category", "") or ""),
-            "MM": str(row_dict.get("MM", "") or ""),
-            "_full_row": row_dict,
-        })
-
-    match, score, mode = suggest_product(CENTRAL_ENGINE, source_engine_row, target_company, target_rows)
-    if match is None:
-        return None, 0.0
-
-    full_row = match.get("_full_row") if isinstance(match, dict) else None
-    if isinstance(full_row, dict):
-        if mode == "table":
-            return full_row, 1000.0 + float(score)
-        return full_row, max(30.0, float(score))
-    return None, 0.0
+    return _clean_runtime_suggest(source_row, target_df, target_company)
 
 def _record_match_history_once_per_session(user_email: str, source_product: str, target_company: str, target_product: str):
     user_email = str(user_email or "").strip().lower()
@@ -2696,7 +2667,7 @@ def _apply_smart_product_suggestions_for_row(row_id: int, selected_codes: list, 
             target_company=target_code,
         )
 
-        if best_row is None or best_score <= 0:
+        if best_row is None or best_score < 22:
             continue
 
         suggested_display = str(best_row.get("DISPLAY", "") or "").strip()
@@ -3327,7 +3298,6 @@ def _catalogs_for_saved_state(selected_codes, payload_state: dict, source_files_
         selected_file = str(payload_state.get(f"select_{code}", "") or "").strip()
         if not selected_file and source_files_map:
             selected_file = str(source_files_map.get(get_company_label(code), "") or "").strip()
-
         if selected_file:
             source_path = get_company_folder(code) / selected_file
             try:
@@ -3342,8 +3312,8 @@ def _register_payload_to_central_table(payload_state: dict, selected_codes: list
     if not isinstance(payload_state, dict) or not selected_codes or len(selected_codes) < 2:
         return
 
-    engine_data = CENTRAL_ENGINE.load()
     catalogs = _catalogs_for_saved_state(selected_codes, payload_state, source_files_map)
+    engine_data = CENTRAL_ENGINE.load()
     row_ids = payload_state.get("row_ids", []) or []
 
     for row_id in row_ids:
@@ -3355,10 +3325,7 @@ def _register_payload_to_central_table(payload_state: dict, selected_codes: list
             row = get_catalog_row(catalogs.get(code), display_value)
             if row is None:
                 continue
-            engine_row = _engine_row_from_catalog_row(row)
-            if engine_row:
-                row_choices.append((code, engine_row))
-
+            row_choices.append((code, _engine_row_from_catalog_row(row)))
         if len(row_choices) >= 2:
             CENTRAL_ENGINE.register_row_choices(engine_data, row_choices, comparison_id=str(comparison_id or ""))
 
@@ -3367,7 +3334,7 @@ def _register_payload_to_central_table(payload_state: dict, selected_codes: list
     CENTRAL_ENGINE.save(engine_data)
 
 def rebuild_central_match_table_from_comparisons():
-    empty = {
+    data = {
         "register": {},
         "stable": {},
         "quarantine": {},
@@ -3378,7 +3345,7 @@ def rebuild_central_match_table_from_comparisons():
             "last_reeval_at_saved_event": 0,
         },
     }
-    CENTRAL_ENGINE.save(empty)
+    CENTRAL_ENGINE.save(data)
 
     display_to_code = {
         f"{row['name']} ({row['code']})": row["code"]
@@ -3397,7 +3364,6 @@ def rebuild_central_match_table_from_comparisons():
             for display in state.get("comparison_company_selection", []) or []:
                 if display in display_to_code:
                     selected_codes.append(display_to_code[display])
-
             if len(selected_codes) < 2:
                 continue
 
@@ -3408,16 +3374,37 @@ def rebuild_central_match_table_from_comparisons():
                 source_files_map=rec.get("source_files", {}) or {},
             )
 
-def _ensure_central_match_table_ready():
-    if st.session_state.get("_central_match_table_checked"):
-        return
-    st.session_state["_central_match_table_checked"] = True
-    try:
-        data = CENTRAL_ENGINE.load()
-        if not data.get("stable"):
-            rebuild_central_match_table_from_comparisons()
-    except Exception:
-        pass
+def _clean_runtime_suggest(source_row: dict, target_df: pd.DataFrame, target_company: str):
+    if source_row is None or target_df is None or target_df.empty:
+        return None, 0.0
+
+    source_engine_row = {
+        "Product": str(source_row.get("Product", "") or ""),
+        "Category": str(source_row.get("Category", "") or ""),
+        "MM": str(source_row.get("MM", "") or ""),
+    }
+    target_rows = []
+    for _, row in target_df.iterrows():
+        row_dict = row.to_dict()
+        target_rows.append({
+            "Product": str(row_dict.get("Product", "") or ""),
+            "Category": str(row_dict.get("Category", "") or ""),
+            "MM": str(row_dict.get("MM", "") or ""),
+            "_full_row": row_dict,
+        })
+
+    match, score, mode = suggest_product(CENTRAL_ENGINE, source_engine_row, target_company, target_rows)
+    if match is None:
+        return None, 0.0
+
+    full_row = match.get("_full_row") if isinstance(match, dict) else None
+    if not isinstance(full_row, dict):
+        return None, 0.0
+
+    # Important: v33 UI only applies suggestions if score >= 22.
+    # Return high scores for clean-engine results so they are actually applied.
+    boosted_score = 1000.0 if mode == "table" else 50.0
+    return full_row, boosted_score
 
 
 
@@ -7133,7 +7120,7 @@ def render_admin_panel():
                 rebuild_central_match_table_from_comparisons()
             st.success("Central match table rebuilt successfully.")
     with smart_c3:
-        st.caption("Runtime path: 1) central table direct lookup and stop, 2) simple clean fallback. Re-evaluation happens every 10 saved events and restrictions apply there.")
+        st.caption("Runtime path: 1) central table lookup and stop, 2) simple family-specific fallback. If a suggestion exists, it is applied directly.")
 
     st.markdown("### 📁 Source Files Per User")
 
