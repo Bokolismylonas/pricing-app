@@ -314,7 +314,8 @@ class CentralMatchEngine:
             "stable": {},
             "quarantine": {},
             "meta": {
-                "version": 1,
+                "version": 2,
+                "pair_mode": "symmetric_all_pairs",
                 "reeval_threshold": self.reeval_threshold,
                 "total_saved_events": 0,
                 "last_reeval_at_saved_event": 0,
@@ -329,7 +330,8 @@ class CentralMatchEngine:
                 data.setdefault("stable", {})
                 data.setdefault("quarantine", {})
                 data.setdefault("meta", {})
-                data["meta"].setdefault("version", 1)
+                data["meta"].setdefault("version", 2)
+                data["meta"].setdefault("pair_mode", "symmetric_all_pairs")
                 data["meta"].setdefault("reeval_threshold", self.reeval_threshold)
                 data["meta"].setdefault("total_saved_events", 0)
                 data["meta"].setdefault("last_reeval_at_saved_event", 0)
@@ -378,10 +380,17 @@ class CentralMatchEngine:
         comparison_id: str = "",
     ) -> None:
         row_choices = list(row_choices)
+        seen_pairs = set()
         for source_company, source_row in row_choices:
             for target_company, target_row in row_choices:
                 if source_company == target_company:
                     continue
+                source_key = choice_key_from_row(source_row)
+                target_key = choice_key_from_row(target_row)
+                pair_sig = (str(source_company), source_key, str(target_company), target_key)
+                if pair_sig in seen_pairs:
+                    continue
+                seen_pairs.add(pair_sig)
                 self.register_pair(data, source_row, target_company, target_row, comparison_id=comparison_id)
 
     def restrictions_pass(self, source_key: str, target_key: str) -> Tuple[bool, str]:

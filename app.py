@@ -3418,7 +3418,8 @@ def rebuild_central_match_table_from_comparisons():
         "stable": {},
         "quarantine": {},
         "meta": {
-            "version": 1,
+            "version": 2,
+            "pair_mode": "symmetric_all_pairs",
             "reeval_threshold": 10,
             "total_saved_events": 0,
             "last_reeval_at_saved_event": 0,
@@ -3455,6 +3456,24 @@ def rebuild_central_match_table_from_comparisons():
             )
 
 
+def ensure_central_table_schema_current():
+    try:
+        data = CENTRAL_ENGINE.load()
+    except Exception:
+        return
+
+    meta = data.get("meta", {}) if isinstance(data, dict) else {}
+    version = int(meta.get("version", 1) or 1)
+    pair_mode = str(meta.get("pair_mode", "") or "").strip().lower()
+
+    needs_rebuild = version < 2 or pair_mode != "symmetric_all_pairs"
+    if not needs_rebuild:
+        return
+
+    rebuild_central_match_table_from_comparisons()
+
+
+ensure_central_table_schema_current()
 
 
 def get_row_summary_text(row_id, selected_codes, catalogs):
