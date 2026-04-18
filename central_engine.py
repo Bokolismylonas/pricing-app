@@ -355,6 +355,7 @@ class CentralMatchEngine:
         target_company: str,
         target_row: Dict[str, Any],
         comparison_id: str = "",
+        source_company: str = "",
     ) -> None:
         source_key = choice_key_from_row(source_row)
         target_key = choice_key_from_row(target_row)
@@ -366,6 +367,11 @@ class CentralMatchEngine:
             target_key,
             {"hits": 0, "last_seen": "", "examples": []},
         )
+        if source_company:
+            bucket["source_company"] = str(source_company or "").strip().upper()
+        bucket["target_company"] = company_key
+        bucket["source_product"] = str(source_row.get("Product", "") or bucket.get("source_product", "") or "")
+        bucket["target_product"] = str(target_row.get("Product", "") or bucket.get("target_product", "") or "")
         bucket["hits"] = int(bucket.get("hits", 0)) + 1
         bucket["last_seen"] = datetime.now().isoformat(timespec="seconds")
         examples = bucket.setdefault("examples", [])
@@ -396,7 +402,14 @@ class CentralMatchEngine:
                 if pair_sig in seen_pairs:
                     continue
                 seen_pairs.add(pair_sig)
-                self.register_pair(data, source_row, target_company, target_row, comparison_id=comparison_id)
+                self.register_pair(
+                    data,
+                    source_row,
+                    target_company,
+                    target_row,
+                    comparison_id=comparison_id,
+                    source_company=source_company,
+                )
 
     def restrictions_pass(self, source_key: str, target_key: str) -> Tuple[bool, str]:
         s = parse_choice_key(source_key)
@@ -515,6 +528,61 @@ class CentralMatchEngine:
 
         return "", 0
 
+
+    def _display_product_from_key(self, choice_key: str) -> str:
+        parsed = parse_choice_key(str(choice_key or ""))
+        family = parsed.get("family", "")
+        if family == "board":
+            parts = [parsed.get("type", ""), parsed.get("thickness", "")]
+            return " ".join([p for p in parts if p]).strip()
+        if family == "profile":
+            parts = [parsed.get("subtype", ""), parsed.get("width", "")]
+            return " ".join([p for p in parts if p]).strip()
+        parts = [parsed.get("functional", ""), parsed.get("core", "")]
+        return " ".join([p for p in parts if p]).strip() or str(choice_key or "")
+
+    def _display_labels_for_pair(
+        self,
+        data: Dict[str, Any],
+        source_key: str,
+        target_company: str,
+        target_key: str,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[str, str, str]:
+        source_company_value = ""
+        source_product_value = ""
+        target_product_value = ""
+
+        if isinstance(payload, dict):
+            source_company_value = str(payload.get("source_company", "") or "").strip().upper()
+            source_product_value = str(payload.get("source_product", "") or "").strip()
+            target_product_value = str(payload.get("target_product", "") or "").strip()
+            examples = payload.get("examples", [])
+            if isinstance(examples, list) and examples:
+                first = examples[0] if isinstance(examples[0], dict) else {}
+                source_product_value = source_product_value or str(first.get("source_product", "") or "").strip()
+                target_product_value = target_product_value or str(first.get("target_product", "") or "").strip()
+
+        register_payload = (
+            data.get("register", {})
+            .get(str(source_key), {})
+            .get(str(target_company or "").strip().upper(), {})
+            .get(str(target_key), {})
+        )
+        if isinstance(register_payload, dict):
+            source_company_value = source_company_value or str(register_payload.get("source_company", "") or "").strip().upper()
+            source_product_value = source_product_value or str(register_payload.get("source_product", "") or "").strip()
+            target_product_value = target_product_value or str(register_payload.get("target_product", "") or "").strip()
+            examples = register_payload.get("examples", [])
+            if isinstance(examples, list) and examples:
+                first = examples[0] if isinstance(examples[0], dict) else {}
+                source_product_value = source_product_value or str(first.get("source_product", "") or "").strip()
+                target_product_value = target_product_value or str(first.get("target_product", "") or "").strip()
+
+        source_product_value = source_product_value or self._display_product_from_key(str(source_key))
+        target_product_value = target_product_value or self._display_product_from_key(str(target_key))
+        return source_company_value, source_product_value, target_product_value
+
     def export_rows(self) -> List[Dict[str, Any]]:
         data = self.load()
         rows: List[Dict[str, Any]] = []
@@ -533,13 +601,18 @@ class CentralMatchEngine:
                 confidence = str(entry.get("confidence", "") or "").strip().lower()
                 if not target_key:
                     continue
-                src = parse_choice_key(str(source_key))
-                tgt = parse_choice_key(target_key)
+                source_company_value, source_product_value, target_product_value = self._display_labels_for_pair(
+                    data,
+                    str(source_key),
+                    str(target_company or "").strip().upper(),
+                    target_key,
+                    data.get("register", {}).get(str(source_key), {}).get(str(target_company or "").strip().upper(), {}).get(target_key, {}),
+                )
                 rows.append({
-                    "source_company": src.get("company", ""),
-                    "source_product": src.get("product", ""),
+                    "source_company": source_company_value,
+                    "source_product": source_product_value,
                     "target_company": str(target_company or "").strip().upper(),
-                    "matched_product": tgt.get("product", ""),
+                    "matched_product": target_product_value,
                     "hits": hits,
                     "confidence": confidence or ("high" if hits >= 3 else "medium"),
                     "table_source": "stable",
@@ -564,14 +637,19 @@ class CentralMatchEngine:
                         hits = 0
                     if hits <= 0:
                         continue
-                    src = parse_choice_key(str(source_key))
-                    tgt = parse_choice_key(str(target_key))
+                    source_company_value, source_product_value, target_product_value = self._display_labels_for_pair(
+                        data,
+                        str(source_key),
+                        str(target_company or "").strip().upper(),
+                        str(target_key),
+                        payload if isinstance(payload, dict) else {},
+                    )
                     confidence = "high" if hits >= 5 else ("medium" if hits >= 3 else "low")
                     rows.append({
-                        "source_company": src.get("company", ""),
-                        "source_product": src.get("product", ""),
+                        "source_company": source_company_value,
+                        "source_product": source_product_value,
                         "target_company": str(target_company or "").strip().upper(),
-                        "matched_product": tgt.get("product", ""),
+                        "matched_product": target_product_value,
                         "hits": hits,
                         "confidence": confidence,
                         "table_source": "register",
