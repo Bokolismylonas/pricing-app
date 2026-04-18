@@ -6151,7 +6151,13 @@ def render_sources():
             edited_df["Price"] = edited_df["Base Price"]
             export_edited_df = edited_df.drop(columns=["__row_id"], errors="ignore").copy()
 
-            preview_c1, preview_c2 = st.columns([1, 1])
+            generated_default_name = get_next_version_filename(generator_company_code, generator_date_val, uploaded_supplier_file.name)
+            generated_signature = (generator_company_code, str(generator_date_val), uploaded_supplier_file.name, int(len(export_edited_df)))
+            if st.session_state.get("save_generated_source_as_signature") != generated_signature:
+                st.session_state["save_generated_source_as_signature"] = generated_signature
+                st.session_state["save_generated_source_as_name"] = generated_default_name
+
+            preview_c1, preview_c2, preview_c3 = st.columns([1, 1, 1])
             with preview_c1:
                 st.download_button(
                     "Download Generated Source",
@@ -6166,13 +6172,40 @@ def render_sources():
                     if export_edited_df.empty:
                         st.error("There are no rows to save.")
                     else:
-                        name = get_next_version_filename(generator_company_code, generator_date_val, uploaded_supplier_file.name)
+                        name = generated_default_name
                         path = get_company_folder(generator_company_code) / name
                         with open(path, "wb") as f:
                             f.write(_source_dataframe_to_excel_bytes(export_edited_df))
                         st.success(f"Generated source saved as: {name}")
                         refresh_source_file_views()
                         st.rerun()
+            with preview_c3:
+                with st.popover("Save As", use_container_width=True):
+                    st.text_input(
+                        "Source name",
+                        key="save_generated_source_as_name",
+                        help="Choose a custom name for this generated source. You can include or omit the Excel extension.",
+                    )
+                    if st.button("Save As", key="save_generated_source_as_button", use_container_width=True):
+                        if export_edited_df.empty:
+                            st.error("There are no rows to save.")
+                        else:
+                            custom_filename = build_custom_source_filename(
+                                st.session_state.get("save_generated_source_as_name", ""),
+                                uploaded_supplier_file.name,
+                            )
+                            if not custom_filename:
+                                st.error("Please enter a valid source name.")
+                            else:
+                                path = get_company_folder(generator_company_code) / custom_filename
+                                if path.exists():
+                                    st.error("A source with this name already exists. Please choose a different name.")
+                                else:
+                                    with open(path, "wb") as f:
+                                        f.write(_source_dataframe_to_excel_bytes(export_edited_df))
+                                    st.success(f"Generated source saved as: {custom_filename}")
+                                    refresh_source_file_views()
+                                    st.rerun()
 
         with st.expander("Manual column override", expanded=not auto_ok):
             st.caption("Use this only when the automatic detection is not ideal. Choose the correct sheet, header row, and columns, then rebuild the Source preview.")
@@ -6317,7 +6350,13 @@ def render_sources():
                     manual_preview_df["Price"] = manual_preview_df["Base Price"]
                     export_manual_preview_df = manual_preview_df.drop(columns=["__row_id"], errors="ignore").copy()
 
-                    man_save_c1, man_save_c2 = st.columns(2)
+                    manual_default_name = get_next_version_filename(generator_company_code, generator_date_val, uploaded_supplier_file.name)
+                    manual_signature = (generator_company_code, str(generator_date_val), uploaded_supplier_file.name, int(len(export_manual_preview_df)), "manual")
+                    if st.session_state.get("save_manual_source_as_signature") != manual_signature:
+                        st.session_state["save_manual_source_as_signature"] = manual_signature
+                        st.session_state["save_manual_source_as_name"] = manual_default_name
+
+                    man_save_c1, man_save_c2, man_save_c3 = st.columns(3)
                     with man_save_c1:
                         st.download_button(
                             "Download Manual Source",
@@ -6332,13 +6371,40 @@ def render_sources():
                             if export_manual_preview_df.empty:
                                 st.error("There are no rows to save.")
                             else:
-                                manual_name = get_next_version_filename(generator_company_code, generator_date_val, uploaded_supplier_file.name)
+                                manual_name = manual_default_name
                                 manual_path = get_company_folder(generator_company_code) / manual_name
                                 with open(manual_path, "wb") as f:
                                     f.write(_source_dataframe_to_excel_bytes(export_manual_preview_df))
                                 st.success(f"Manual source saved as: {manual_name}")
                                 refresh_source_file_views()
                                 st.rerun()
+                    with man_save_c3:
+                        with st.popover("Save As", use_container_width=True):
+                            st.text_input(
+                                "Source name",
+                                key="save_manual_source_as_name",
+                                help="Choose a custom name for this manual source. You can include or omit the Excel extension.",
+                            )
+                            if st.button("Save As", key="save_manual_source_as_button", use_container_width=True):
+                                if export_manual_preview_df.empty:
+                                    st.error("There are no rows to save.")
+                                else:
+                                    custom_filename = build_custom_source_filename(
+                                        st.session_state.get("save_manual_source_as_name", ""),
+                                        uploaded_supplier_file.name,
+                                    )
+                                    if not custom_filename:
+                                        st.error("Please enter a valid source name.")
+                                    else:
+                                        manual_path = get_company_folder(generator_company_code) / custom_filename
+                                        if manual_path.exists():
+                                            st.error("A source with this name already exists. Please choose a different name.")
+                                        else:
+                                            with open(manual_path, "wb") as f:
+                                                f.write(_source_dataframe_to_excel_bytes(export_manual_preview_df))
+                                            st.success(f"Manual source saved as: {custom_filename}")
+                                            refresh_source_file_views()
+                                            st.rerun()
 
     st.markdown("---")
     st.markdown("### 2. Save Ready Source")
