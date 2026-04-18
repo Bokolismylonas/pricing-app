@@ -2033,18 +2033,19 @@ EQUIV_REEVAL_THRESHOLD = 10
 
 def _load_equivalences():
     if not EQUIV_FILE.exists():
-        return {"raw": {}, "compiled": {}, "meta": {"reeval_threshold": EQUIV_REEVAL_THRESHOLD}}
+        return {"raw": {}, "compiled": {}, "exact_templates": {}, "meta": {"reeval_threshold": EQUIV_REEVAL_THRESHOLD}}
     try:
         data = json.loads(EQUIV_FILE.read_text(encoding="utf-8"))
         if isinstance(data, dict):
             data.setdefault("raw", {})
             data.setdefault("compiled", {})
+            data.setdefault("exact_templates", {})
             data.setdefault("meta", {})
             data["meta"].setdefault("reeval_threshold", EQUIV_REEVAL_THRESHOLD)
             return data
     except Exception:
         pass
-    return {"raw": {}, "compiled": {}, "meta": {"reeval_threshold": EQUIV_REEVAL_THRESHOLD}}
+    return {"raw": {}, "compiled": {}, "exact_templates": {}, "meta": {"reeval_threshold": EQUIV_REEVAL_THRESHOLD}}
 
 def _save_equivalences(data):
     EQUIV_FILE.write_text(
@@ -2123,13 +2124,77 @@ def _compile_equivalences_from_raw(raw_store: dict):
 
     return compiled
 
+
+def _make_exact_template_source_key(source_product: str, source_category: str = "", source_mm: str = ""):
+    core = _normalize_match_text(_extract_core_product_name(source_product))
+    family = _infer_product_family(source_product, source_category, source_mm)
+    board_family = ""
+    context = _normalize_match_text(f"{source_product} {source_category}")
+    if any(tok in context for tok in ["gypsum", "plasterboard", "drywall", "board", "γυψο", "γυψοσαν"]):
+        board_family = _infer_board_functional_family(source_product, source_category)
+
+    thickness = _extract_match_mm(f"{source_product} {source_mm}")
+    thickness_key = ""
+    if thickness is not None:
+        thickness_key = f"{thickness:.1f}"
+
+    parts = [p for p in [core, family, board_family, thickness_key] if p]
+    return " | ".join(parts)
+
+def _make_exact_template_target_key(target_product: str, target_category: str = "", target_mm: str = ""):
+    core = _normalize_match_text(_extract_core_product_name(target_product))
+    board_family = ""
+    context = _normalize_match_text(f"{target_product} {target_category}")
+    if any(tok in context for tok in ["gypsum", "plasterboard", "drywall", "board", "γυψο", "γυψοσαν"]):
+        board_family = _infer_board_functional_family(target_product, target_category)
+
+    thickness = _extract_match_mm(f"{target_product} {target_mm}")
+    thickness_key = ""
+    if thickness is not None:
+        thickness_key = f"{thickness:.1f}"
+
+    parts = [p for p in [core, board_family, thickness_key] if p]
+    return " | ".join(parts)
+
+def _record_exact_template_pair(exact_store: dict, source_product: str, target_company: str, target_product: str):
+    if not _products_are_compatible(source_product, target_product):
+        return
+
+    source_key = _make_exact_template_source_key(source_product)
+    target_key = _make_exact_template_target_key(target_product)
+    company_key = str(target_company or "").strip().upper()
+
+    if not source_key or not target_key or not company_key:
+        return
+
+    bucket = exact_store.setdefault(source_key, {}).setdefault(company_key, {})
+    bucket[target_key] = int(bucket.get(target_key, 0)) + 1
+
+def _exact_template_hits_for_candidate(source_product: str, target_company: str, target_product: str) -> int:
+    data = _load_equivalences()
+    exact_store = data.get("exact_templates", {})
+    source_key = _make_exact_template_source_key(source_product)
+    target_key = _make_exact_template_target_key(target_product)
+    company_key = str(target_company or "").strip().upper()
+
+    if not source_key or not target_key or not company_key:
+        return 0
+
+    return int(
+        exact_store.get(source_key, {})
+        .get(company_key, {})
+        .get(target_key, 0)
+    )
+
 def rebuild_material_equivalences_from_saved_comparisons():
     equivalences = {
         "raw": {},
         "compiled": {},
+        "exact_templates": {},
         "meta": {"reeval_threshold": EQUIV_REEVAL_THRESHOLD},
     }
     raw_store = equivalences["raw"]
+    exact_store = equivalences["exact_templates"]
 
     display_to_code = {
         f"{row['name']} ({row['code']})": row["code"]
@@ -2172,6 +2237,12 @@ def rebuild_material_equivalences_from_saved_comparisons():
                             continue
                         _record_equivalence_pair(
                             raw_store,
+                            source_product,
+                            target_code,
+                            target_product,
+                        )
+                        _record_exact_template_pair(
+                            exact_store,
                             source_product,
                             target_code,
                             target_product,
@@ -2270,13 +2341,34 @@ def _normalize_match_text(text):
 
 def _extract_match_mm(text):
     text = str(text or "").lower().replace(",", ".")
-    m = re.search(r"(\d+(?:\.\d+)?)\s*mm", text)
-    if not m:
-        return None
-    try:
-        return float(m.group(1))
-    except Exception:
-        return None
+
+    # Preferred: explicit thickness values like 12.5mm / 15 mm
+    m = re.search(r"(?<!\d)(\d{1,2}(?:\.\d+)?)\s*mm\b", text)
+    if m:
+        try:
+            return float(m.group(1))
+        except Exception:
+            pass
+
+    # Fallback for catalog naming patterns like 12.5x1200x2500 or 12x1200x2000
+    m = re.search(r"(?<!\d)(\d{1,2}(?:\.\d+)?)\s*[x×]\s*\d{3,4}\s*[x×]\s*\d{3,4}", text)
+    if m:
+        try:
+            return float(m.group(1))
+        except Exception:
+            pass
+
+    # Fallback for compact thickness codes often written as 125 / 150 / 100 / 130 etc.
+    # Interpret them as 12.5 / 15.0 / 10.0 / 13.0 only when they appear as standalone tokens,
+    # not as part of SAP codes or dimensions.
+    m = re.search(r"(?<!\d)(9[05]|10[05]|12[05]|13[05]|15[05]|18[05]|20[05]|25[05])(?!(?:\d|\s*[x×]))", text)
+    if m:
+        try:
+            return float(m.group(1)) / 10.0
+        except Exception:
+            pass
+
+    return None
 
 def _extract_match_dimensions(text):
     text = str(text or "").lower().replace("×", "x")
@@ -2675,8 +2767,8 @@ def _infer_board_functional_family(product_text: str, category_text: str = ""):
     text = _normalize_match_text(f"{product_text} {category_text}")
 
     is_fire = any(tok in text for tok in [
-        "flam", "fire", "πυραντ", " df ", " dfh", "rf", "type f", "f1"
-    ])
+        "flam", "fire", "πυραντ", " df ", " dfh", "rf", "type f", "f1", "smart f"
+    ]) or bool(re.search(r"\bsmart\s+f\b", text))
     is_moisture = any(tok in text for tok in [
         "hydro", "h2", "ανθυγρ", "moist", "aqua"
     ])
@@ -2737,8 +2829,13 @@ def _score_product_match_history_aware(user_email: str, source_row: dict, target
             target_company=target_company,
             target_product=product_b,
         )
+        exact_template_hits = _exact_template_hits_for_candidate(
+            source_product=product_a,
+            target_company=target_company,
+            target_product=product_b,
+        )
     else:
-        personal_hits, global_hits, learned_core_hits, equivalence_hits, raw_equivalence_hits = 0, 0, 0, 0, 0
+        personal_hits, global_hits, learned_core_hits, equivalence_hits, raw_equivalence_hits, exact_template_hits = 0, 0, 0, 0, 0, 0
 
     # HISTORY FIRST, but still combined with names + characteristics
     personal_history_score = min(personal_hits * 30.0, 60.0)
@@ -2746,6 +2843,7 @@ def _score_product_match_history_aware(user_email: str, source_row: dict, target
     learned_core_score = min(learned_core_hits * 18.0, 55.0)
     equivalence_score = min(equivalence_hits * 35.0, 140.0)
     raw_equivalence_score = 0.0
+    exact_template_score = 0.0
 
     full_name_score = _text_similarity(product_a, product_b) * 6.0
     core_name_score = _text_similarity(_extract_core_product_name(product_a), _extract_core_product_name(product_b)) * 14.0
@@ -2822,8 +2920,14 @@ def _score_product_match_history_aware(user_email: str, source_row: dict, target
         if raw_equivalence_hits >= 1 and fam_a == fam_b:
             raw_equivalence_score = 90.0 + (raw_equivalence_hits * 12.0)
 
+        # Strongest recall: if the same source template has already been saved for this exact company-target pattern,
+        # prefer that validated mapping over generic alternatives.
+        if exact_template_hits >= 1 and fam_a == fam_b:
+            exact_template_score = 180.0 + (exact_template_hits * 20.0)
+
     score = (
-        raw_equivalence_score
+        exact_template_score
+        + raw_equivalence_score
         + equivalence_score
         + personal_history_score
         + global_history_score
@@ -7257,7 +7361,7 @@ def render_admin_panel():
                 rebuild_material_equivalences_from_saved_comparisons()
             st.success("Material equivalence memory rebuilt successfully.")
     with smart_c3:
-        st.caption("A stable equivalence list is rebuilt only from saved comparisons. Repeated evidence updates the stable list, while exact saved-comparison recall can still surface already validated compatible mappings before the threshold is reached.")
+        st.caption("A stable equivalence list is rebuilt only from saved comparisons. Repeated evidence updates the stable list, while exact saved-comparison templates can recall already validated compatible mappings per target company before the threshold is reached.")
 
     st.markdown("### 📁 Source Files Per User")
 
