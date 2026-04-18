@@ -3318,7 +3318,7 @@ def get_catalog_row(df, display_value):
     return rows.iloc[0]
 
 
-CENTRAL_ENGINE = CentralMatchEngine(ADMIN_DIR / "central_match_table.json", 10)
+CENTRAL_ENGINE = CentralMatchEngine(ADMIN_DIR / "central_match_table.json", 1)
 
 def _engine_row_from_catalog_row(row):
     if row is None:
@@ -3417,6 +3417,33 @@ def rebuild_central_match_table_from_comparisons():
             )
 
 
+
+def ensure_central_match_table_ready():
+    try:
+        data = CENTRAL_ENGINE.load()
+    except Exception:
+        rebuild_central_match_table_from_comparisons()
+        return
+
+    has_data = bool(data.get("register")) or bool(data.get("stable"))
+    if has_data:
+        return
+
+    has_any_saved_comparisons = False
+    for comparison_file in sorted(COMPARISONS_DIR.glob("*.json")):
+        try:
+            records = list_comparisons(comparison_file)
+        except Exception:
+            continue
+        if records:
+            has_any_saved_comparisons = True
+            break
+
+    if has_any_saved_comparisons:
+        rebuild_central_match_table_from_comparisons()
+
+
+ensure_central_match_table_ready()
 
 
 def get_row_summary_text(row_id, selected_codes, catalogs):
@@ -3880,14 +3907,16 @@ def save_or_update_current_comparison(selected_codes):
             return True, "Comparison updated successfully."
         return False, "This comparison no longer exists. Save it again as new."
 
+    payload_state = collect_comparison_state_payload(selected_codes)
+    payload_sources = build_source_files_map(selected_codes)
     comparison_id = save_new_comparison(
         comparison_file,
         owner_sub=get_current_user_id(),
         owner_email=get_current_user_email(),
         name=comparison_name,
         companies=[get_company_label(code) for code in selected_codes],
-        source_files=build_source_files_map(selected_codes),
-        state=collect_comparison_state_payload(selected_codes),
+        source_files=payload_sources,
+        state=payload_state,
     )
     st.session_state["current_comparison_id"] = comparison_id
     _register_payload_to_central_table(payload_state, selected_codes, comparison_id=str(comparison_id or ""), source_files_map=payload_sources)
@@ -7133,7 +7162,7 @@ def render_admin_panel():
                 rebuild_central_match_table_from_comparisons()
             st.success("Central match table rebuilt successfully.")
     with smart_c3:
-        st.caption("Runtime path: 1) central table direct lookup and stop, 2) simple clean fallback. Re-evaluation happens every 10 saved events and restrictions apply there.")
+        st.caption("Runtime path: 1) central table direct lookup and stop, 2) simple clean fallback. Re-evaluation happens on every saved comparison and restrictions apply there.")
 
     st.markdown("### 📁 Source Files Per User")
 
