@@ -2693,7 +2693,7 @@ def _apply_smart_product_suggestions_for_row(row_id: int, selected_codes: list, 
             target_company=target_code,
         )
 
-        if best_row is None:
+        if best_row is None or best_score < 22:
             continue
 
         suggested_display = str(best_row.get("DISPLAY", "") or "").strip()
@@ -2729,6 +2729,17 @@ def _apply_smart_product_suggestions_for_row(row_id: int, selected_codes: list, 
                 suggestion_notes[note_key] = "Suggested"
                 score_notes[note_key] = best_score
                 suggestion_targets[note_key] = suggested_display
+
+
+def _run_render_loop_suggestions(selected_codes: list, catalogs: dict):
+    if not st.session_state.get("smart_matching_enabled", False):
+        return
+
+    if len(selected_codes) < 2:
+        return
+
+    for row_id in st.session_state.get("row_ids", []) or []:
+        _apply_smart_product_suggestions_for_row(row_id, selected_codes, catalogs)
 
 
 # -------------------------------------------------
@@ -6578,6 +6589,8 @@ def render_comparisons():
                     catalogs[code] = None
             else:
                 catalogs[code] = None
+
+        _run_render_loop_suggestions(selected_codes, catalogs)
 
 
     if selected_codes:
