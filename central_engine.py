@@ -21,6 +21,7 @@ from datetime import datetime
 import json
 import re
 from pathlib import Path
+from io import BytesIO
 from typing import Any, Dict, Iterable, Optional, Tuple
 
 
@@ -152,8 +153,12 @@ def strip_board_sheet_dimensions_keep_thickness(text: str) -> str:
     text = re.sub(r'(?<!\d)(\d{1,2}(?:\.\d+)?)\s*[x×]\s*\d{3,4}\s*[x×]\s*\d{3,4}\b', r'\1 mm ', text, flags=re.IGNORECASE)
     text = re.sub(r'\b\d{3,4}\s*[x×]\s*\d{3,4}\s*mm\b', ' ', text, flags=re.IGNORECASE)
     text = re.sub(r'\b\d{3,4}\s*[x×]\s*\d{3,4}\b', ' ', text, flags=re.IGNORECASE)
+    # Boards: ignore trailing sheet length whether written as 2500/2800/3000 or 2.5m/2,8m etc.
+    text = re.sub(r'(?<![\dx×])[-–—\s]*\b(2000|2400|2500|2600|2700|2800|3000|3200|3600)\s*mm\b', ' ', text, flags=re.IGNORECASE)
+    text = re.sub(r'(?<![\dx×])[-–—\s]*\b(2000|2400|2500|2600|2700|2800|3000|3200|3600)\b', ' ', text, flags=re.IGNORECASE)
+    text = re.sub(r'(?<![\dx×])[-–—\s]*\b(2(?:\.0|\.4|\.5|\.6|\.7|\.8)?|3(?:\.0|\.2|\.6)?)\s*m\b', ' ', text, flags=re.IGNORECASE)
     text = re.sub(r'\s+', ' ', text)
-    return text.strip()
+    return text.strip(' -_')
 
 
 def extract_core_product_name(text: str) -> str:
@@ -509,6 +514,73 @@ class CentralMatchEngine:
                     return top_target, top_hits
 
         return "", 0
+
+    def export_rows(self) -> List[Dict[str, Any]]:
+        data = self.load()
+        rows: List[Dict[str, Any]] = []
+
+        stable = data.get("stable", {}) if isinstance(data.get("stable", {}), dict) else {}
+        register = data.get("register", {}) if isinstance(data.get("register", {}), dict) else {}
+
+        for source_key, company_map in stable.items():
+            if not isinstance(company_map, dict):
+                continue
+            for target_company, entry in company_map.items():
+                if not isinstance(entry, dict):
+                    continue
+                target_key = str(entry.get("target_key", "") or "").strip()
+                hits = int(entry.get("hits", 0) or 0)
+                confidence = str(entry.get("confidence", "") or "").strip().lower()
+                if not target_key:
+                    continue
+                src = parse_choice_key(str(source_key))
+                tgt = parse_choice_key(target_key)
+                rows.append({
+                    "source_company": src.get("company", ""),
+                    "source_product": src.get("product", ""),
+                    "target_company": str(target_company or "").strip().upper(),
+                    "matched_product": tgt.get("product", ""),
+                    "hits": hits,
+                    "confidence": confidence or ("high" if hits >= 3 else "medium"),
+                    "table_source": "stable",
+                    "source_key": str(source_key),
+                    "target_key": target_key,
+                })
+
+        stable_pairs = {(r["source_key"], r["target_company"], r["target_key"]) for r in rows}
+
+        for source_key, company_map in register.items():
+            if not isinstance(company_map, dict):
+                continue
+            for target_company, target_map in company_map.items():
+                if not isinstance(target_map, dict):
+                    continue
+                for target_key, payload in target_map.items():
+                    if (str(source_key), str(target_company or "").strip().upper(), str(target_key)) in stable_pairs:
+                        continue
+                    try:
+                        hits = int((payload or {}).get("hits", 0))
+                    except Exception:
+                        hits = 0
+                    if hits <= 0:
+                        continue
+                    src = parse_choice_key(str(source_key))
+                    tgt = parse_choice_key(str(target_key))
+                    confidence = "high" if hits >= 5 else ("medium" if hits >= 3 else "low")
+                    rows.append({
+                        "source_company": src.get("company", ""),
+                        "source_product": src.get("product", ""),
+                        "target_company": str(target_company or "").strip().upper(),
+                        "matched_product": tgt.get("product", ""),
+                        "hits": hits,
+                        "confidence": confidence,
+                        "table_source": "register",
+                        "source_key": str(source_key),
+                        "target_key": str(target_key),
+                    })
+
+        rows.sort(key=lambda r: (-int(r.get("hits", 0) or 0), str(r.get("source_company", "")), str(r.get("target_company", "")), str(r.get("source_product", ""))))
+        return rows
 
 
 # ----------------

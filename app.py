@@ -7297,6 +7297,117 @@ def render_export_inside_comparisons(catalogs, selected_codes):
         st.info("No data available for export yet.")
 
 
+def _dataframe_to_excel_bytes(df: pd.DataFrame) -> bytes:
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Learned Matches")
+    return buffer.getvalue()
+
+
+def render_admin_match_table_viewer():
+    show_key = "admin_show_learned_matches"
+    if show_key not in st.session_state:
+        st.session_state[show_key] = False
+
+    c1, c2, c3 = st.columns([1, 1, 4])
+    with c1:
+        if st.button("Show Learned Matches", use_container_width=True, key="admin_show_learned_matches_button"):
+            st.session_state[show_key] = True
+    with c2:
+        if st.session_state.get(show_key):
+            if st.button("Hide Learned Matches", use_container_width=True, key="admin_hide_learned_matches_button"):
+                st.session_state[show_key] = False
+
+    if not st.session_state.get(show_key):
+        return
+
+    rows = CENTRAL_ENGINE.export_rows()
+    if not rows:
+        st.caption("No learned matches available yet.")
+        return
+
+    df = pd.DataFrame(rows)
+    display_df = df.rename(columns={
+        "source_company": "Source Company",
+        "source_product": "Source Product",
+        "target_company": "Target Company",
+        "matched_product": "Matched Product",
+        "hits": "Hits",
+        "confidence": "Confidence",
+        "table_source": "Source",
+    })
+
+    f1, f2, f3, f4 = st.columns([2, 1, 1, 1])
+    with f1:
+        search_value = st.text_input("Search learned matches", key="admin_match_table_search", placeholder="Search company or product...")
+    with f2:
+        source_company_options = ["All"] + sorted([v for v in display_df["Source Company"].dropna().astype(str).unique().tolist() if v])
+        selected_source_company = st.selectbox("Source company", source_company_options, key="admin_match_source_company_filter")
+    with f3:
+        target_company_options = ["All"] + sorted([v for v in display_df["Target Company"].dropna().astype(str).unique().tolist() if v])
+        selected_target_company = st.selectbox("Target company", target_company_options, key="admin_match_target_company_filter")
+    with f4:
+        source_type_options = ["All", "stable", "register"]
+        selected_source_type = st.selectbox("Table source", source_type_options, key="admin_match_table_source_filter")
+
+    f5, f6, f7 = st.columns([1, 1, 2])
+    with f5:
+        confidence_options = ["All", "high", "medium", "low"]
+        selected_confidence = st.selectbox("Confidence", confidence_options, key="admin_match_confidence_filter")
+    with f6:
+        sort_options = {
+            "Hits ↓": ["Hits", False],
+            "Hits ↑": ["Hits", True],
+            "Source Company A→Z": ["Source Company", True],
+            "Target Company A→Z": ["Target Company", True],
+            "Confidence": ["Confidence", True],
+        }
+        selected_sort_label = st.selectbox("Sort by", list(sort_options.keys()), key="admin_match_sort_by")
+    with f7:
+        st.caption(f"Rows: {len(display_df)}")
+
+    filtered_df = display_df.copy()
+    if search_value:
+        q = str(search_value).strip().lower()
+        mask = (
+            filtered_df["Source Company"].astype(str).str.lower().str.contains(q, na=False)
+            | filtered_df["Source Product"].astype(str).str.lower().str.contains(q, na=False)
+            | filtered_df["Target Company"].astype(str).str.lower().str.contains(q, na=False)
+            | filtered_df["Matched Product"].astype(str).str.lower().str.contains(q, na=False)
+        )
+        filtered_df = filtered_df[mask]
+
+    if selected_source_company != "All":
+        filtered_df = filtered_df[filtered_df["Source Company"] == selected_source_company]
+    if selected_target_company != "All":
+        filtered_df = filtered_df[filtered_df["Target Company"] == selected_target_company]
+    if selected_source_type != "All":
+        filtered_df = filtered_df[filtered_df["Source"] == selected_source_type]
+    if selected_confidence != "All":
+        filtered_df = filtered_df[filtered_df["Confidence"] == selected_confidence]
+
+    sort_col, ascending = sort_options[selected_sort_label]
+    if sort_col == "Confidence":
+        order = {"high": 0, "medium": 1, "low": 2}
+        filtered_df = filtered_df.assign(__confidence_rank=filtered_df["Confidence"].map(order).fillna(9))
+        filtered_df = filtered_df.sort_values(["__confidence_rank", "Hits"], ascending=[True, False]).drop(columns=["__confidence_rank"])
+    else:
+        filtered_df = filtered_df.sort_values(sort_col, ascending=ascending)
+
+    export_df = filtered_df[["Source Company", "Source Product", "Target Company", "Matched Product", "Hits", "Confidence", "Source"]].copy()
+
+    st.download_button(
+        "Download Learned Matches as Excel",
+        data=_dataframe_to_excel_bytes(export_df),
+        file_name=f"learned_matches_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="admin_download_learned_matches_excel",
+        use_container_width=False,
+    )
+
+    st.dataframe(export_df, use_container_width=True, hide_index=True)
+
+
 def render_admin_panel():
     if not is_admin_user():
         return
@@ -7325,6 +7436,8 @@ def render_admin_panel():
             st.success("Central match table rebuilt successfully.")
     with smart_c3:
         st.caption("Runtime path: 1) central table direct lookup and stop, 2) simple clean fallback. Re-evaluation happens every 10 saved events and restrictions apply there.")
+
+    render_admin_match_table_viewer()
 
     st.markdown("### 📁 Source Files Per User")
 
