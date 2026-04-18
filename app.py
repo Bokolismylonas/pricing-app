@@ -2135,22 +2135,37 @@ STABLE_TABLE_REEVAL_THRESHOLD = 10
 def _load_stable_saved_table():
     if not STABLE_TABLE_FILE.exists():
         return {
+            "register": {},
             "entries": {},
-            "meta": {"reeval_threshold": STABLE_TABLE_REEVAL_THRESHOLD, "last_saved_count": 0},
+            "meta": {
+                "reeval_threshold": STABLE_TABLE_REEVAL_THRESHOLD,
+                "total_saved_events": 0,
+                "last_compiled_saved_events": 0,
+                "seeded_from_existing_comparisons": False,
+            },
         }
     try:
         data = json.loads(STABLE_TABLE_FILE.read_text(encoding="utf-8"))
         if isinstance(data, dict):
+            data.setdefault("register", {})
             data.setdefault("entries", {})
             data.setdefault("meta", {})
             data["meta"].setdefault("reeval_threshold", STABLE_TABLE_REEVAL_THRESHOLD)
-            data["meta"].setdefault("last_saved_count", 0)
+            data["meta"].setdefault("total_saved_events", 0)
+            data["meta"].setdefault("last_compiled_saved_events", 0)
+            data["meta"].setdefault("seeded_from_existing_comparisons", False)
             return data
     except Exception:
         pass
     return {
+        "register": {},
         "entries": {},
-        "meta": {"reeval_threshold": STABLE_TABLE_REEVAL_THRESHOLD, "last_saved_count": 0},
+        "meta": {
+            "reeval_threshold": STABLE_TABLE_REEVAL_THRESHOLD,
+            "total_saved_events": 0,
+            "last_compiled_saved_events": 0,
+            "seeded_from_existing_comparisons": False,
+        },
     }
 
 def _save_stable_saved_table(data):
@@ -2159,21 +2174,10 @@ def _save_stable_saved_table(data):
         encoding="utf-8",
     )
 
-def _count_total_saved_comparisons():
-    total = 0
-    for comparison_file in sorted(COMPARISONS_DIR.glob("*.json")):
-        try:
-            records = list_comparisons(comparison_file)
-        except Exception:
-            continue
-        total += len(records)
-    return total
-
 def _normalized_board_thickness_key(product_text: str = "", mm_text: str = ""):
     t = _extract_match_mm(f"{product_text} {mm_text}")
     if t is None:
         return ""
-    # Treat 12.4 and 12.5 as same practical thickness bucket
     if abs(float(t) - 12.45) <= 0.15 or abs(float(t) - 12.5) <= 0.15:
         return "12.5"
     if abs(float(t) - 15.0) <= 0.15:
@@ -2204,7 +2208,7 @@ def _make_stable_target_key(product_text: str, category_text: str = "", mm_text:
     parts = [p for p in [family, board_family, thickness_key, core] if p]
     return " | ".join(parts)
 
-def _record_stable_table_pair(raw_store: dict, source_product: str, target_company: str, target_product: str):
+def _record_stable_table_pair(register_store: dict, source_product: str, target_company: str, target_product: str):
     if not _products_are_compatible(source_product, target_product):
         return
 
@@ -2215,15 +2219,14 @@ def _record_stable_table_pair(raw_store: dict, source_product: str, target_compa
     if not source_key or not target_key or not company_key:
         return
 
-    bucket = raw_store.setdefault(source_key, {}).setdefault(company_key, {})
+    bucket = register_store.setdefault(source_key, {}).setdefault(company_key, {})
     bucket[target_key] = int(bucket.get(target_key, 0)) + 1
 
-def _compile_stable_saved_table(raw_store: dict):
+def _compile_stable_saved_table(register_store: dict):
     compiled = {}
-    for source_key, company_map in (raw_store or {}).items():
+    for source_key, company_map in (register_store or {}).items():
         if not isinstance(company_map, dict):
             continue
-
         for company_key, target_map in company_map.items():
             if not isinstance(target_map, dict) or not target_map:
                 continue
@@ -2240,7 +2243,6 @@ def _compile_stable_saved_table(raw_store: dict):
             top_target, top_hits = ranked[0]
             second_hits = ranked[1][1] if len(ranked) > 1 else 0
 
-            # Stable table should reflect repeated truth from saved comparisons.
             if total_hits < STABLE_TABLE_REEVAL_THRESHOLD:
                 continue
             if top_hits < 2:
@@ -2251,20 +2253,18 @@ def _compile_stable_saved_table(raw_store: dict):
             compiled.setdefault(source_key, {}).setdefault(company_key, {})[top_target] = top_hits
     return compiled
 
-def rebuild_stable_saved_table_from_comparisons():
-    table = {
-        "entries": {},
-        "meta": {
-            "reeval_threshold": STABLE_TABLE_REEVAL_THRESHOLD,
-            "last_saved_count": _count_total_saved_comparisons(),
-        },
-    }
-    raw_store = {}
+def _seed_stable_table_register_from_existing_comparisons_if_needed():
+    data = _load_stable_saved_table()
+    if data.get("meta", {}).get("seeded_from_existing_comparisons"):
+        return
 
     display_to_code = {
         f"{row['name']} ({row['code']})": row["code"]
         for _, row in companies_df.iterrows()
     }
+
+    register_store = data.setdefault("register", {})
+    saved_events = 0
 
     for comparison_file in sorted(COMPARISONS_DIR.glob("*.json")):
         try:
@@ -2273,6 +2273,7 @@ def rebuild_stable_saved_table_from_comparisons():
             continue
 
         for record in records:
+            saved_events += 1
             state = record.get("state", {}) or {}
             row_ids = state.get("row_ids", []) or []
             if not isinstance(row_ids, list) or not row_ids:
@@ -2300,18 +2301,115 @@ def rebuild_stable_saved_table_from_comparisons():
                     for target_code, target_product in row_products:
                         if source_code == target_code:
                             continue
-                        _record_stable_table_pair(raw_store, source_product, target_code, target_product)
+                        _record_stable_table_pair(register_store, source_product, target_code, target_product)
 
-    table["entries"] = _compile_stable_saved_table(raw_store)
-    _save_stable_saved_table(table)
+    data["entries"] = _compile_stable_saved_table(register_store)
+    data["meta"]["total_saved_events"] = max(int(data["meta"].get("total_saved_events", 0)), saved_events)
+    data["meta"]["last_compiled_saved_events"] = int(data["meta"].get("total_saved_events", 0))
+    data["meta"]["seeded_from_existing_comparisons"] = True
+    _save_stable_saved_table(data)
+    st.session_state["_stable_saved_table_ready"] = True
+
+def _register_current_state_to_stable_saved_table(payload_state: dict, selected_codes: list):
+    if not isinstance(payload_state, dict) or not selected_codes or len(selected_codes) < 2:
+        return
+
+    data = _load_stable_saved_table()
+    register_store = data.setdefault("register", {})
+    row_ids = payload_state.get("row_ids", []) or []
+
+    for row_id in row_ids:
+        row_products = []
+        for company_code in selected_codes:
+            display_value = str(payload_state.get(f"row_{row_id}_{company_code}_product", "") or "").strip()
+            if display_value:
+                row_products.append((company_code, display_value.split("| SAP")[0].strip()))
+
+        if len(row_products) < 2:
+            continue
+
+        for source_code, source_product in row_products:
+            for target_code, target_product in row_products:
+                if source_code == target_code:
+                    continue
+                _record_stable_table_pair(register_store, source_product, target_code, target_product)
+
+    data["meta"]["total_saved_events"] = int(data["meta"].get("total_saved_events", 0)) + 1
+
+    # Re-evaluate only every N new saved events
+    threshold = int(data.get("meta", {}).get("reeval_threshold", STABLE_TABLE_REEVAL_THRESHOLD))
+    total_events = int(data["meta"].get("total_saved_events", 0))
+    last_compiled = int(data["meta"].get("last_compiled_saved_events", 0))
+    if (total_events - last_compiled) >= threshold or not data.get("entries"):
+        data["entries"] = _compile_stable_saved_table(register_store)
+        data["meta"]["last_compiled_saved_events"] = total_events
+
+    data["meta"]["seeded_from_existing_comparisons"] = True
+    _save_stable_saved_table(data)
+    st.session_state["_stable_saved_table_ready"] = True
+
+def rebuild_stable_saved_table_from_comparisons():
+    # Admin rebuild / reset from currently existing comparisons only.
+    data = {
+        "register": {},
+        "entries": {},
+        "meta": {
+            "reeval_threshold": STABLE_TABLE_REEVAL_THRESHOLD,
+            "total_saved_events": 0,
+            "last_compiled_saved_events": 0,
+            "seeded_from_existing_comparisons": True,
+        },
+    }
+
+    display_to_code = {
+        f"{row['name']} ({row['code']})": row["code"]
+        for _, row in companies_df.iterrows()
+    }
+
+    for comparison_file in sorted(COMPARISONS_DIR.glob("*.json")):
+        try:
+            records = list_comparisons(comparison_file)
+        except Exception:
+            continue
+
+        for record in records:
+            data["meta"]["total_saved_events"] += 1
+            state = record.get("state", {}) or {}
+            row_ids = state.get("row_ids", []) or []
+            if not isinstance(row_ids, list) or not row_ids:
+                continue
+
+            selected_codes = []
+            for display in state.get("comparison_company_selection", []) or []:
+                if display in display_to_code:
+                    selected_codes.append(display_to_code[display])
+
+            if len(selected_codes) < 2:
+                continue
+
+            for row_id in row_ids:
+                row_products = []
+                for company_code in selected_codes:
+                    display_value = str(state.get(f"row_{row_id}_{company_code}_product", "") or "").strip()
+                    if display_value:
+                        row_products.append((company_code, display_value.split("| SAP")[0].strip()))
+
+                if len(row_products) < 2:
+                    continue
+
+                for source_code, source_product in row_products:
+                    for target_code, target_product in row_products:
+                        if source_code == target_code:
+                            continue
+                        _record_stable_table_pair(data["register"], source_product, target_code, target_product)
+
+    data["entries"] = _compile_stable_saved_table(data["register"])
+    data["meta"]["last_compiled_saved_events"] = int(data["meta"]["total_saved_events"])
+    _save_stable_saved_table(data)
     st.session_state["_stable_saved_table_ready"] = True
 
 def _maybe_rebuild_stable_saved_table():
-    data = _load_stable_saved_table()
-    last_saved_count = int(data.get("meta", {}).get("last_saved_count", 0))
-    current_saved_count = _count_total_saved_comparisons()
-    if (not STABLE_TABLE_FILE.exists()) or (current_saved_count - last_saved_count >= STABLE_TABLE_REEVAL_THRESHOLD):
-        rebuild_stable_saved_table_from_comparisons()
+    _seed_stable_table_register_from_existing_comparisons_if_needed()
 
 def _stable_saved_table_hits_for_candidate(source_product: str, target_company: str, target_product: str) -> int:
     data = _load_stable_saved_table()
@@ -2322,6 +2420,7 @@ def _stable_saved_table_hits_for_candidate(source_product: str, target_company: 
     if not source_key or not target_key or not company_key:
         return 0
     return int(entries.get(source_key, {}).get(company_key, {}).get(target_key, 0))
+
 
 def _make_exact_template_source_key(source_product: str, source_category: str = "", source_mm: str = ""):
     core = _normalize_match_text(_extract_core_product_name(source_product))
@@ -4513,7 +4612,7 @@ def save_current_comparison_from_state(force_new: bool = False, override_name: s
             st.session_state["comparison_user_modified"] = False
             st.session_state["comparison_clean_generation"] = st.session_state.get("comparison_edit_generation", 0)
             rebuild_match_history_from_scratch()
-            rebuild_stable_saved_table_from_comparisons()
+            _register_current_state_to_stable_saved_table(payload_state, selected_codes)
             return True, "Comparison updated successfully."
         return False, "This comparison no longer exists. Save it again as new."
 
@@ -4536,7 +4635,7 @@ def save_current_comparison_from_state(force_new: bool = False, override_name: s
     st.session_state["comparison_user_modified"] = False
     st.session_state["comparison_clean_generation"] = st.session_state.get("comparison_edit_generation", 0)
     rebuild_match_history_from_scratch()
-    rebuild_stable_saved_table_from_comparisons()
+    _register_current_state_to_stable_saved_table(payload_state, selected_codes)
     return True, "Comparison saved successfully."
 
 
