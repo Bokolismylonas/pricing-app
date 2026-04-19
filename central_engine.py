@@ -128,44 +128,18 @@ def _generic_key(family: str, functional: str, unit: str, package: str, core: st
     return _fixed_key([family, functional, unit, package, core])
 
 
-MASS_PACK_UNITS = {"kg", "g", "gr", "l", "lt", "ml"}
-PACK_SENSITIVE_FUNCTIONS = {"", "moisture", "fire", "acoustic", "acoustic+fire", "fire+moisture", "acoustic+moisture", "acoustic+fire+moisture"}
-
-
-def _normalize_mass_package_unit(unit: str) -> str:
-    unit = normalize_text(str(unit or "")).replace(" ", "")
-    if unit == "gr":
-        return "g"
-    if unit == "lt":
-        return "l"
-    return unit
-
-
-def _format_mass_package_number(num_text: str) -> str:
-    try:
-        value = float(str(num_text or "").replace(",", "."))
-    except Exception:
-        return str(num_text or "").strip()
-    if abs(value - round(value)) < 1e-9:
-        return str(int(round(value)))
-    return f"{value:g}"
-
-
 def generic_package_key(product_text: str = "", category_text: str = "", mm_text: str = "") -> str:
     # For generic products, packaging should come from the product label itself.
-    # Keep only mass/volume packaging here so package-sensitive matching applies
-    # to kg / liters style products and not to m, m2 or similar charge units.
+    # Do not mix category/mm into the package parser because seed rows often omit them.
     text = normalize_text(f"{product_text}")
-    m = re.search(r'\b(σακι|σακί|δοχειο|δοχείο|βαρελι|βαρέλι|φιαλη|φιάλη|bucket|bag|pail|drum|can|tin|box|kit)\s*(\d+(?:[\.,]\d+)?)\s*(kg|gr|g|lt|l|ml)\b', text)
+    m = re.search(r'\b(σακι|σακί|δοχειο|δοχείο|βαρελι|βαρέλι|φιαλη|φιάλη|bucket|bag|pail|drum|can|tin|box|kit)\s*(\d+(?:\.\d+)?)\s*(kg|gr|g|lt|l|ml)\b', text)
     if m:
-        qty = _format_mass_package_number(m.group(2))
-        unit = _normalize_mass_package_unit(m.group(3))
+        qty = m.group(2)
+        unit = m.group(3)
         return f"{qty}{unit}"
-    m = re.search(r'\b(\d+(?:[\.,]\d+)?)\s*(kg|gr|g|lt|l|ml)\b', text)
+    m = re.search(r'\b(\d+(?:\.\d+)?)\s*(kg|gr|g|lt|l|ml)\b', text)
     if m:
-        qty = _format_mass_package_number(m.group(1))
-        unit = _normalize_mass_package_unit(m.group(2))
-        return f"{qty}{unit}"
+        return f"{m.group(1)}{m.group(2)}"
     return ""
 
 
@@ -188,50 +162,6 @@ def generic_base_name_core(product_text: str = "", category_text: str = "", mm_t
     return text
 
 
-def _mass_package_signature(package_text: str):
-    text = normalize_text(str(package_text or "")).replace(" ", "")
-    if not text:
-        return None
-    m = re.match(r'^(\d+(?:[\.,]\d+)?)(kg|gr|g|lt|l|ml)$', text, flags=re.IGNORECASE)
-    if not m:
-        return None
-    try:
-        value = float(m.group(1).replace(",", "."))
-    except Exception:
-        return None
-    unit = _normalize_mass_package_unit(m.group(2))
-    if unit == "kg":
-        return value * 1000.0, "g"
-    if unit == "g":
-        return value, "g"
-    if unit == "l":
-        return value * 1000.0, "ml"
-    if unit == "ml":
-        return value, "ml"
-    return None
-
-
-def _mass_package_tier(package_text: str) -> str:
-    sig = _mass_package_signature(package_text)
-    if not sig:
-        return ""
-    value, base_unit = sig
-    # Coarse commercial size classes so e.g. 3kg matches 5kg, and 23kg matches 25kg.
-    # Applies only to mass / volume packaging, not length / area products.
-    thresholds = [
-        (1500.0, "xs"),
-        (6000.0, "sm"),
-        (15000.0, "md"),
-        (30000.0, "lg"),
-    ]
-    tier = "xl"
-    for limit, label in thresholds:
-        if value <= limit:
-            tier = label
-            break
-    return f"mass_{base_unit}_{tier}"
-
-
 def choice_key_variants_from_row(row: Dict[str, Any]) -> List[str]:
     primary = choice_key_from_row(row)
     if not primary:
@@ -244,29 +174,11 @@ def choice_key_variants_from_row(row: Dict[str, Any]) -> List[str]:
         unit = parsed.get("unit", "")
         package = parsed.get("package", "")
         core = parsed.get("core", "")
-        package_unit_match = re.search(r'(kg|g|gr|lt|l|ml)$', str(package or "").strip(), flags=re.IGNORECASE)
-        has_mass_package = bool(package_unit_match)
-
-        if has_mass_package:
-            package_tier = _mass_package_tier(package)
-            candidates = [
-                _generic_key(family, functional, unit, package, core),
-                _generic_key(family, functional, "", package, core),
-                _generic_key(family, "", "", package, core),
-            ]
-            if package_tier:
-                candidates.extend([
-                    _generic_key(family, functional, unit, package_tier, core),
-                    _generic_key(family, functional, "", package_tier, core),
-                    _generic_key(family, "", "", package_tier, core),
-                ])
-        else:
-            candidates = [
-                _generic_key(family, functional, unit, "", core),
-                _generic_key(family, functional, "", "", core),
-                _generic_key(family, "", "", "", core),
-            ]
-
+        candidates = [
+            _generic_key(family, functional, unit, "", core),
+            _generic_key(family, functional, "", "", core),
+            _generic_key(family, "", "", "", core),
+        ]
         for candidate in candidates:
             if candidate and candidate not in variants:
                 variants.append(candidate)
