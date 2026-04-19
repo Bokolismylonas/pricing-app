@@ -32,6 +32,76 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 BOARD_THICKNESS_CANONICAL = [6.0, 8.0, 9.5, 10.0, 12.5, 13.0, 15.0, 18.0, 20.0, 25.0]
 
 
+COLOR_VARIANT_TERMS = [
+    "λευκο", "λευκό", "γκρι", "γκριζ", "ροζ", "μπλε", "πρασινο", "πράσινο", "κοκκινο", "κόκκινο",
+    "μαυρο", "μαύρο", "διαφανο", "διάφανο", "κεραμιδι", "κεραμιδί", "μπεζ", "καφε", "καφέ",
+    "yellow", "red", "green", "blue", "grey", "gray", "white", "black", "beige", "pink", "transparent",
+]
+
+GENERIC_NONCRITICAL_VARIANT_TERMS = [
+    "υγρο", "υγρό", "σκονη", "σκόνη", "paste", "παστα", "πάστα", "liquid", "powder",
+]
+
+PACKAGE_CONTAINER_TERMS = [
+    "δοχειο", "δοχείο", "βαρελι", "βαρέλι", "σακι", "σακί", "φυσιγγ", "cartidge", "cartridge",
+    "bucket", "pail", "tin", "can", "bottle", "bag", "drum", "pack", "κουβας", "κουβάς",
+]
+
+
+def extract_package_signature(product_text: str = "", category_text: str = "", mm_text: str = "") -> str:
+    text = normalize_text(f"{product_text} {category_text} {mm_text}")
+    if not text:
+        return ""
+
+    qty = ""
+    unit = ""
+    m = re.search(r'(?<!\d)(\d+(?:\.\d+)?)\s*(kg|gr|g|lt|l|ml|κιλ(?:α|ό)?|κιλο|λιτρ(?:α|ο)?)\b', text)
+    if m:
+        qty = m.group(1)
+        unit = m.group(2)
+
+    container = ""
+    for term in PACKAGE_CONTAINER_TERMS:
+        if term in text:
+            container = normalize_text(term)
+            break
+
+    parts = []
+    if container:
+        parts.append(container)
+    if qty and unit:
+        parts.append(f"{qty}{unit}")
+    elif qty:
+        parts.append(qty)
+    return " ".join(parts).strip()
+
+
+def strip_generic_variant_descriptors(text: str) -> str:
+    text = normalize_text(text)
+    if not text:
+        return ""
+    for term in COLOR_VARIANT_TERMS + GENERIC_NONCRITICAL_VARIANT_TERMS:
+        text = re.sub(rf'(?<!\w){re.escape(normalize_text(term))}(?!\w)', ' ', text)
+    text = re.sub(r'\b(?:ral\s*\d{3,4})\b', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip(' -,_/')
+    return text
+
+
+def generic_canonical_core(product_text: str = "", category_text: str = "", mm_text: str = "") -> str:
+    text = normalize_text(product_text)
+    package_sig = extract_package_signature(product_text, category_text, mm_text)
+    if package_sig:
+        for token in package_sig.split():
+            text = re.sub(rf'(?<!\w){re.escape(token)}(?!\w)', ' ', text)
+    # remove common package container words from the core once packaging has been captured separately
+    for term in PACKAGE_CONTAINER_TERMS:
+        text = re.sub(rf'(?<!\w){re.escape(normalize_text(term))}(?!\w)', ' ', text)
+    text = strip_generic_variant_descriptors(text)
+    text = extract_core_product_name(text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return normalize_text(text)
+
+
 def normalize_text(value: str) -> str:
     text = str(value or "").strip().lower()
     text = text.replace(",", ".")
@@ -271,8 +341,9 @@ def make_choice_key(product_text: str, category_text: str = "", mm_text: str = "
         return " | ".join([p for p in [family, subtype, width, unit, core] if p])
 
     func = simple_functional_tag(product_text, category_text, mm_text)
-    core = normalize_text(extract_core_product_name(product_text))
-    return " | ".join([p for p in [family, func, unit, core] if p])
+    package = extract_package_signature(product_text, category_text, mm_text)
+    core = generic_canonical_core(product_text, category_text, mm_text)
+    return " | ".join([p for p in [family, func, unit, package, core] if p])
 
 
 def choice_key_from_row(row: Dict[str, Any]) -> str:
@@ -300,7 +371,8 @@ def parse_choice_key(choice_key: str) -> Dict[str, str]:
     else:
         out["functional"] = parts[1] if len(parts) >= 2 else ""
         out["unit"] = parts[2] if len(parts) >= 3 else ""
-        out["core"] = parts[3] if len(parts) >= 4 else ""
+        out["package"] = parts[3] if len(parts) >= 4 else ""
+        out["core"] = parts[4] if len(parts) >= 5 else ""
     return out
 
 
