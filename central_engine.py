@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime
 import json
 import re
+import unicodedata
 from pathlib import Path
 from io import BytesIO
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -40,6 +41,18 @@ def normalize_text(value: str) -> str:
     text = re.sub(r"[-/]+", " ", text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
+
+def strip_accents(value: str) -> str:
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    return "".join(ch for ch in text if not unicodedata.combining(ch))
+
+
+def normalize_generic_compare_text(value: str) -> str:
+    text = normalize_text(value)
+    text = re.sub(r'[^\w\s]+', ' ', text, flags=re.UNICODE)
+    text = strip_accents(text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
 
 
 def normalize_mm_unit(mm_text: str) -> str:
@@ -136,13 +149,15 @@ def generic_base_name_core(product_text: str = "", category_text: str = "", mm_t
     text = normalize_text(f"{product_text}")
     text = re.sub(r'\b(σακι|σακί|δοχειο|δοχείο|βαρελι|βαρέλι|φιαλη|φιάλη|bucket|bag|pail|drum|can|tin|box|kit)\s*\d+(?:\.\d+)?\s*(kg|gr|g|lt|l|ml)\b', ' ', text)
     text = re.sub(r'\b\d+(?:\.\d+)?\s*(kg|gr|g|lt|l|ml)\b', ' ', text)
+    text = normalize_generic_compare_text(text)
+    color_terms = {strip_accents(t) for t in GENERIC_COLOR_TERMS}
+    non_critical_terms = {strip_accents(t) for t in GENERIC_NON_CRITICAL_TERMS}
     tokens = []
     for tok in text.split():
-        if tok in GENERIC_COLOR_TERMS or tok in GENERIC_NON_CRITICAL_TERMS:
+        if tok in color_terms or tok in non_critical_terms:
             continue
         tokens.append(tok)
     text = ' '.join(tokens)
-    text = re.sub(r'[^\w\s]+', ' ', text, flags=re.UNICODE)
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
@@ -503,32 +518,33 @@ class CentralMatchEngine:
         group_id: str = "",
         notes: str = "",
     ) -> None:
-        source_key = choice_key_from_row(source_row)
+        source_variants = choice_key_variants_from_row(source_row)
         target_key = choice_key_from_row(target_row)
         company_key = str(target_company or "").strip().upper()
         source_company_key = str(source_company or "").strip().upper()
-        if not source_key or not target_key or not company_key or not source_company_key:
+        if not source_variants or not target_key or not company_key or not source_company_key:
             return
 
-        bucket = data.setdefault("seed", {}).setdefault(source_key, {}).setdefault(company_key, {}).setdefault(
-            target_key,
-            {"hits": 0, "confidence": "high", "examples": []},
-        )
-        bucket["source_company"] = source_company_key
-        bucket["target_company"] = company_key
-        bucket["source_product"] = str(source_row.get("Product", "") or bucket.get("source_product", "") or "")
-        bucket["target_product"] = str(target_row.get("Product", "") or bucket.get("target_product", "") or "")
-        bucket["group_id"] = str(group_id or bucket.get("group_id", "") or "")
-        bucket["notes"] = str(notes or bucket.get("notes", "") or "")
-        bucket["confidence"] = str(confidence or bucket.get("confidence", "high") or "high").strip().lower() or "high"
-        bucket["hits"] = max(int(bucket.get("hits", 0) or 0), 100)
-        examples = bucket.setdefault("examples", [])
-        if not examples:
-            examples.append({
-                "source_product": str(source_row.get("Product", "") or ""),
-                "target_product": str(target_row.get("Product", "") or ""),
-                "group_id": str(group_id or ""),
-            })
+        for source_key in source_variants:
+            bucket = data.setdefault("seed", {}).setdefault(source_key, {}).setdefault(company_key, {}).setdefault(
+                target_key,
+                {"hits": 0, "confidence": "high", "examples": []},
+            )
+            bucket["source_company"] = source_company_key
+            bucket["target_company"] = company_key
+            bucket["source_product"] = str(source_row.get("Product", "") or bucket.get("source_product", "") or "")
+            bucket["target_product"] = str(target_row.get("Product", "") or bucket.get("target_product", "") or "")
+            bucket["group_id"] = str(group_id or bucket.get("group_id", "") or "")
+            bucket["notes"] = str(notes or bucket.get("notes", "") or "")
+            bucket["confidence"] = str(confidence or bucket.get("confidence", "high") or "high").strip().lower() or "high"
+            bucket["hits"] = max(int(bucket.get("hits", 0) or 0), 100)
+            examples = bucket.setdefault("examples", [])
+            if not examples:
+                examples.append({
+                    "source_product": str(source_row.get("Product", "") or ""),
+                    "target_product": str(target_row.get("Product", "") or ""),
+                    "group_id": str(group_id or ""),
+                })
 
     def import_seed_rows(self, rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
         data = self.load()
