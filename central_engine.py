@@ -691,12 +691,29 @@ class CentralMatchEngine:
         for source_key in source_keys:
             entry = data.get("stable", {}).get(source_key, {}).get(company_key, {})
             if isinstance(entry, dict) and str(entry.get("target_key", "") or "").strip():
-                hits = int(entry.get("hits", 0) or 0)
-                confidence = str(entry.get("confidence", "") or "").strip().lower()
-                if confidence == "high" or hits >= 3:
-                    return str(entry.get("target_key", "") or ""), hits
+                return str(entry.get("target_key", "") or ""), int(entry.get("hits", 0) or 0)
 
-        # 2) Then curated seed baseline.
+        # 2) Provisional learned knowledge with enough repeated user confirmations should also
+        # override seed, even before it graduates into the stable table.
+        for source_key in source_keys:
+            provisional = data.get("register", {}).get(source_key, {}).get(company_key, {})
+            if isinstance(provisional, dict):
+                valid = []
+                for target_key, payload in provisional.items():
+                    try:
+                        hits = int((payload or {}).get("hits", 0))
+                    except Exception:
+                        hits = 0
+                    if target_key and hits > 0:
+                        valid.append((str(target_key), hits))
+                if valid:
+                    valid.sort(key=lambda x: x[1], reverse=True)
+                    top_target, top_hits = valid[0]
+                    second_hits = valid[1][1] if len(valid) > 1 else 0
+                    if top_hits >= 3 and (second_hits == 0 or top_hits > second_hits):
+                        return top_target, top_hits
+
+        # 3) Seed remains the baseline when learned data is not yet strong enough.
         for source_key in source_keys:
             seed_bucket = data.get("seed", {}).get(source_key, {}).get(company_key, {})
             if isinstance(seed_bucket, dict) and seed_bucket:
@@ -709,13 +726,7 @@ class CentralMatchEngine:
                     valid_seed.sort(key=lambda x: x[1], reverse=True)
                     return valid_seed[0][0], valid_seed[0][1]
 
-        # 3) Then weaker learned stable entries.
-        for source_key in source_keys:
-            entry = data.get("stable", {}).get(source_key, {}).get(company_key, {})
-            if isinstance(entry, dict) and str(entry.get("target_key", "") or "").strip():
-                return str(entry.get("target_key", "") or ""), int(entry.get("hits", 0) or 0)
-
-        # 4) Then provisional user learning.
+        # 4) Weak learned knowledge can still act as a fallback when there is no seed match.
         for source_key in source_keys:
             provisional = data.get("register", {}).get(source_key, {}).get(company_key, {})
             if isinstance(provisional, dict):
