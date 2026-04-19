@@ -116,7 +116,9 @@ def _generic_key(family: str, functional: str, unit: str, package: str, core: st
 
 
 def generic_package_key(product_text: str = "", category_text: str = "", mm_text: str = "") -> str:
-    text = normalize_text(f"{product_text} {category_text} {mm_text}")
+    # For generic products, packaging should come from the product label itself.
+    # Do not mix category/mm into the package parser because seed rows often omit them.
+    text = normalize_text(f"{product_text}")
     m = re.search(r'\b(σακι|σακί|δοχειο|δοχείο|βαρελι|βαρέλι|φιαλη|φιάλη|bucket|bag|pail|drum|can|tin|box|kit)\s*(\d+(?:\.\d+)?)\s*(kg|gr|g|lt|l|ml)\b', text)
     if m:
         qty = m.group(2)
@@ -129,7 +131,9 @@ def generic_package_key(product_text: str = "", category_text: str = "", mm_text
 
 
 def generic_base_name_core(product_text: str = "", category_text: str = "", mm_text: str = "") -> str:
-    text = normalize_text(f"{product_text} {category_text}")
+    # For generic products, matching should be driven by the core product label itself,
+    # not by category/subcategory text coming from seed files.
+    text = normalize_text(f"{product_text}")
     text = re.sub(r'\b(σακι|σακί|δοχειο|δοχείο|βαρελι|βαρέλι|φιαλη|φιάλη|bucket|bag|pail|drum|can|tin|box|kit)\s*\d+(?:\.\d+)?\s*(kg|gr|g|lt|l|ml)\b', ' ', text)
     text = re.sub(r'\b\d+(?:\.\d+)?\s*(kg|gr|g|lt|l|ml)\b', ' ', text)
     tokens = []
@@ -138,6 +142,7 @@ def generic_base_name_core(product_text: str = "", category_text: str = "", mm_t
             continue
         tokens.append(tok)
     text = ' '.join(tokens)
+    text = re.sub(r'[^\w\s]+', ' ', text, flags=re.UNICODE)
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
@@ -340,10 +345,11 @@ def make_choice_key(product_text: str, category_text: str = "", mm_text: str = "
         core = re.sub(r'\s+', ' ', core).strip()
         return " | ".join([p for p in [family, subtype, width, unit, core] if p])
 
-    func = simple_functional_tag(product_text, category_text, mm_text)
+    generic_family = "generic"
+    func = simple_functional_tag(product_text, category_text, mm_text) if family in {"waterproofing", "adhesive", "insulation", "accessory"} else ""
     package = generic_package_key(product_text, category_text, mm_text)
     core = generic_base_name_core(product_text, category_text, mm_text)
-    return _generic_key(family, func, unit, package, core)
+    return _generic_key(generic_family, func, unit, package, core)
 
 
 def choice_key_from_row(row: Dict[str, Any]) -> str:
