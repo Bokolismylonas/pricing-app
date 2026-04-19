@@ -22,7 +22,7 @@ import json
 import re
 from pathlib import Path
 from io import BytesIO
-from typing import Any, Dict, Iterable, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
 # ---------------------------
@@ -318,8 +318,9 @@ class CentralMatchEngine:
             "register": {},
             "stable": {},
             "quarantine": {},
+            "seed": {},
             "meta": {
-                "version": 2,
+                "version": 3,
                 "pair_mode": "symmetric_all_pairs",
                 "reeval_threshold": self.reeval_threshold,
                 "total_saved_events": 0,
@@ -334,9 +335,11 @@ class CentralMatchEngine:
                 data.setdefault("register", {})
                 data.setdefault("stable", {})
                 data.setdefault("quarantine", {})
+                data.setdefault("seed", {})
                 data.setdefault("meta", {})
-                data["meta"].setdefault("version", 2)
+                data["meta"].setdefault("version", 3)
                 data["meta"].setdefault("pair_mode", "symmetric_all_pairs")
+                data["meta"].setdefault("has_seed_layer", True)
                 data["meta"].setdefault("reeval_threshold", self.reeval_threshold)
                 data["meta"].setdefault("total_saved_events", 0)
                 data["meta"].setdefault("last_reeval_at_saved_event", 0)
@@ -410,6 +413,91 @@ class CentralMatchEngine:
                     comparison_id=comparison_id,
                     source_company=source_company,
                 )
+
+    def register_seed_pair(
+        self,
+        data: Dict[str, Any],
+        source_company: str,
+        source_row: Dict[str, Any],
+        target_company: str,
+        target_row: Dict[str, Any],
+        confidence: str = "high",
+        group_id: str = "",
+        notes: str = "",
+    ) -> None:
+        source_key = choice_key_from_row(source_row)
+        target_key = choice_key_from_row(target_row)
+        company_key = str(target_company or "").strip().upper()
+        source_company_key = str(source_company or "").strip().upper()
+        if not source_key or not target_key or not company_key or not source_company_key:
+            return
+
+        bucket = data.setdefault("seed", {}).setdefault(source_key, {}).setdefault(company_key, {}).setdefault(
+            target_key,
+            {"hits": 0, "confidence": "high", "examples": []},
+        )
+        bucket["source_company"] = source_company_key
+        bucket["target_company"] = company_key
+        bucket["source_product"] = str(source_row.get("Product", "") or bucket.get("source_product", "") or "")
+        bucket["target_product"] = str(target_row.get("Product", "") or bucket.get("target_product", "") or "")
+        bucket["group_id"] = str(group_id or bucket.get("group_id", "") or "")
+        bucket["notes"] = str(notes or bucket.get("notes", "") or "")
+        bucket["confidence"] = str(confidence or bucket.get("confidence", "high") or "high").strip().lower() or "high"
+        bucket["hits"] = max(int(bucket.get("hits", 0) or 0), 100)
+        examples = bucket.setdefault("examples", [])
+        if not examples:
+            examples.append({
+                "source_product": str(source_row.get("Product", "") or ""),
+                "target_product": str(target_row.get("Product", "") or ""),
+                "group_id": str(group_id or ""),
+            })
+
+    def import_seed_rows(self, rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
+        data = self.load()
+        data["seed"] = {}
+
+        grouped: Dict[str, List[Dict[str, Any]]] = {}
+        for raw in rows:
+            if not isinstance(raw, dict):
+                continue
+            group_id = str(raw.get("group_id", "") or "").strip()
+            company = str(raw.get("company", "") or "").strip().upper()
+            product_name = str(raw.get("product_name", "") or "").strip()
+            if not group_id or not company or not product_name:
+                continue
+            grouped.setdefault(group_id, []).append({
+                "group_id": group_id,
+                "company": company,
+                "product_name": product_name,
+                "confidence": str(raw.get("confidence", "high") or "high").strip().lower() or "high",
+                "notes": str(raw.get("notes", "") or "").strip(),
+                "row": {
+                    "Product": product_name,
+                    "Category": str(raw.get("category", "") or raw.get("subcategory", "") or "").strip(),
+                    "MM": str(raw.get("mm", "") or "").strip(),
+                },
+            })
+
+        for group_id, entries in grouped.items():
+            if len(entries) < 2:
+                continue
+            for source in entries:
+                for target in entries:
+                    if source["company"] == target["company"]:
+                        continue
+                    self.register_seed_pair(
+                        data,
+                        source["company"],
+                        source["row"],
+                        target["company"],
+                        target["row"],
+                        confidence=source.get("confidence", "high"),
+                        group_id=group_id,
+                        notes=source.get("notes", ""),
+                    )
+
+        self.save(data)
+        return data
 
     def restrictions_pass(self, source_key: str, target_key: str) -> Tuple[bool, str]:
         s = parse_choice_key(source_key)
@@ -505,6 +593,17 @@ class CentralMatchEngine:
         source_key = choice_key_from_row(source_row)
         company_key = str(target_company or "").strip().upper()
 
+        seed_bucket = data.get("seed", {}).get(source_key, {}).get(company_key, {})
+        if isinstance(seed_bucket, dict) and seed_bucket:
+            valid_seed = []
+            for target_key, payload in seed_bucket.items():
+                if not target_key or not isinstance(payload, dict):
+                    continue
+                valid_seed.append((str(target_key), int(payload.get("hits", 100) or 100)))
+            if valid_seed:
+                valid_seed.sort(key=lambda x: x[1], reverse=True)
+                return valid_seed[0][0], valid_seed[0][1]
+
         entry = data.get("stable", {}).get(source_key, {}).get(company_key, {})
         if isinstance(entry, dict) and str(entry.get("target_key", "") or "").strip():
             return str(entry.get("target_key", "") or ""), int(entry.get("hits", 0))
@@ -587,8 +686,37 @@ class CentralMatchEngine:
         data = self.load()
         rows: List[Dict[str, Any]] = []
 
+        seed = data.get("seed", {}) if isinstance(data.get("seed", {}), dict) else {}
         stable = data.get("stable", {}) if isinstance(data.get("stable", {}), dict) else {}
         register = data.get("register", {}) if isinstance(data.get("register", {}), dict) else {}
+
+        for source_key, company_map in seed.items():
+            if not isinstance(company_map, dict):
+                continue
+            for target_company, target_map in company_map.items():
+                if not isinstance(target_map, dict):
+                    continue
+                for target_key, payload in target_map.items():
+                    if not isinstance(payload, dict):
+                        continue
+                    source_company_value, source_product_value, target_product_value = self._display_labels_for_pair(
+                        data,
+                        str(source_key),
+                        str(target_company or "").strip().upper(),
+                        str(target_key),
+                        payload,
+                    )
+                    rows.append({
+                        "source_company": source_company_value,
+                        "source_product": source_product_value,
+                        "target_company": str(target_company or "").strip().upper(),
+                        "matched_product": target_product_value,
+                        "hits": int(payload.get("hits", 100) or 100),
+                        "confidence": str(payload.get("confidence", "high") or "high").strip().lower() or "high",
+                        "table_source": "seed",
+                        "source_key": str(source_key),
+                        "target_key": str(target_key),
+                    })
 
         for source_key, company_map in stable.items():
             if not isinstance(company_map, dict):

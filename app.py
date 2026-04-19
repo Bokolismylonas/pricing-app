@@ -3437,16 +3437,19 @@ def _register_payload_to_central_table(payload_state: dict, selected_codes: list
     CENTRAL_ENGINE.save(engine_data)
 
 def rebuild_central_match_table_from_comparisons():
+    existing = CENTRAL_ENGINE.load()
     empty = {
         "register": {},
         "stable": {},
         "quarantine": {},
+        "seed": existing.get("seed", {}) if isinstance(existing, dict) else {},
         "meta": {
-            "version": 2,
+            "version": 3,
             "pair_mode": "symmetric_all_pairs",
             "reeval_threshold": 10,
             "total_saved_events": 0,
             "last_reeval_at_saved_event": 0,
+            "has_seed_layer": True,
         },
     }
     CENTRAL_ENGINE.save(empty)
@@ -3490,7 +3493,7 @@ def ensure_central_table_schema_current():
     version = int(meta.get("version", 1) or 1)
     pair_mode = str(meta.get("pair_mode", "") or "").strip().lower()
 
-    needs_rebuild = version < 2 or pair_mode != "symmetric_all_pairs"
+    needs_rebuild = version < 3 or pair_mode != "symmetric_all_pairs"
     if not needs_rebuild:
         return
 
@@ -7304,6 +7307,110 @@ def _dataframe_to_excel_bytes(df: pd.DataFrame) -> bytes:
     return buffer.getvalue()
 
 
+def _load_seed_rows_from_uploaded_file(uploaded_file) -> pd.DataFrame:
+    if uploaded_file is None:
+        raise ValueError("No seed file uploaded.")
+
+    name = str(getattr(uploaded_file, "name", "") or "").lower()
+    if name.endswith(".csv"):
+        df = pd.read_csv(uploaded_file)
+    else:
+        workbook = pd.ExcelFile(uploaded_file)
+        preferred_sheet = "Seed_Long_Format" if "Seed_Long_Format" in workbook.sheet_names else workbook.sheet_names[0]
+        df = pd.read_excel(workbook, sheet_name=preferred_sheet)
+
+    df.columns = [str(c).strip() for c in df.columns]
+    required = {"group_id", "company", "product_name"}
+    missing = sorted(required - set(df.columns))
+    if missing:
+        raise ValueError(f"Missing required columns: {', '.join(missing)}")
+
+    for col in ["category", "subcategory", "standard_class", "confidence", "notes", "match_status"]:
+        if col not in df.columns:
+            df[col] = ""
+
+    df = df.fillna("")
+    df["group_id"] = df["group_id"].astype(str).str.strip()
+    df["company"] = df["company"].astype(str).str.strip().str.upper()
+    df["product_name"] = df["product_name"].astype(str).str.strip()
+    df = df[(df["group_id"] != "") & (df["company"] != "") & (df["product_name"] != "")].copy()
+    return df
+
+
+def import_admin_seed_matches_from_uploaded_file(uploaded_file) -> tuple[bool, str]:
+    try:
+        df = _load_seed_rows_from_uploaded_file(uploaded_file)
+    except Exception as exc:
+        return False, str(exc)
+
+    if df.empty:
+        return False, "The uploaded seed file does not contain any usable rows."
+
+    normalized_rows = []
+    for _, row in df.iterrows():
+        match_status = str(row.get("match_status", "") or "").strip().upper()
+        confidence = str(row.get("confidence", "high") or "high").strip().lower() or "high"
+        if match_status and match_status not in {"MATCH", "PROXY", "UNIQUE"}:
+            match_status = ""
+        normalized_rows.append({
+            "group_id": str(row.get("group_id", "") or "").strip(),
+            "category": str(row.get("category", "") or row.get("subcategory", "") or "").strip(),
+            "subcategory": str(row.get("subcategory", "") or "").strip(),
+            "company": str(row.get("company", "") or "").strip().upper(),
+            "product_name": str(row.get("product_name", "") or "").strip(),
+            "confidence": confidence,
+            "notes": str(row.get("notes", "") or "").strip(),
+            "match_status": match_status,
+        })
+
+    CENTRAL_ENGINE.import_seed_rows(normalized_rows)
+    return True, f"Imported {len(normalized_rows)} seed rows across {df['group_id'].nunique()} groups."
+
+
+def render_admin_seed_match_panel():
+    st.markdown("### 🌱 Admin Seed Match Knowledge")
+    st.caption("Upload a long-format seed mapping file to inject high-confidence baseline matches for all users. This does not require full price lists.")
+
+    uploaded_seed_file = st.file_uploader(
+        "Upload seed match file (.xlsx or .csv)",
+        type=["xlsx", "xlsm", "csv"],
+        key="admin_seed_match_file_uploader",
+        help="Required columns: group_id, company, product_name. Recommended sheet name: Seed_Long_Format.",
+    )
+
+    action_c1, action_c2, action_c3 = st.columns([1, 1, 3])
+    with action_c1:
+        if st.button("Import Seed Matches", use_container_width=True, key="admin_import_seed_matches"):
+            if uploaded_seed_file is None:
+                st.warning("Upload a seed match file first.")
+            else:
+                with st.spinner("Importing admin seed matches..."):
+                    ok, msg = import_admin_seed_matches_from_uploaded_file(uploaded_seed_file)
+                if ok:
+                    st.success(msg)
+                else:
+                    st.error(msg)
+    with action_c2:
+        current_data = CENTRAL_ENGINE.load()
+        seed_rows = current_data.get("seed", {}) if isinstance(current_data, dict) else {}
+        has_seed = bool(seed_rows)
+        if st.button("Clear Seed Matches", use_container_width=True, key="admin_clear_seed_matches"):
+            data = CENTRAL_ENGINE.load()
+            data["seed"] = {}
+            CENTRAL_ENGINE.save(data)
+            st.success("Admin seed matches cleared successfully.")
+    with action_c3:
+        seed_data = CENTRAL_ENGINE.load().get("seed", {})
+        seed_pair_count = 0
+        if isinstance(seed_data, dict):
+            for _source_key, company_map in seed_data.items():
+                if not isinstance(company_map, dict):
+                    continue
+                for _company, target_map in company_map.items():
+                    if isinstance(target_map, dict):
+                        seed_pair_count += len(target_map)
+        st.caption(f"Current admin seed pairs: {seed_pair_count}")
+
 def render_admin_match_table_viewer():
     show_key = "admin_show_learned_matches"
     if show_key not in st.session_state:
@@ -7435,8 +7542,9 @@ def render_admin_panel():
                 rebuild_central_match_table_from_comparisons()
             st.success("Central match table rebuilt successfully.")
     with smart_c3:
-        st.caption("Runtime path: 1) central table direct lookup and stop, 2) simple clean fallback. Re-evaluation happens every 10 saved events and restrictions apply there.")
+        st.caption("Runtime path: 1) admin seed direct lookup, 2) central table direct lookup, 3) simple clean fallback. Re-evaluation happens every 10 saved events and restrictions apply there.")
 
+    render_admin_seed_match_panel()
     render_admin_match_table_viewer()
 
     st.markdown("### 📁 Source Files Per User")
