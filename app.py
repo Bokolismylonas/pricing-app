@@ -2463,6 +2463,102 @@ def _infer_board_functional_family(product_text: str, category_text: str = ""):
     tags.sort()
     return "+".join(tags)
 
+def _normalize_mass_package_unit(unit: str) -> str:
+    unit = str(unit or "").strip().lower()
+    if unit == "gr":
+        return "g"
+    if unit == "lt":
+        return "l"
+    return unit
+
+
+def _extract_mass_package_signature(*values: str):
+    text = " ".join([str(v or "") for v in values]).lower()
+    if not text.strip():
+        return None
+
+    patterns = [
+        r'\b(?:σακι|σακί|δοχειο|δοχείο|βαρελι|βαρέλι|φιαλη|φιάλη|bucket|bag|pail|drum|can|tin|box|kit)\s*(\d+(?:[\.,]\d+)?)\s*(kg|gr|g|lt|l|ml)\b',
+        r'\b(\d+(?:[\.,]\d+)?)\s*(kg|gr|g|lt|l|ml)\b',
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, text, flags=re.IGNORECASE)
+        if not m:
+            continue
+        try:
+            value = float(m.group(1).replace(",", "."))
+        except Exception:
+            continue
+        unit = _normalize_mass_package_unit(m.group(2))
+        if unit in {"kg", "g"}:
+            base_value = value * 1000.0 if unit == "kg" else value
+            return (base_value, "g", f"{value:g}{unit}")
+        if unit in {"l", "ml"}:
+            base_value = value * 1000.0 if unit == "l" else value
+            return (base_value, "ml", f"{value:g}{unit}")
+    return None
+
+
+def _mass_package_tier_from_signature(sig) -> str:
+    if not sig:
+        return ""
+    value, unit, _ = sig
+    thresholds = [
+        (1500.0, "xs"),
+        (6000.0, "sm"),
+        (15000.0, "md"),
+        (30000.0, "lg"),
+    ]
+    tier = "xl"
+    for limit, label in thresholds:
+        if value <= limit:
+            tier = label
+            break
+    return f"mass_{unit}_{tier}"
+
+
+def _mass_package_match_score(source_row: dict, target_row: dict) -> float:
+    source_sig = _extract_mass_package_signature(source_row.get("Package", ""), source_row.get("Product", ""))
+    target_sig = _extract_mass_package_signature(target_row.get("Package", ""), target_row.get("Product", ""))
+
+    if not source_sig or not target_sig:
+        return 0.0
+
+    source_value, source_unit, _ = source_sig
+    target_value, target_unit, _ = target_sig
+
+    if source_unit != target_unit:
+        return -18.0
+
+    ratio = max(source_value, target_value) / max(min(source_value, target_value), 1e-9)
+    source_tier = _mass_package_tier_from_signature(source_sig)
+    target_tier = _mass_package_tier_from_signature(target_sig)
+
+    if abs(source_value - target_value) < 1e-9:
+        return 16.0
+    if ratio <= 1.05:
+        return 13.0
+    if ratio <= 1.20:
+        return 10.0
+
+    # Commercial-size matching: allow small-to-small and large-to-large
+    # even when pack sizes are not numerically equal across brands.
+    if source_tier and target_tier and source_tier == target_tier:
+        if ratio <= 1.75:
+            return 7.5
+        if ratio <= 2.5:
+            return 3.0
+        return -4.0
+
+    if ratio <= 1.35:
+        return 1.0
+    if ratio <= 1.75:
+        return -8.0
+    if ratio <= 2.5:
+        return -16.0
+    return -24.0
+
+
 def _score_product_match_history_aware(user_email: str, source_row: dict, target_row: dict, target_company: str) -> float:
     product_a = str(source_row.get("Product", "") or "")
     product_b = str(target_row.get("Product", "") or "")
@@ -2531,12 +2627,16 @@ def _score_product_match_history_aware(user_email: str, source_row: dict, target
         if str(mm_a).strip().lower() == str(mm_b).strip().lower():
             mm_score += 3.0
 
-    # Package remains very low priority
-    package_score = _text_similarity(package_a, package_b) * 1.5
+    core_similarity = _text_similarity(_extract_core_product_name(product_a), _extract_core_product_name(product_b))
 
-    # General rule: dimensions and packaging are weak signals, core name is stronger.
+    # Package becomes a strong discriminator only for mass/volume packaging (kg, g, l, ml).
+    # This keeps 5kg vs 25kg separated, without affecting m2 / m style products.
+    package_score = 0.0
+    if core_similarity >= 0.55:
+        package_score = _mass_package_match_score(source_row, target_row)
+
+    # General rule: dimensions are weak signals, core name is stronger.
     dim_score *= 0.35
-    package_score *= 0.8
 
     # Special strengthening for gypsum/plasterboards
     product_context = f"{category_a} {category_b} {product_a} {product_b}".lower()
