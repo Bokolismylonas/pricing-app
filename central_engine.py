@@ -20,7 +20,6 @@ from dataclasses import dataclass
 from datetime import datetime
 import json
 import re
-import unicodedata
 from pathlib import Path
 from io import BytesIO
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -41,18 +40,6 @@ def normalize_text(value: str) -> str:
     text = re.sub(r"[-/]+", " ", text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
-
-def strip_accents(value: str) -> str:
-    text = unicodedata.normalize("NFKD", str(value or ""))
-    return "".join(ch for ch in text if not unicodedata.combining(ch))
-
-
-def normalize_generic_compare_text(value: str) -> str:
-    text = normalize_text(value)
-    text = re.sub(r'[^\w\s]+', ' ', text, flags=re.UNICODE)
-    text = strip_accents(text)
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text
 
 
 def normalize_mm_unit(mm_text: str) -> str:
@@ -149,15 +136,13 @@ def generic_base_name_core(product_text: str = "", category_text: str = "", mm_t
     text = normalize_text(f"{product_text}")
     text = re.sub(r'\b(σακι|σακί|δοχειο|δοχείο|βαρελι|βαρέλι|φιαλη|φιάλη|bucket|bag|pail|drum|can|tin|box|kit)\s*\d+(?:\.\d+)?\s*(kg|gr|g|lt|l|ml)\b', ' ', text)
     text = re.sub(r'\b\d+(?:\.\d+)?\s*(kg|gr|g|lt|l|ml)\b', ' ', text)
-    text = normalize_generic_compare_text(text)
-    color_terms = {strip_accents(t) for t in GENERIC_COLOR_TERMS}
-    non_critical_terms = {strip_accents(t) for t in GENERIC_NON_CRITICAL_TERMS}
     tokens = []
     for tok in text.split():
-        if tok in color_terms or tok in non_critical_terms:
+        if tok in GENERIC_COLOR_TERMS or tok in GENERIC_NON_CRITICAL_TERMS:
             continue
         tokens.append(tok)
     text = ' '.join(tokens)
+    text = re.sub(r'[^\w\s]+', ' ', text, flags=re.UNICODE)
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
@@ -945,9 +930,32 @@ def suggest_product(
 
     if target_key:
         confidence = "high" if hits >= 4 else "medium" if hits >= 2 else "low"
+        normalized_target_key = str(target_key or "").strip()
+        parsed_target = parse_choice_key(normalized_target_key)
+        target_family = parsed_target.get("family", "")
+        target_core = str(parsed_target.get("core", "") or "").strip()
+
+        exact_row = None
+        relaxed_row = None
         for row in target_rows:
-            if choice_key_from_row(row) == target_key:
-                return row, float(hits), "table", confidence
+            variants = choice_key_variants_from_row(row)
+            if normalized_target_key in variants:
+                exact_row = row
+                break
+
+            if target_family and target_family not in {"board", "profile"} and target_core:
+                for variant in variants:
+                    parsed_variant = parse_choice_key(str(variant or ""))
+                    if str(parsed_variant.get("family", "") or "") != target_family:
+                        continue
+                    if str(parsed_variant.get("core", "") or "").strip() == target_core:
+                        relaxed_row = relaxed_row or row
+                        break
+
+        if exact_row is not None:
+            return exact_row, float(hits), "table", confidence
+        if relaxed_row is not None:
+            return relaxed_row, float(hits), "table", confidence
 
     row, score = simple_clean_fallback(source_row, target_rows)
     if row is not None:
