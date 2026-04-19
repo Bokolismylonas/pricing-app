@@ -687,6 +687,16 @@ class CentralMatchEngine:
         company_key = str(target_company or "").strip().upper()
         source_keys = choice_key_variants_from_row(source_row)
 
+        # 1) Strong learned knowledge should win over seed.
+        for source_key in source_keys:
+            entry = data.get("stable", {}).get(source_key, {}).get(company_key, {})
+            if isinstance(entry, dict) and str(entry.get("target_key", "") or "").strip():
+                hits = int(entry.get("hits", 0) or 0)
+                confidence = str(entry.get("confidence", "") or "").strip().lower()
+                if confidence == "high" or hits >= 3:
+                    return str(entry.get("target_key", "") or ""), hits
+
+        # 2) Then curated seed baseline.
         for source_key in source_keys:
             seed_bucket = data.get("seed", {}).get(source_key, {}).get(company_key, {})
             if isinstance(seed_bucket, dict) and seed_bucket:
@@ -699,11 +709,13 @@ class CentralMatchEngine:
                     valid_seed.sort(key=lambda x: x[1], reverse=True)
                     return valid_seed[0][0], valid_seed[0][1]
 
+        # 3) Then weaker learned stable entries.
         for source_key in source_keys:
             entry = data.get("stable", {}).get(source_key, {}).get(company_key, {})
             if isinstance(entry, dict) and str(entry.get("target_key", "") or "").strip():
-                return str(entry.get("target_key", "") or ""), int(entry.get("hits", 0))
+                return str(entry.get("target_key", "") or ""), int(entry.get("hits", 0) or 0)
 
+        # 4) Then provisional user learning.
         for source_key in source_keys:
             provisional = data.get("register", {}).get(source_key, {}).get(company_key, {})
             if isinstance(provisional, dict):
