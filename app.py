@@ -945,6 +945,24 @@ def has_unsaved_comparison_changes():
     )
 
 
+def has_open_comparison_to_return_to():
+    return bool(
+        st.session_state.get("comparison_mode") == "edit"
+        and comparison_has_meaningful_content()
+    )
+
+
+def restore_open_comparison_view():
+    st.session_state["committed_view"] = "Comparisons"
+    st.session_state["comparison_mode"] = "edit"
+    st.session_state["show_saved_comparisons"] = False
+    st.session_state["show_inline_save_options"] = False
+    st.session_state["inline_save_mode"] = "menu"
+    st.session_state["active_save_row_id"] = None
+    st.session_state["pending_inline_save_as_name"] = ""
+    st.session_state["pending_save_as_exit_name"] = ""
+
+
 def mark_comparison_dirty():
     if not comparison_has_meaningful_content():
         st.session_state["comparison_dirty"] = False
@@ -4162,13 +4180,16 @@ def execute_pending_leave_action():
         release_comparison_lock()
         st.session_state["committed_view"] = target_view
         if target_view == "Comparisons":
-            st.session_state["comparison_mode"] = "menu"
-            st.session_state["show_saved_comparisons"] = False
-            st.session_state["show_inline_save_options"] = False
-            st.session_state["inline_save_mode"] = "menu"
-            st.session_state["active_save_row_id"] = None
-            st.session_state["pending_inline_save_as_name"] = ""
-            st.session_state["pending_save_as_exit_name"] = ""
+            if has_open_comparison_to_return_to():
+                restore_open_comparison_view()
+            else:
+                st.session_state["comparison_mode"] = "menu"
+                st.session_state["show_saved_comparisons"] = False
+                st.session_state["show_inline_save_options"] = False
+                st.session_state["inline_save_mode"] = "menu"
+                st.session_state["active_save_row_id"] = None
+                st.session_state["pending_inline_save_as_name"] = ""
+                st.session_state["pending_save_as_exit_name"] = ""
     elif action_type == "logout":
         release_comparison_lock()
         logout_current_user()
@@ -4699,13 +4720,16 @@ with st.sidebar:
                 previous_committed_view = st.session_state.get("committed_view", current_view_ui)
                 st.session_state["committed_view"] = current_view_ui
                 if current_view_ui == "Comparisons" and previous_committed_view != "Comparisons":
-                    st.session_state["comparison_mode"] = "menu"
-                    st.session_state["show_saved_comparisons"] = False
-                    st.session_state["show_inline_save_options"] = False
-                    st.session_state["inline_save_mode"] = "menu"
-                    st.session_state["active_save_row_id"] = None
-                    st.session_state["pending_inline_save_as_name"] = ""
-                    st.session_state["pending_save_as_exit_name"] = ""
+                    if has_open_comparison_to_return_to():
+                        restore_open_comparison_view()
+                    else:
+                        st.session_state["comparison_mode"] = "menu"
+                        st.session_state["show_saved_comparisons"] = False
+                        st.session_state["show_inline_save_options"] = False
+                        st.session_state["inline_save_mode"] = "menu"
+                        st.session_state["active_save_row_id"] = None
+                        st.session_state["pending_inline_save_as_name"] = ""
+                        st.session_state["pending_save_as_exit_name"] = ""
                 st.rerun()
 
     st.markdown("---")
@@ -7943,6 +7967,16 @@ def render_admin_panel():
 # -------------------------------------------------
 # RENDER CURRENT VIEW
 # -------------------------------------------------
+if current_view != "Comparisons" and has_open_comparison_to_return_to():
+    back_cols = st.columns([1, 6])
+    with back_cols[0]:
+        if st.button("← Back", key="back_to_open_comparison", use_container_width=True):
+            restore_open_comparison_view()
+            st.rerun()
+    with back_cols[1]:
+        active_back_label = st.session_state.get("active_comparison_label", "").strip() or st.session_state.get("comparison_name_input", "").strip() or "Untitled Comparison"
+        st.caption(f"Return to open comparison: {active_back_label}")
+
 if current_view == "Company Manager":
     render_company_manager()
 elif current_view == "Sources":
