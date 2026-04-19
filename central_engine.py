@@ -107,6 +107,14 @@ GENERIC_COLOR_TERMS = {
 GENERIC_NON_CRITICAL_TERMS = {"υγρο", "υγρό", "liquid", "paste", "powder", "σκόνη", "σκονη"}
 
 
+def _fixed_key(parts: List[str]) -> str:
+    return " | ".join([str(p or "").strip() for p in parts])
+
+
+def _generic_key(family: str, functional: str, unit: str, package: str, core: str) -> str:
+    return _fixed_key([family, functional, unit, package, core])
+
+
 def generic_package_key(product_text: str = "", category_text: str = "", mm_text: str = "") -> str:
     text = normalize_text(f"{product_text} {category_text} {mm_text}")
     m = re.search(r'\b(σακι|σακί|δοχειο|δοχείο|βαρελι|βαρέλι|φιαλη|φιάλη|bucket|bag|pail|drum|can|tin|box|kit)\s*(\d+(?:\.\d+)?)\s*(kg|gr|g|lt|l|ml)\b', text)
@@ -142,13 +150,18 @@ def choice_key_variants_from_row(row: Dict[str, Any]) -> List[str]:
     family = parsed.get("family", "")
     variants = [primary]
     if family not in {"board", "profile"}:
-        parts = [p.strip() for p in str(primary).split("|")]
-        if len(parts) >= 5 and parts[3].strip():
-            parts_no_pkg = parts[:]
-            parts_no_pkg[3] = ""
-            no_pkg = " | ".join([p for p in parts_no_pkg if p.strip()])
-            if no_pkg and no_pkg not in variants:
-                variants.append(no_pkg)
+        functional = parsed.get("functional", "")
+        unit = parsed.get("unit", "")
+        package = parsed.get("package", "")
+        core = parsed.get("core", "")
+        candidates = [
+            _generic_key(family, functional, unit, "", core),
+            _generic_key(family, functional, "", "", core),
+            _generic_key(family, "", "", "", core),
+        ]
+        for candidate in candidates:
+            if candidate and candidate not in variants:
+                variants.append(candidate)
     return variants
 
 def infer_product_family(product_text: str, category_text: str = "", mm_text: str = "") -> str:
@@ -330,7 +343,7 @@ def make_choice_key(product_text: str, category_text: str = "", mm_text: str = "
     func = simple_functional_tag(product_text, category_text, mm_text)
     package = generic_package_key(product_text, category_text, mm_text)
     core = generic_base_name_core(product_text, category_text, mm_text)
-    return " | ".join([p for p in [family, func, unit, package, core] if p])
+    return _generic_key(family, func, unit, package, core)
 
 
 def choice_key_from_row(row: Dict[str, Any]) -> str:
