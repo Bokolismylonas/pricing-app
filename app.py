@@ -4146,22 +4146,6 @@ def focus_existing_row(target_row_id):
         st.session_state["active_row_id"] = target_row_id
 
 
-def cancel_leave_prompt_and_return_to_current_comparison():
-    st.session_state["show_leave_prompt"] = False
-    st.session_state["leave_prompt_step"] = ""
-    st.session_state["pending_action_type"] = None
-    st.session_state["pending_target_view"] = None
-    st.session_state["pending_action_payload"] = None
-    st.session_state["pending_save_as_exit_name"] = ""
-    st.session_state["committed_view"] = "Comparisons"
-    st.session_state["comparison_mode"] = "edit"
-    st.session_state["show_saved_comparisons"] = False
-    st.session_state["show_inline_save_options"] = False
-    st.session_state["inline_save_mode"] = "menu"
-    st.session_state["active_save_row_id"] = None
-    st.session_state["pending_inline_save_as_name"] = ""
-
-
 def execute_pending_leave_action():
     action_type = st.session_state.get("pending_action_type")
     target_view = st.session_state.get("pending_target_view")
@@ -4826,38 +4810,28 @@ if st.session_state.get("show_leave_prompt"):
     if note_map.get(action_type):
         st.caption(note_map[action_type])
 
-    if action_type == "switch_view" and target_view:
-        back_c1, back_c2, back_c3 = st.columns([1, 1, 1])
-        with back_c1:
-            if st.button("← Back", key="leave_prompt_back", use_container_width=True):
-                cancel_leave_prompt_and_return_to_current_comparison()
-                st.rerun()
-        with back_c2:
-            if st.button("Yes", key="leave_prompt_yes", use_container_width=True):
-                st.session_state["leave_prompt_step"] = "save"
-                st.rerun()
-        with back_c3:
-            if st.button("No", key="leave_prompt_no", use_container_width=True):
-                st.session_state["leave_prompt_step"] = ""
-                st.session_state["comparison_dirty"] = False
-                st.session_state["comparison_user_modified"] = False
-                st.session_state["comparison_clean_generation"] = st.session_state.get("comparison_edit_generation", 0)
-                execute_pending_leave_action()
-                st.rerun()
-    else:
-        ask_c1, ask_c2 = st.columns(2)
-        with ask_c1:
-            if st.button("Yes", key="leave_prompt_yes", use_container_width=True):
-                st.session_state["leave_prompt_step"] = "save"
-                st.rerun()
-        with ask_c2:
-            if st.button("No", key="leave_prompt_no", use_container_width=True):
-                st.session_state["leave_prompt_step"] = ""
-                st.session_state["comparison_dirty"] = False
-                st.session_state["comparison_user_modified"] = False
-                st.session_state["comparison_clean_generation"] = st.session_state.get("comparison_edit_generation", 0)
-                execute_pending_leave_action()
-                st.rerun()
+    ask_back, ask_c1, ask_c2 = st.columns(3)
+    with ask_back:
+        if st.button("← Back", key="leave_prompt_back", use_container_width=True):
+            st.session_state["show_leave_prompt"] = False
+            st.session_state["leave_prompt_step"] = ""
+            st.session_state["pending_action_type"] = None
+            st.session_state["pending_target_view"] = None
+            st.session_state["pending_action_payload"] = None
+            st.session_state["pending_save_as_exit_name"] = ""
+            st.rerun()
+    with ask_c1:
+        if st.button("Yes", key="leave_prompt_yes", use_container_width=True):
+            st.session_state["leave_prompt_step"] = "save"
+            st.rerun()
+    with ask_c2:
+        if st.button("No", key="leave_prompt_no", use_container_width=True):
+            st.session_state["leave_prompt_step"] = ""
+            st.session_state["comparison_dirty"] = False
+            st.session_state["comparison_user_modified"] = False
+            st.session_state["comparison_clean_generation"] = st.session_state.get("comparison_edit_generation", 0)
+            execute_pending_leave_action()
+            st.rerun()
 
     if st.session_state.get("leave_prompt_step") == "save":
         selected_codes_for_save = get_current_selected_codes_from_state()
