@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime
 import json
 import re
+import unicodedata
 from pathlib import Path
 from io import BytesIO
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -40,6 +41,18 @@ def normalize_text(value: str) -> str:
     text = re.sub(r"[-/]+", " ", text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
+
+def strip_accents(value: str) -> str:
+    text = unicodedata.normalize("NFKD", str(value or ""))
+    return "".join(ch for ch in text if not unicodedata.combining(ch))
+
+
+def normalize_generic_compare_text(value: str) -> str:
+    text = normalize_text(value)
+    text = re.sub(r'[^\w\s]+', ' ', text, flags=re.UNICODE)
+    text = strip_accents(text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
 
 
 def normalize_mm_unit(mm_text: str) -> str:
@@ -136,13 +149,15 @@ def generic_base_name_core(product_text: str = "", category_text: str = "", mm_t
     text = normalize_text(f"{product_text}")
     text = re.sub(r'\b(σακι|σακί|δοχειο|δοχείο|βαρελι|βαρέλι|φιαλη|φιάλη|bucket|bag|pail|drum|can|tin|box|kit)\s*\d+(?:\.\d+)?\s*(kg|gr|g|lt|l|ml)\b', ' ', text)
     text = re.sub(r'\b\d+(?:\.\d+)?\s*(kg|gr|g|lt|l|ml)\b', ' ', text)
+    text = normalize_generic_compare_text(text)
+    color_terms = {strip_accents(t) for t in GENERIC_COLOR_TERMS}
+    non_critical_terms = {strip_accents(t) for t in GENERIC_NON_CRITICAL_TERMS}
     tokens = []
     for tok in text.split():
-        if tok in GENERIC_COLOR_TERMS or tok in GENERIC_NON_CRITICAL_TERMS:
+        if tok in color_terms or tok in non_critical_terms:
             continue
         tokens.append(tok)
     text = ' '.join(tokens)
-    text = re.sub(r'[^\w\s]+', ' ', text, flags=re.UNICODE)
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
