@@ -32,79 +32,12 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 BOARD_THICKNESS_CANONICAL = [6.0, 8.0, 9.5, 10.0, 12.5, 13.0, 15.0, 18.0, 20.0, 25.0]
 
 
-COLOR_VARIANT_TERMS = [
-    "λευκο", "λευκό", "γκρι", "γκριζ", "ροζ", "μπλε", "πρασινο", "πράσινο", "κοκκινο", "κόκκινο",
-    "μαυρο", "μαύρο", "διαφανο", "διάφανο", "κεραμιδι", "κεραμιδί", "μπεζ", "καφε", "καφέ",
-    "yellow", "red", "green", "blue", "grey", "gray", "white", "black", "beige", "pink", "transparent",
-]
-
-GENERIC_NONCRITICAL_VARIANT_TERMS = [
-    "υγρο", "υγρό", "σκονη", "σκόνη", "paste", "παστα", "πάστα", "liquid", "powder",
-]
-
-PACKAGE_CONTAINER_TERMS = [
-    "δοχειο", "δοχείο", "βαρελι", "βαρέλι", "σακι", "σακί", "φυσιγγ", "cartidge", "cartridge",
-    "bucket", "pail", "tin", "can", "bottle", "bag", "drum", "pack", "κουβας", "κουβάς",
-]
-
-
-def extract_package_signature(product_text: str = "", category_text: str = "", mm_text: str = "") -> str:
-    text = normalize_text(f"{product_text} {category_text} {mm_text}")
-    if not text:
-        return ""
-
-    qty = ""
-    unit = ""
-    m = re.search(r'(?<!\d)(\d+(?:\.\d+)?)\s*(kg|gr|g|lt|l|ml|κιλ(?:α|ό)?|κιλο|λιτρ(?:α|ο)?)\b', text)
-    if m:
-        qty = m.group(1)
-        unit = m.group(2)
-
-    container = ""
-    for term in PACKAGE_CONTAINER_TERMS:
-        if term in text:
-            container = normalize_text(term)
-            break
-
-    parts = []
-    if container:
-        parts.append(container)
-    if qty and unit:
-        parts.append(f"{qty}{unit}")
-    elif qty:
-        parts.append(qty)
-    return " ".join(parts).strip()
-
-
-def strip_generic_variant_descriptors(text: str) -> str:
-    text = normalize_text(text)
-    if not text:
-        return ""
-    for term in COLOR_VARIANT_TERMS + GENERIC_NONCRITICAL_VARIANT_TERMS:
-        text = re.sub(rf'(?<!\w){re.escape(normalize_text(term))}(?!\w)', ' ', text)
-    text = re.sub(r'\b(?:ral\s*\d{3,4})\b', ' ', text)
-    text = re.sub(r'\s+', ' ', text).strip(' -,_/')
-    return text
-
-
-def generic_canonical_core(product_text: str = "", category_text: str = "", mm_text: str = "") -> str:
-    text = normalize_text(product_text)
-    package_sig = extract_package_signature(product_text, category_text, mm_text)
-    if package_sig:
-        for token in package_sig.split():
-            text = re.sub(rf'(?<!\w){re.escape(token)}(?!\w)', ' ', text)
-    # remove common package container words from the core once packaging has been captured separately
-    for term in PACKAGE_CONTAINER_TERMS:
-        text = re.sub(rf'(?<!\w){re.escape(normalize_text(term))}(?!\w)', ' ', text)
-    text = strip_generic_variant_descriptors(text)
-    text = extract_core_product_name(text)
-    text = re.sub(r'\s+', ' ', text).strip()
-    return normalize_text(text)
-
-
 def normalize_text(value: str) -> str:
     text = str(value or "").strip().lower()
+    text = text.replace("®", " ").replace("™", " ").replace("©", " ")
     text = text.replace(",", ".")
+    text = text.replace("–", "-").replace("—", "-").replace("_", " ")
+    text = re.sub(r"[-/]+", " ", text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
@@ -163,6 +96,60 @@ def normalized_board_thickness_key(product_text: str = "", mm_text: str = "") ->
             return f"{target:.1f}"
     return f"{float(t):.1f}"
 
+
+
+
+GENERIC_COLOR_TERMS = {
+    "λευκο", "λευκή", "λευκη", "white", "γκρι", "gray", "grey", "ροζ", "pink",
+    "κεραμιδι", "κεραμιδί", "terracotta", "κοκκινο", "κόκκινο", "red", "μπλε", "blue",
+    "πρασινο", "πράσινο", "green", "μαυρο", "μαύρο", "black", "διαφανο", "διάφανο", "transparent"
+}
+GENERIC_NON_CRITICAL_TERMS = {"υγρο", "υγρό", "liquid", "paste", "powder", "σκόνη", "σκονη"}
+
+
+def generic_package_key(product_text: str = "", category_text: str = "", mm_text: str = "") -> str:
+    text = normalize_text(f"{product_text} {category_text} {mm_text}")
+    m = re.search(r'\b(σακι|σακί|δοχειο|δοχείο|βαρελι|βαρέλι|φιαλη|φιάλη|bucket|bag|pail|drum|can|tin|box|kit)\s*(\d+(?:\.\d+)?)\s*(kg|gr|g|lt|l|ml)\b', text)
+    if m:
+        qty = m.group(2)
+        unit = m.group(3)
+        return f"{qty}{unit}"
+    m = re.search(r'\b(\d+(?:\.\d+)?)\s*(kg|gr|g|lt|l|ml)\b', text)
+    if m:
+        return f"{m.group(1)}{m.group(2)}"
+    return ""
+
+
+def generic_base_name_core(product_text: str = "", category_text: str = "", mm_text: str = "") -> str:
+    text = normalize_text(f"{product_text} {category_text}")
+    text = re.sub(r'\b(σακι|σακί|δοχειο|δοχείο|βαρελι|βαρέλι|φιαλη|φιάλη|bucket|bag|pail|drum|can|tin|box|kit)\s*\d+(?:\.\d+)?\s*(kg|gr|g|lt|l|ml)\b', ' ', text)
+    text = re.sub(r'\b\d+(?:\.\d+)?\s*(kg|gr|g|lt|l|ml)\b', ' ', text)
+    tokens = []
+    for tok in text.split():
+        if tok in GENERIC_COLOR_TERMS or tok in GENERIC_NON_CRITICAL_TERMS:
+            continue
+        tokens.append(tok)
+    text = ' '.join(tokens)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+
+def choice_key_variants_from_row(row: Dict[str, Any]) -> List[str]:
+    primary = choice_key_from_row(row)
+    if not primary:
+        return []
+    parsed = parse_choice_key(primary)
+    family = parsed.get("family", "")
+    variants = [primary]
+    if family not in {"board", "profile"}:
+        parts = [p.strip() for p in str(primary).split("|")]
+        if len(parts) >= 5 and parts[3].strip():
+            parts_no_pkg = parts[:]
+            parts_no_pkg[3] = ""
+            no_pkg = " | ".join([p for p in parts_no_pkg if p.strip()])
+            if no_pkg and no_pkg not in variants:
+                variants.append(no_pkg)
+    return variants
 
 def infer_product_family(product_text: str, category_text: str = "", mm_text: str = "") -> str:
     text = normalize_text(f"{product_text} {category_text}")
@@ -341,8 +328,8 @@ def make_choice_key(product_text: str, category_text: str = "", mm_text: str = "
         return " | ".join([p for p in [family, subtype, width, unit, core] if p])
 
     func = simple_functional_tag(product_text, category_text, mm_text)
-    package = extract_package_signature(product_text, category_text, mm_text)
-    core = generic_canonical_core(product_text, category_text, mm_text)
+    package = generic_package_key(product_text, category_text, mm_text)
+    core = generic_base_name_core(product_text, category_text, mm_text)
     return " | ".join([p for p in [family, func, unit, package, core] if p])
 
 
@@ -372,7 +359,7 @@ def parse_choice_key(choice_key: str) -> Dict[str, str]:
         out["functional"] = parts[1] if len(parts) >= 2 else ""
         out["unit"] = parts[2] if len(parts) >= 3 else ""
         out["package"] = parts[3] if len(parts) >= 4 else ""
-        out["core"] = parts[4] if len(parts) >= 5 else ""
+        out["core"] = parts[4] if len(parts) >= 5 else (parts[3] if len(parts) >= 4 else "")
     return out
 
 
@@ -662,40 +649,43 @@ class CentralMatchEngine:
 
     def lookup(self, source_row: Dict[str, Any], target_company: str) -> Tuple[str, int]:
         data = self.load()
-        source_key = choice_key_from_row(source_row)
         company_key = str(target_company or "").strip().upper()
+        source_keys = choice_key_variants_from_row(source_row)
 
-        seed_bucket = data.get("seed", {}).get(source_key, {}).get(company_key, {})
-        if isinstance(seed_bucket, dict) and seed_bucket:
-            valid_seed = []
-            for target_key, payload in seed_bucket.items():
-                if not target_key or not isinstance(payload, dict):
-                    continue
-                valid_seed.append((str(target_key), int(payload.get("hits", 100) or 100)))
-            if valid_seed:
-                valid_seed.sort(key=lambda x: x[1], reverse=True)
-                return valid_seed[0][0], valid_seed[0][1]
+        for source_key in source_keys:
+            seed_bucket = data.get("seed", {}).get(source_key, {}).get(company_key, {})
+            if isinstance(seed_bucket, dict) and seed_bucket:
+                valid_seed = []
+                for target_key, payload in seed_bucket.items():
+                    if not target_key or not isinstance(payload, dict):
+                        continue
+                    valid_seed.append((str(target_key), int(payload.get("hits", 100) or 100)))
+                if valid_seed:
+                    valid_seed.sort(key=lambda x: x[1], reverse=True)
+                    return valid_seed[0][0], valid_seed[0][1]
 
-        entry = data.get("stable", {}).get(source_key, {}).get(company_key, {})
-        if isinstance(entry, dict) and str(entry.get("target_key", "") or "").strip():
-            return str(entry.get("target_key", "") or ""), int(entry.get("hits", 0))
+        for source_key in source_keys:
+            entry = data.get("stable", {}).get(source_key, {}).get(company_key, {})
+            if isinstance(entry, dict) and str(entry.get("target_key", "") or "").strip():
+                return str(entry.get("target_key", "") or ""), int(entry.get("hits", 0))
 
-        provisional = data.get("register", {}).get(source_key, {}).get(company_key, {})
-        if isinstance(provisional, dict):
-            valid = []
-            for target_key, payload in provisional.items():
-                try:
-                    hits = int((payload or {}).get("hits", 0))
-                except Exception:
-                    hits = 0
-                if target_key and hits > 0:
-                    valid.append((str(target_key), hits))
-            if valid:
-                valid.sort(key=lambda x: x[1], reverse=True)
-                top_target, top_hits = valid[0]
-                second_hits = valid[1][1] if len(valid) > 1 else 0
-                if top_hits >= 2 and (second_hits == 0 or top_hits >= second_hits):
-                    return top_target, top_hits
+        for source_key in source_keys:
+            provisional = data.get("register", {}).get(source_key, {}).get(company_key, {})
+            if isinstance(provisional, dict):
+                valid = []
+                for target_key, payload in provisional.items():
+                    try:
+                        hits = int((payload or {}).get("hits", 0))
+                    except Exception:
+                        hits = 0
+                    if target_key and hits > 0:
+                        valid.append((str(target_key), hits))
+                if valid:
+                    valid.sort(key=lambda x: x[1], reverse=True)
+                    top_target, top_hits = valid[0]
+                    second_hits = valid[1][1] if len(valid) > 1 else 0
+                    if top_hits >= 2 and (second_hits == 0 or top_hits >= second_hits):
+                        return top_target, top_hits
 
         return "", 0
 
@@ -709,7 +699,7 @@ class CentralMatchEngine:
         if family == "profile":
             parts = [parsed.get("subtype", ""), parsed.get("width", "")]
             return " ".join([p for p in parts if p]).strip()
-        parts = [parsed.get("functional", ""), parsed.get("core", "")]
+        parts = [parsed.get("functional", ""), parsed.get("core", ""), parsed.get("package", "")]
         return " ".join([p for p in parts if p]).strip() or str(choice_key or "")
 
     def _display_labels_for_pair(
