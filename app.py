@@ -4810,29 +4810,25 @@ if st.session_state.get("show_leave_prompt"):
     if note_map.get(action_type):
         st.caption(note_map[action_type])
 
-    ask_c1, ask_c2 = st.columns(2)
-    with ask_c1:
+    ask_left, ask_right = st.columns(2)
+    with ask_left:
         if st.button("Yes", key="leave_prompt_yes", use_container_width=True):
             st.session_state["leave_prompt_step"] = "save"
             st.rerun()
-    with ask_c2:
-        if st.button("No", key="leave_prompt_no", use_container_width=True):
-            st.session_state["leave_prompt_step"] = ""
-            st.session_state["comparison_dirty"] = False
-            st.session_state["comparison_user_modified"] = False
-            st.session_state["comparison_clean_generation"] = st.session_state.get("comparison_edit_generation", 0)
-            execute_pending_leave_action()
-            st.rerun()
-
-    cancel_c1, cancel_c2 = st.columns(2)
-    with cancel_c1:
         if st.button("Cancel", key="leave_prompt_cancel", use_container_width=True):
             st.session_state["show_leave_prompt"] = False
             st.session_state["leave_prompt_step"] = ""
             st.session_state["pending_action_type"] = None
             st.session_state["pending_target_view"] = None
             st.session_state["pending_action_payload"] = None
-            st.session_state["pending_save_as_exit_name"] = ""
+            st.rerun()
+    with ask_right:
+        if st.button("No", key="leave_prompt_no", use_container_width=True):
+            st.session_state["leave_prompt_step"] = ""
+            st.session_state["comparison_dirty"] = False
+            st.session_state["comparison_user_modified"] = False
+            st.session_state["comparison_clean_generation"] = st.session_state.get("comparison_edit_generation", 0)
+            execute_pending_leave_action()
             st.rerun()
 
     if st.session_state.get("leave_prompt_step") == "save":
