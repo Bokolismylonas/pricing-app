@@ -4146,6 +4146,71 @@ def focus_existing_row(target_row_id):
         st.session_state["active_row_id"] = target_row_id
 
 
+def snapshot_current_comparison_state():
+    selected_codes = get_current_selected_codes_from_state()
+    return {
+        "payload": collect_merged_comparison_state_payload(selected_codes),
+        "comparison_mode": st.session_state.get("comparison_mode", "menu"),
+        "show_saved_comparisons": st.session_state.get("show_saved_comparisons", False),
+        "show_inline_save_options": st.session_state.get("show_inline_save_options", False),
+        "inline_save_mode": st.session_state.get("inline_save_mode", "menu"),
+        "active_save_row_id": st.session_state.get("active_save_row_id"),
+        "pending_inline_save_as_name": st.session_state.get("pending_inline_save_as_name", ""),
+        "pending_save_as_exit_name": st.session_state.get("pending_save_as_exit_name", ""),
+        "current_comparison_id": st.session_state.get("current_comparison_id"),
+        "comparison_name_input": st.session_state.get("comparison_name_input", ""),
+        "active_comparison_label": st.session_state.get("active_comparison_label", ""),
+        "comparison_loaded_from_record": st.session_state.get("comparison_loaded_from_record", False),
+        "active_loaded_state_payload": dict(st.session_state.get("active_loaded_state_payload", {}) or {}),
+        "comparison_dirty": st.session_state.get("comparison_dirty", False),
+        "comparison_user_modified": st.session_state.get("comparison_user_modified", False),
+        "comparison_edit_generation": st.session_state.get("comparison_edit_generation", 0),
+        "comparison_clean_generation": st.session_state.get("comparison_clean_generation", 0),
+    }
+
+
+def open_leave_prompt(action_type, target_view=None, payload=None):
+    st.session_state["leave_prompt_snapshot"] = snapshot_current_comparison_state()
+    st.session_state["show_leave_prompt"] = True
+    st.session_state["leave_prompt_step"] = ""
+    st.session_state["pending_action_type"] = action_type
+    st.session_state["pending_target_view"] = target_view
+    st.session_state["pending_action_payload"] = payload
+
+
+def restore_leave_prompt_snapshot():
+    snapshot = st.session_state.get("leave_prompt_snapshot") or {}
+    payload = snapshot.get("payload")
+    if payload is not None:
+        restore_comparison_state_payload(payload)
+    for key in [
+        "comparison_mode",
+        "show_saved_comparisons",
+        "show_inline_save_options",
+        "inline_save_mode",
+        "active_save_row_id",
+        "pending_inline_save_as_name",
+        "pending_save_as_exit_name",
+        "current_comparison_id",
+        "comparison_name_input",
+        "active_comparison_label",
+        "comparison_loaded_from_record",
+        "active_loaded_state_payload",
+        "comparison_dirty",
+        "comparison_user_modified",
+        "comparison_edit_generation",
+        "comparison_clean_generation",
+    ]:
+        if key in snapshot:
+            st.session_state[key] = snapshot[key]
+    st.session_state["show_leave_prompt"] = False
+    st.session_state["leave_prompt_step"] = ""
+    st.session_state["pending_action_type"] = None
+    st.session_state["pending_target_view"] = None
+    st.session_state["pending_action_payload"] = None
+    st.session_state["leave_prompt_snapshot"] = None
+
+
 def execute_pending_leave_action():
     action_type = st.session_state.get("pending_action_type")
     target_view = st.session_state.get("pending_target_view")
@@ -4157,6 +4222,7 @@ def execute_pending_leave_action():
     st.session_state["pending_target_view"] = None
     st.session_state["pending_action_payload"] = None
     st.session_state["pending_save_as_exit_name"] = ""
+    st.session_state["leave_prompt_snapshot"] = None
 
     if action_type == "switch_view" and target_view:
         release_comparison_lock()
@@ -4169,14 +4235,6 @@ def execute_pending_leave_action():
             st.session_state["active_save_row_id"] = None
             st.session_state["pending_inline_save_as_name"] = ""
             st.session_state["pending_save_as_exit_name"] = ""
-    elif action_type == "comparison_menu":
-        st.session_state["comparison_mode"] = "menu"
-        st.session_state["show_saved_comparisons"] = False
-        st.session_state["show_inline_save_options"] = False
-        st.session_state["inline_save_mode"] = "menu"
-        st.session_state["active_save_row_id"] = None
-        st.session_state["pending_inline_save_as_name"] = ""
-        st.session_state["pending_save_as_exit_name"] = ""
     elif action_type == "logout":
         release_comparison_lock()
         logout_current_user()
@@ -4677,11 +4735,8 @@ with st.sidebar:
             if current_view_ui == "Comparisons" and current_view == "Comparisons":
                 if has_unsaved_comparison_changes():
                     if not st.session_state.get("show_leave_prompt"):
-                        st.session_state["show_leave_prompt"] = True
-                        st.session_state["leave_prompt_step"] = ""
-                        st.session_state["pending_target_view"] = None
-                        st.session_state["pending_action_type"] = "comparison_menu"
-                        st.rerun()
+                        open_leave_prompt("switch_view", target_view="Comparisons")
+                    st.rerun()
                 else:
                     st.session_state["committed_view"] = "Comparisons"
                     st.session_state["comparison_mode"] = "menu"
@@ -4692,18 +4747,14 @@ with st.sidebar:
                     st.session_state["pending_inline_save_as_name"] = ""
                     st.session_state["pending_save_as_exit_name"] = ""
                     st.rerun()
-                continue
 
-            if (
+            elif (
                 current_view_ui != current_view
                 and current_view == "Comparisons"
                 and has_unsaved_comparison_changes()
-                and not st.session_state.get("show_leave_prompt")
             ):
-                st.session_state["show_leave_prompt"] = True
-                st.session_state["leave_prompt_step"] = ""
-                st.session_state["pending_target_view"] = current_view_ui
-                st.session_state["pending_action_type"] = "switch_view"
+                if not st.session_state.get("show_leave_prompt"):
+                    open_leave_prompt("switch_view", target_view=current_view_ui)
                 st.rerun()
             else:
                 previous_committed_view = st.session_state.get("committed_view", current_view_ui)
@@ -4746,10 +4797,7 @@ with st.sidebar:
         key="logout_button",
     ):
         if current_view == "Comparisons" and has_unsaved_comparison_changes():
-            st.session_state["show_leave_prompt"] = True
-            st.session_state["leave_prompt_step"] = ""
-            st.session_state["pending_action_type"] = "logout"
-            st.session_state["pending_target_view"] = None
+            open_leave_prompt("logout")
             st.rerun()
         else:
             logout_current_user()
@@ -4796,7 +4844,6 @@ if st.session_state.get("show_leave_prompt"):
     prompt_text = f'Do you want to save the changes you made to Comparison "{comparison_label}"?'
     note_map = {
         "switch_view": f"You are leaving Comparisons and moving to {target_view}." if target_view else "",
-        "comparison_menu": "You are about to return to the Comparisons menu.",
         "logout": "You are about to logout.",
         "clear_comparison": "You are about to start a new comparison.",
         "load_comparison": "You are about to load another saved comparison.",
@@ -4821,12 +4868,12 @@ if st.session_state.get("show_leave_prompt"):
     if note_map.get(action_type):
         st.caption(note_map[action_type])
 
-    ask_c1, ask_c2 = st.columns(2)
-    with ask_c1:
+    ask_top_left, ask_top_right = st.columns(2)
+    with ask_top_left:
         if st.button("Yes", key="leave_prompt_yes", use_container_width=True):
             st.session_state["leave_prompt_step"] = "save"
             st.rerun()
-    with ask_c2:
+    with ask_top_right:
         if st.button("No", key="leave_prompt_no", use_container_width=True):
             st.session_state["leave_prompt_step"] = ""
             st.session_state["comparison_dirty"] = False
@@ -4835,15 +4882,10 @@ if st.session_state.get("show_leave_prompt"):
             execute_pending_leave_action()
             st.rerun()
 
-    cancel_c1, cancel_c2 = st.columns(2)
-    with cancel_c1:
+    ask_bottom_left, ask_bottom_right = st.columns(2)
+    with ask_bottom_left:
         if st.button("Cancel", key="leave_prompt_cancel", use_container_width=True):
-            st.session_state["show_leave_prompt"] = False
-            st.session_state["leave_prompt_step"] = ""
-            st.session_state["pending_action_type"] = None
-            st.session_state["pending_target_view"] = None
-            st.session_state["pending_action_payload"] = None
-            st.session_state["pending_save_as_exit_name"] = ""
+            restore_leave_prompt_snapshot()
             st.rerun()
 
     if st.session_state.get("leave_prompt_step") == "save":
@@ -6620,14 +6662,14 @@ def render_comparisons():
                                         )
                                     else:
                                         if has_real_changes_against_loaded_baseline():
-                                            st.session_state["show_leave_prompt"] = True
-                                            st.session_state["leave_prompt_step"] = ""
-                                            st.session_state["pending_action_type"] = "load_comparison"
-                                            st.session_state["pending_action_payload"] = {
-                                                "state_payload": selected_record.get("state", {}) or {},
-                                                "comparison_id": selected_record.get("id"),
-                                                "comparison_name": selected_record.get("name", ""),
-                                            }
+                                            open_leave_prompt(
+                                                "load_comparison",
+                                                payload={
+                                                    "state_payload": selected_record.get("state", {}) or {},
+                                                    "comparison_id": selected_record.get("id"),
+                                                    "comparison_name": selected_record.get("name", ""),
+                                                },
+                                            )
                                             st.rerun()
                                         else:
                                             ok, msg = load_selected_comparison_record(selected_record)
@@ -7126,19 +7168,11 @@ def render_comparisons():
                             use_container_width=True,
                         ):
                             if has_unsaved_comparison_changes():
-                                st.session_state["show_leave_prompt"] = True
-                                st.session_state["leave_prompt_step"] = ""
-                                st.session_state["pending_action_type"] = "comparison_menu"
-                                st.session_state["pending_target_view"] = None
+                                open_leave_prompt("switch_view", target_view="Comparisons")
                                 st.rerun()
                             else:
                                 st.session_state["comparison_mode"] = "menu"
                                 st.session_state["show_saved_comparisons"] = False
-                                st.session_state["show_inline_save_options"] = False
-                                st.session_state["inline_save_mode"] = "menu"
-                                st.session_state["active_save_row_id"] = None
-                                st.session_state["pending_inline_save_as_name"] = ""
-                                st.session_state["pending_save_as_exit_name"] = ""
                                 st.rerun()
 
                     with row_save_cols[2]:
