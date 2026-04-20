@@ -16,6 +16,7 @@ import stripe
 from supabase import create_client, Client
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+import pdfplumber
 from storage import (
     list_comparisons,
     save_new_comparison,
@@ -4146,71 +4147,6 @@ def focus_existing_row(target_row_id):
         st.session_state["active_row_id"] = target_row_id
 
 
-def snapshot_current_comparison_state():
-    selected_codes = get_current_selected_codes_from_state()
-    return {
-        "payload": collect_merged_comparison_state_payload(selected_codes),
-        "comparison_mode": st.session_state.get("comparison_mode", "menu"),
-        "show_saved_comparisons": st.session_state.get("show_saved_comparisons", False),
-        "show_inline_save_options": st.session_state.get("show_inline_save_options", False),
-        "inline_save_mode": st.session_state.get("inline_save_mode", "menu"),
-        "active_save_row_id": st.session_state.get("active_save_row_id"),
-        "pending_inline_save_as_name": st.session_state.get("pending_inline_save_as_name", ""),
-        "pending_save_as_exit_name": st.session_state.get("pending_save_as_exit_name", ""),
-        "current_comparison_id": st.session_state.get("current_comparison_id"),
-        "comparison_name_input": st.session_state.get("comparison_name_input", ""),
-        "active_comparison_label": st.session_state.get("active_comparison_label", ""),
-        "comparison_loaded_from_record": st.session_state.get("comparison_loaded_from_record", False),
-        "active_loaded_state_payload": dict(st.session_state.get("active_loaded_state_payload", {}) or {}),
-        "comparison_dirty": st.session_state.get("comparison_dirty", False),
-        "comparison_user_modified": st.session_state.get("comparison_user_modified", False),
-        "comparison_edit_generation": st.session_state.get("comparison_edit_generation", 0),
-        "comparison_clean_generation": st.session_state.get("comparison_clean_generation", 0),
-    }
-
-
-def open_leave_prompt(action_type, target_view=None, payload=None):
-    st.session_state["leave_prompt_snapshot"] = snapshot_current_comparison_state()
-    st.session_state["show_leave_prompt"] = True
-    st.session_state["leave_prompt_step"] = ""
-    st.session_state["pending_action_type"] = action_type
-    st.session_state["pending_target_view"] = target_view
-    st.session_state["pending_action_payload"] = payload
-
-
-def restore_leave_prompt_snapshot():
-    snapshot = st.session_state.get("leave_prompt_snapshot") or {}
-    payload = snapshot.get("payload")
-    if payload is not None:
-        restore_comparison_state_payload(payload)
-    for key in [
-        "comparison_mode",
-        "show_saved_comparisons",
-        "show_inline_save_options",
-        "inline_save_mode",
-        "active_save_row_id",
-        "pending_inline_save_as_name",
-        "pending_save_as_exit_name",
-        "current_comparison_id",
-        "comparison_name_input",
-        "active_comparison_label",
-        "comparison_loaded_from_record",
-        "active_loaded_state_payload",
-        "comparison_dirty",
-        "comparison_user_modified",
-        "comparison_edit_generation",
-        "comparison_clean_generation",
-    ]:
-        if key in snapshot:
-            st.session_state[key] = snapshot[key]
-    st.session_state["show_leave_prompt"] = False
-    st.session_state["leave_prompt_step"] = ""
-    st.session_state["pending_action_type"] = None
-    st.session_state["pending_target_view"] = None
-    st.session_state["pending_action_payload"] = None
-    st.session_state["leave_prompt_snapshot"] = None
-
-
 def execute_pending_leave_action():
     action_type = st.session_state.get("pending_action_type")
     target_view = st.session_state.get("pending_target_view")
@@ -4222,7 +4158,6 @@ def execute_pending_leave_action():
     st.session_state["pending_target_view"] = None
     st.session_state["pending_action_payload"] = None
     st.session_state["pending_save_as_exit_name"] = ""
-    st.session_state["leave_prompt_snapshot"] = None
 
     if action_type == "switch_view" and target_view:
         release_comparison_lock()
@@ -4733,9 +4668,11 @@ with st.sidebar:
             current_view_ui = nav_label
 
             if current_view_ui == "Comparisons" and current_view == "Comparisons":
-                if has_unsaved_comparison_changes():
-                    if not st.session_state.get("show_leave_prompt"):
-                        open_leave_prompt("switch_view", target_view="Comparisons")
+                if has_unsaved_comparison_changes() and not st.session_state.get("show_leave_prompt"):
+                    st.session_state["show_leave_prompt"] = True
+                    st.session_state["leave_prompt_step"] = ""
+                    st.session_state["pending_target_view"] = "Comparisons"
+                    st.session_state["pending_action_type"] = "switch_view"
                     st.rerun()
                 else:
                     st.session_state["committed_view"] = "Comparisons"
@@ -4748,13 +4685,16 @@ with st.sidebar:
                     st.session_state["pending_save_as_exit_name"] = ""
                     st.rerun()
 
-            elif (
+            if (
                 current_view_ui != current_view
                 and current_view == "Comparisons"
                 and has_unsaved_comparison_changes()
+                and not st.session_state.get("show_leave_prompt")
             ):
-                if not st.session_state.get("show_leave_prompt"):
-                    open_leave_prompt("switch_view", target_view=current_view_ui)
+                st.session_state["show_leave_prompt"] = True
+                st.session_state["leave_prompt_step"] = ""
+                st.session_state["pending_target_view"] = current_view_ui
+                st.session_state["pending_action_type"] = "switch_view"
                 st.rerun()
             else:
                 previous_committed_view = st.session_state.get("committed_view", current_view_ui)
@@ -4797,7 +4737,10 @@ with st.sidebar:
         key="logout_button",
     ):
         if current_view == "Comparisons" and has_unsaved_comparison_changes():
-            open_leave_prompt("logout")
+            st.session_state["show_leave_prompt"] = True
+            st.session_state["leave_prompt_step"] = ""
+            st.session_state["pending_action_type"] = "logout"
+            st.session_state["pending_target_view"] = None
             st.rerun()
         else:
             logout_current_user()
@@ -4868,24 +4811,18 @@ if st.session_state.get("show_leave_prompt"):
     if note_map.get(action_type):
         st.caption(note_map[action_type])
 
-    ask_top_left, ask_top_right = st.columns(2)
-    with ask_top_left:
+    ask_c1, ask_c2 = st.columns(2)
+    with ask_c1:
         if st.button("Yes", key="leave_prompt_yes", use_container_width=True):
             st.session_state["leave_prompt_step"] = "save"
             st.rerun()
-    with ask_top_right:
+    with ask_c2:
         if st.button("No", key="leave_prompt_no", use_container_width=True):
             st.session_state["leave_prompt_step"] = ""
             st.session_state["comparison_dirty"] = False
             st.session_state["comparison_user_modified"] = False
             st.session_state["comparison_clean_generation"] = st.session_state.get("comparison_edit_generation", 0)
             execute_pending_leave_action()
-            st.rerun()
-
-    ask_bottom_left, ask_bottom_right = st.columns(2)
-    with ask_bottom_left:
-        if st.button("Cancel", key="leave_prompt_cancel", use_container_width=True):
-            restore_leave_prompt_snapshot()
             st.rerun()
 
     if st.session_state.get("leave_prompt_step") == "save":
@@ -5859,6 +5796,244 @@ def _extract_section_title(values):
 
 
 
+
+def _looks_like_pdf_section_title(line: str) -> bool:
+    line = _normalize_text_simple(line)
+    if not line or len(line) > 90:
+        return False
+    if _to_float_or_none(line) is not None:
+        return False
+    letters = [ch for ch in line if ch.isalpha()]
+    if len(letters) < 3:
+        return False
+    upper_ratio = sum(1 for ch in letters if ch.isupper()) / max(len(letters), 1)
+    return upper_ratio >= 0.7 or (len(line.split()) <= 5 and _is_all_capsish(line))
+
+
+def _extract_package_from_text(text: str) -> str:
+    s = _normalize_text_simple(text).lower()
+    if not s:
+        return ''
+    m = re.search(r'(\d+(?:[.,]\d+)?)\s*(kg|gr|g|lt|l|ml)\b', s)
+    if not m:
+        return ''
+    qty = m.group(1).replace(',', '.')
+    unit = m.group(2)
+    if unit == 'gr':
+        unit = 'g'
+    if unit == 'lt':
+        unit = 'l'
+    qty = qty.rstrip('0').rstrip('.') if '.' in qty else qty
+    return f"{qty}{unit}"
+
+
+def _extract_mm_from_text(text: str) -> str:
+    s = _normalize_text_simple(text).lower()
+    if not s:
+        return ''
+    patterns = [
+        r'\b(m2|m²|m3|m³|mm|cm|τεμ|τεμ\.|pcs|pc|m)\b',
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, s)
+        if m:
+            val = m.group(1)
+            return val.replace('m²', 'm2').replace('m³', 'm3')
+    return ''
+
+
+def _clean_pdf_price_text(value) -> str:
+    if value is None:
+        return ''
+    text = str(value).strip()
+    text = text.replace('€', '').replace('EUR', '').replace('eur', '').strip()
+    return text
+
+
+def _parse_pdf_candidate_row(values, current_category: str = '', company_hint: str = ''):
+    cleaned = [_normalize_text_simple(v) for v in values]
+    cleaned = [v for v in cleaned if v]
+    if not cleaned:
+        return None
+
+    if len(cleaned) == 1 and _looks_like_pdf_section_title(cleaned[0]):
+        return {'__section_title__': cleaned[0]}
+
+    price_indices = []
+    for idx, value in enumerate(cleaned):
+        price_num = _to_float_or_none(value)
+        if price_num is not None and 0 < price_num < 100000:
+            price_indices.append((idx, price_num))
+
+    if not price_indices:
+        return None
+
+    price_idx, base_price = price_indices[-1]
+    if base_price is None:
+        return None
+
+    left = cleaned[:price_idx]
+    if not left:
+        return None
+
+    sap_text = ''
+    if left:
+        first = left[0].replace(' ', '')
+        if any(ch.isdigit() for ch in first) and len(first) <= 24:
+            sap_text = left[0]
+            left = left[1:]
+
+    product_text = _normalize_text_simple(' '.join(left))
+    if not product_text or len(product_text) < 3:
+        return None
+    if _to_float_or_none(product_text) is not None:
+        return None
+
+    trailing = cleaned[price_idx + 1:]
+    package_text = _extract_package_from_text(product_text)
+    mm_text = _extract_mm_from_text(product_text)
+    notes_text = _normalize_text_simple(' '.join(trailing))
+
+    category_text = current_category or 'PDF Catalog'
+    return {
+        'SAP': sap_text,
+        'Product': product_text,
+        'Base Price': base_price,
+        'Increase %': 0.0,
+        'Price': base_price,
+        'MM': mm_text,
+        'Package': package_text,
+        'Category': category_text,
+        'Notes': notes_text,
+        'Company': company_hint or '',
+    }
+
+
+def _extract_pdf_rows_from_text(text: str, current_category: str = '', company_hint: str = ''):
+    rows = []
+    detected_titles = []
+    active_category = current_category or 'PDF Catalog'
+    for raw_line in (text or '').splitlines():
+        line = _normalize_text_simple(raw_line)
+        if not line:
+            continue
+        if _looks_like_pdf_section_title(line):
+            active_category = line
+            detected_titles.append(line)
+            continue
+        parts = re.split(r'\s{2,}|	', line)
+        if len(parts) < 2:
+            m = re.match(r'^(?:(?P<sap>[A-Za-z0-9./_-]{2,20})\s+)?(?P<desc>.+?)\s+(?P<price>\d+[.,]\d{1,4})\s*$', line)
+            if m:
+                parts = [m.group('sap') or '', m.group('desc'), m.group('price')]
+            else:
+                continue
+        candidate = _parse_pdf_candidate_row(parts, current_category=active_category, company_hint=company_hint)
+        if isinstance(candidate, dict) and candidate.get('__section_title__'):
+            active_category = candidate['__section_title__']
+            detected_titles.append(active_category)
+            continue
+        if candidate:
+            rows.append(candidate)
+    return rows, detected_titles
+
+
+def convert_supplier_pdf_to_source(uploaded_file):
+    file_bytes = uploaded_file.getvalue()
+    all_rows = []
+    used_pages = []
+    skipped_pages = []
+    rows_missing_price = 0
+    rows_missing_sap = 0
+    rows_missing_product = 0
+    detected_section_titles = []
+    company_hint = Path(uploaded_file.name).stem
+
+    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+        for page_idx, page in enumerate(pdf.pages, start=1):
+            page_label = f'Page {page_idx}'
+            page_rows = []
+            current_category = f'PDF Page {page_idx}'
+
+            text = page.extract_text() or ''
+            text_lines = [_normalize_text_simple(line) for line in text.splitlines() if _normalize_text_simple(line)]
+            for line in text_lines[:20]:
+                if _looks_like_pdf_section_title(line):
+                    current_category = line
+                    detected_section_titles.append(f'{page_label}: {line}')
+                    break
+
+            tables = page.extract_tables() or []
+            for table in tables:
+                for raw_row in table:
+                    candidate = _parse_pdf_candidate_row(raw_row or [], current_category=current_category, company_hint=company_hint)
+                    if isinstance(candidate, dict) and candidate.get('__section_title__'):
+                        current_category = candidate['__section_title__']
+                        detected_section_titles.append(f'{page_label}: {current_category}')
+                        continue
+                    if candidate:
+                        page_rows.append(candidate)
+
+            if not page_rows:
+                fallback_rows, fallback_titles = _extract_pdf_rows_from_text(text, current_category=current_category, company_hint=company_hint)
+                page_rows.extend(fallback_rows)
+                detected_section_titles.extend([f'{page_label}: {title}' for title in fallback_titles])
+
+            if not page_rows:
+                skipped_pages.append(f'{page_label} (no valid product rows)')
+                continue
+
+            used_pages.append(page_label)
+            all_rows.extend(page_rows)
+
+    if not all_rows:
+        return None, {
+            'used_sheets': used_pages,
+            'skipped_sheets': skipped_pages,
+            'missing_price_rows': 0,
+            'missing_sap_rows': 0,
+            'missing_product_rows': 0,
+            'detected_section_titles': detected_section_titles,
+            'total_rows': 0,
+            'input_kind': 'pdf',
+        }
+
+    source_df = pd.DataFrame(all_rows)
+    source_df['Base Price'] = pd.to_numeric(source_df['Base Price'], errors='coerce')
+    source_df['Price'] = source_df['Base Price']
+
+    if 'SAP' not in source_df.columns:
+        source_df['SAP'] = ''
+    if 'Product' not in source_df.columns:
+        source_df['Product'] = ''
+    if 'MM' not in source_df.columns:
+        source_df['MM'] = ''
+    if 'Package' not in source_df.columns:
+        source_df['Package'] = ''
+    if 'Category' not in source_df.columns:
+        source_df['Category'] = 'PDF Catalog'
+
+    source_df = source_df[_source_generator_output_columns()].reset_index(drop=True)
+
+    rows_missing_price = int(source_df['Base Price'].isna().sum())
+    rows_missing_sap = int(source_df['SAP'].astype(str).str.strip().eq('').sum())
+    rows_missing_product = int(source_df['Product'].astype(str).str.strip().eq('').sum())
+
+    source_df = source_df[~(source_df['Product'].astype(str).str.strip().eq('') & source_df['Base Price'].isna())].reset_index(drop=True)
+
+    stats = {
+        'used_sheets': used_pages,
+        'skipped_sheets': skipped_pages,
+        'missing_price_rows': rows_missing_price,
+        'missing_sap_rows': rows_missing_sap,
+        'missing_product_rows': rows_missing_product,
+        'detected_section_titles': detected_section_titles,
+        'total_rows': len(source_df),
+        'input_kind': 'pdf',
+    }
+    return source_df, stats
+
+
 def convert_supplier_pricelist_to_source(uploaded_file):
     xls, file_bytes = load_excel_file_any(uploaded_file)
 
@@ -6095,7 +6270,15 @@ def _default_manual_mapping(columns):
 
 
 
+
+
+def current_user_can_use_pdf_catalog_extraction():
+    return True
+
 def render_sources():
+    if "pdf_processing" not in st.session_state:
+        st.session_state["pdf_processing"] = False
+
     st.markdown('<div class="app-card">', unsafe_allow_html=True)
     st.markdown("## Sources")
 
@@ -6104,7 +6287,14 @@ def render_sources():
     }
 
     st.markdown("### 1. Create Source from Supplier Pricelist")
-    st.caption("Upload a supplier pricelist Excel, review the converted rows, edit anything you want, and then save it as a ready PRICELIST source file.")
+    st.caption("Upload a supplier pricelist file, review the converted rows, edit anything you want, and then save it as a ready PRICELIST source file.")
+
+    pdf_ai_premium_enabled = current_user_can_use_pdf_catalog_extraction()
+    st.info("Έξυπνη εξαγωγή τιμοκαταλόγων PDF σε δομημένο Excel")
+    if is_admin_user():
+        st.caption("Ο admin μπορεί και να κατεβάζει το παραγόμενο Excel preview τοπικά.")
+    else:
+        st.caption("Το PDF conversion είναι διαθέσιμο σε όλους. Το παραγόμενο Excel χρησιμοποιείται κανονικά ως Source μέσα στην εφαρμογή, αλλά δεν μπορεί να κατέβει τοπικά.")
 
     gen_c1, gen_c2, gen_c3 = st.columns(3)
     with gen_c1:
@@ -6123,18 +6313,57 @@ def render_sources():
         )
 
     with gen_c3:
+        allowed_upload_types = ["xlsx", "xlsm", "pdf"]
+        upload_help_text = "Excel files are converted directly. PDF files use smart extraction to produce a structured Excel-ready Source preview."
         uploaded_supplier_file = st.file_uploader(
             "Upload supplier pricelist",
-            type=["xlsx", "xlsm"],
+            type=allowed_upload_types,
             key="supplier_pricelist_upload",
+            help=upload_help_text,
         )
 
     if uploaded_supplier_file is not None:
+        source_df, conversion_stats = None, None
+        uploaded_name = str(getattr(uploaded_supplier_file, "name", "") or "").lower()
+        is_pdf_upload = uploaded_name.endswith(".pdf")
+
+        progress_container = st.container() if is_pdf_upload else None
+        status_placeholder = progress_container.empty() if progress_container is not None else None
+        progress_placeholder = progress_container.empty() if progress_container is not None else None
+
         try:
-            source_df, conversion_stats = convert_supplier_pricelist_to_source(uploaded_supplier_file)
+            if is_pdf_upload:
+                st.session_state["pdf_processing"] = True
+                status_placeholder.info("🔍 Ανάλυση PDF τιμοκαταλόγου…")
+                progress_bar = progress_placeholder.progress(10)
+                time.sleep(0.05)
+
+                status_placeholder.info("🧠 Εξαγωγή δεδομένων και αναγνώριση προϊόντων…")
+                progress_bar.progress(35)
+                time.sleep(0.05)
+
+                source_df, conversion_stats = convert_supplier_pdf_to_source(uploaded_supplier_file)
+
+                status_placeholder.info("📊 Δομή καταλόγου και έλεγχος πεδίων…")
+                progress_bar.progress(75)
+                time.sleep(0.05)
+
+                status_placeholder.info("📁 Δημιουργία δομημένου Excel preview…")
+                progress_bar.progress(95)
+                time.sleep(0.05)
+                progress_bar.progress(100)
+                status_placeholder.success("✅ Η έξυπνη εξαγωγή ολοκληρώθηκε.")
+            else:
+                source_df, conversion_stats = convert_supplier_pricelist_to_source(uploaded_supplier_file)
         except Exception as e:
-            st.error(str(e))
+            if is_pdf_upload and status_placeholder is not None:
+                status_placeholder.error(f"❌ Σφάλμα επεξεργασίας: {e}")
+            else:
+                st.error(str(e))
             source_df, conversion_stats = None, None
+        finally:
+            if is_pdf_upload:
+                st.session_state["pdf_processing"] = False
 
         auto_ok = source_df is not None and not source_df.empty
 
@@ -6144,13 +6373,15 @@ def render_sources():
             if skipped:
                 st.warning("Skipped sheets: " + ", ".join(skipped))
         else:
-            st.success(f"Detected {len(source_df)} valid source rows from {len(conversion_stats.get('used_sheets', []))} sheet(s).")
+            input_kind = str(conversion_stats.get('input_kind', 'excel')) if isinstance(conversion_stats, dict) else 'excel'
+            unit_label = 'page(s)' if input_kind == 'pdf' else 'sheet(s)'
+            st.success(f"Detected {len(source_df)} valid source rows from {len(conversion_stats.get('used_sheets', []))} {unit_label}.")
 
             m1, m2, m3, m4 = st.columns(4)
             with m1:
                 st.metric("Rows", conversion_stats.get("total_rows", len(source_df)))
             with m2:
-                st.metric("Used Sheets", len(conversion_stats.get("used_sheets", [])))
+                st.metric("Used Pages" if input_kind == "pdf" else "Used Sheets", len(conversion_stats.get("used_sheets", [])))
             with m3:
                 st.metric("Missing Prices", conversion_stats.get("missing_price_rows", 0))
             with m4:
@@ -6161,9 +6392,13 @@ def render_sources():
                 st.caption("Detected section/category titles: " + " • ".join(detected_titles[:8]))
 
             if conversion_stats.get("used_sheets"):
-                st.caption("Used sheets: " + ", ".join(conversion_stats["used_sheets"]))
+                st.caption(("Used pages: " if input_kind == "pdf" else "Used sheets: ") + ", ".join(conversion_stats["used_sheets"]))
             if conversion_stats.get("skipped_sheets"):
                 st.warning("Skipped sheets: " + ", ".join(conversion_stats["skipped_sheets"][:12]))
+            if input_kind == "pdf" and "confidence" in source_df.columns:
+                low_conf_count = int((pd.to_numeric(source_df["confidence"], errors="coerce") < 0.70).fillna(False).sum())
+                if low_conf_count > 0:
+                    st.warning(f"⚠️ {low_conf_count} γραμμές χρειάζονται έλεγχο πριν την αποθήκευση.")
 
             st.markdown("#### Review and Edit Before Save")
 
@@ -6218,7 +6453,8 @@ def render_sources():
             edited_df["Price"] = edited_df["Base Price"]
             export_edited_df = edited_df.drop(columns=["__row_id"], errors="ignore").copy()
 
-            generated_default_name = get_next_version_filename(generator_company_code, generator_date_val, uploaded_supplier_file.name)
+            generated_source_original_name = uploaded_supplier_file.name if not str(uploaded_supplier_file.name).lower().endswith(".pdf") else f"{Path(uploaded_supplier_file.name).stem}.xlsx"
+            generated_default_name = get_next_version_filename(generator_company_code, generator_date_val, generated_source_original_name)
             generated_signature = (generator_company_code, str(generator_date_val), uploaded_supplier_file.name, int(len(export_edited_df)))
             if st.session_state.get("save_generated_source_as_signature") != generated_signature:
                 st.session_state["save_generated_source_as_signature"] = generated_signature
@@ -6226,14 +6462,23 @@ def render_sources():
 
             preview_c1, preview_c2, preview_c3 = st.columns([1, 1, 1])
             with preview_c1:
-                st.download_button(
-                    "Download Generated Source",
-                    data=_source_dataframe_to_excel_bytes(export_edited_df),
-                    file_name=f"{generator_company_code}_generated_source_preview.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="download_generated_source_preview",
-                    use_container_width=True,
-                )
+                if is_admin_user():
+                    st.download_button(
+                        "Download Generated Source",
+                        data=_source_dataframe_to_excel_bytes(export_edited_df),
+                        file_name=f"{generator_company_code}_generated_source_preview.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="download_generated_source_preview",
+                        use_container_width=True,
+                    )
+                else:
+                    st.button(
+                        "Download Generated Source",
+                        key="download_generated_source_preview_locked",
+                        disabled=True,
+                        use_container_width=True,
+                    )
+                    st.caption("Μόνο ο admin μπορεί να κατεβάσει το παραγόμενο Excel τοπικά.")
             with preview_c2:
                 if st.button("Save Generated Source", key="save_generated_source_button", use_container_width=True):
                     if export_edited_df.empty:
@@ -6259,7 +6504,7 @@ def render_sources():
                         else:
                             custom_filename = build_custom_source_filename(
                                 st.session_state.get("save_generated_source_as_name", ""),
-                                uploaded_supplier_file.name,
+                                generated_source_original_name,
                             )
                             if not custom_filename:
                                 st.error("Please enter a valid source name.")
@@ -6274,14 +6519,19 @@ def render_sources():
                                     refresh_source_file_views()
                                     st.rerun()
 
-        with st.expander("Manual column override", expanded=not auto_ok):
-            st.caption("Use this only when the automatic detection is not ideal. Choose the correct sheet, header row, and columns, then rebuild the Source preview.")
-
-            try:
-                manual_sheet_names = _list_supplier_sheet_names(uploaded_supplier_file)
-            except Exception as e:
+        is_pdf_upload = str(getattr(uploaded_supplier_file, "name", "") or "").lower().endswith(".pdf")
+        with st.expander("Manual column override", expanded=(not auto_ok) and (not is_pdf_upload)):
+            if is_pdf_upload:
+                st.caption("Manual column override is only available for Excel uploads. For PDFs, edit the preview rows directly before saving.")
                 manual_sheet_names = []
-                st.error(str(e))
+            else:
+                st.caption("Use this only when the automatic detection is not ideal. Choose the correct sheet, header row, and columns, then rebuild the Source preview.")
+
+                try:
+                    manual_sheet_names = _list_supplier_sheet_names(uploaded_supplier_file)
+                except Exception as e:
+                    manual_sheet_names = []
+                    st.error(str(e))
 
             if manual_sheet_names:
                 man_c1, man_c2, man_c3 = st.columns([2, 1, 1])
@@ -6662,14 +6912,14 @@ def render_comparisons():
                                         )
                                     else:
                                         if has_real_changes_against_loaded_baseline():
-                                            open_leave_prompt(
-                                                "load_comparison",
-                                                payload={
-                                                    "state_payload": selected_record.get("state", {}) or {},
-                                                    "comparison_id": selected_record.get("id"),
-                                                    "comparison_name": selected_record.get("name", ""),
-                                                },
-                                            )
+                                            st.session_state["show_leave_prompt"] = True
+                                            st.session_state["leave_prompt_step"] = ""
+                                            st.session_state["pending_action_type"] = "load_comparison"
+                                            st.session_state["pending_action_payload"] = {
+                                                "state_payload": selected_record.get("state", {}) or {},
+                                                "comparison_id": selected_record.get("id"),
+                                                "comparison_name": selected_record.get("name", ""),
+                                            }
                                             st.rerun()
                                         else:
                                             ok, msg = load_selected_comparison_record(selected_record)
@@ -7168,7 +7418,12 @@ def render_comparisons():
                             use_container_width=True,
                         ):
                             if has_unsaved_comparison_changes():
-                                open_leave_prompt("switch_view", target_view="Comparisons")
+                                st.session_state["show_leave_prompt"] = True
+                                st.session_state["leave_prompt_step"] = ""
+                                st.session_state["pending_action_type"] = "switch_view"
+                                st.session_state["pending_target_view"] = "Comparisons"
+                                st.session_state["comparison_mode"] = "menu"
+                                st.session_state["show_saved_comparisons"] = False
                                 st.rerun()
                             else:
                                 st.session_state["comparison_mode"] = "menu"
