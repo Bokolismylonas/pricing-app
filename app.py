@@ -18,6 +18,10 @@ from supabase import create_client, Client
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 import pdfplumber
+try:
+    from openai import OpenAI
+except Exception:
+    OpenAI = None
 from storage import (
     list_comparisons,
     save_new_comparison,
@@ -1024,6 +1028,51 @@ def save_companies_registry(data):
         json.dumps(data, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+
+def load_pdf_ai_usage_log():
+    if not PDF_AI_USAGE_FILE.exists():
+        return []
+    try:
+        data = json.loads(PDF_AI_USAGE_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def append_pdf_ai_usage_log(entry: dict):
+    rows = load_pdf_ai_usage_log()
+    rows.append(entry)
+    PDF_AI_USAGE_FILE.write_text(json.dumps(rows[-500:], ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+
+
+def get_openai_client_for_pdf_extraction():
+    api_key = os.getenv("OPENAI_API_KEY", "")
+    if not api_key:
+        try:
+            api_key = st.secrets.get("OPENAI_API_KEY", "")
+        except Exception:
+            api_key = ""
+    if not api_key or OpenAI is None:
+        return None
+    try:
+        return OpenAI(api_key=api_key)
+    except Exception:
+        return None
+
+
+def current_month_pdf_ai_usage_summary():
+    rows = load_pdf_ai_usage_log()
+    prefix = datetime.now().strftime("%Y-%m")
+    month_rows = [r for r in rows if str(r.get("timestamp", "")).startswith(prefix)]
+    return {
+        "calls": len(month_rows),
+        "pages": sum(int(r.get("pages", 0) or 0) for r in month_rows),
+        "prompt_tokens": sum(int(r.get("prompt_tokens", 0) or 0) for r in month_rows),
+        "completion_tokens": sum(int(r.get("completion_tokens", 0) or 0) for r in month_rows),
+        "rows": sum(int(r.get("rows", 0) or 0) for r in month_rows),
+        "entries": month_rows[-20:],
+    }
 
 
 # -------------------------------------------------
@@ -4148,6 +4197,71 @@ def focus_existing_row(target_row_id):
         st.session_state["active_row_id"] = target_row_id
 
 
+def snapshot_current_comparison_state():
+    selected_codes = get_current_selected_codes_from_state()
+    return {
+        "payload": collect_merged_comparison_state_payload(selected_codes),
+        "comparison_mode": st.session_state.get("comparison_mode", "menu"),
+        "show_saved_comparisons": st.session_state.get("show_saved_comparisons", False),
+        "show_inline_save_options": st.session_state.get("show_inline_save_options", False),
+        "inline_save_mode": st.session_state.get("inline_save_mode", "menu"),
+        "active_save_row_id": st.session_state.get("active_save_row_id"),
+        "pending_inline_save_as_name": st.session_state.get("pending_inline_save_as_name", ""),
+        "pending_save_as_exit_name": st.session_state.get("pending_save_as_exit_name", ""),
+        "current_comparison_id": st.session_state.get("current_comparison_id"),
+        "comparison_name_input": st.session_state.get("comparison_name_input", ""),
+        "active_comparison_label": st.session_state.get("active_comparison_label", ""),
+        "comparison_loaded_from_record": st.session_state.get("comparison_loaded_from_record", False),
+        "active_loaded_state_payload": dict(st.session_state.get("active_loaded_state_payload", {}) or {}),
+        "comparison_dirty": st.session_state.get("comparison_dirty", False),
+        "comparison_user_modified": st.session_state.get("comparison_user_modified", False),
+        "comparison_edit_generation": st.session_state.get("comparison_edit_generation", 0),
+        "comparison_clean_generation": st.session_state.get("comparison_clean_generation", 0),
+    }
+
+
+def open_leave_prompt(action_type, target_view=None, payload=None):
+    st.session_state["leave_prompt_snapshot"] = snapshot_current_comparison_state()
+    st.session_state["show_leave_prompt"] = True
+    st.session_state["leave_prompt_step"] = ""
+    st.session_state["pending_action_type"] = action_type
+    st.session_state["pending_target_view"] = target_view
+    st.session_state["pending_action_payload"] = payload
+
+
+def restore_leave_prompt_snapshot():
+    snapshot = st.session_state.get("leave_prompt_snapshot") or {}
+    payload = snapshot.get("payload")
+    if payload is not None:
+        restore_comparison_state_payload(payload)
+    for key in [
+        "comparison_mode",
+        "show_saved_comparisons",
+        "show_inline_save_options",
+        "inline_save_mode",
+        "active_save_row_id",
+        "pending_inline_save_as_name",
+        "pending_save_as_exit_name",
+        "current_comparison_id",
+        "comparison_name_input",
+        "active_comparison_label",
+        "comparison_loaded_from_record",
+        "active_loaded_state_payload",
+        "comparison_dirty",
+        "comparison_user_modified",
+        "comparison_edit_generation",
+        "comparison_clean_generation",
+    ]:
+        if key in snapshot:
+            st.session_state[key] = snapshot[key]
+    st.session_state["show_leave_prompt"] = False
+    st.session_state["leave_prompt_step"] = ""
+    st.session_state["pending_action_type"] = None
+    st.session_state["pending_target_view"] = None
+    st.session_state["pending_action_payload"] = None
+    st.session_state["leave_prompt_snapshot"] = None
+
+
 def execute_pending_leave_action():
     action_type = st.session_state.get("pending_action_type")
     target_view = st.session_state.get("pending_target_view")
@@ -4159,6 +4273,7 @@ def execute_pending_leave_action():
     st.session_state["pending_target_view"] = None
     st.session_state["pending_action_payload"] = None
     st.session_state["pending_save_as_exit_name"] = ""
+    st.session_state["leave_prompt_snapshot"] = None
 
     if action_type == "switch_view" and target_view:
         release_comparison_lock()
@@ -4668,6 +4783,20 @@ with st.sidebar:
         if st.button(button_label, use_container_width=True, key=f"sidebar_nav_btn_{nav_label}"):
             current_view_ui = nav_label
 
+    st.markdown("---")
+    st.subheader("🧭 Navigation")
+
+    nav_buttons = ["Company Manager", "Sources", "Comparisons"]
+    if is_admin_user():
+        nav_buttons.append("Admin Panel")
+
+    current_view = st.session_state.get("committed_view", "Comparisons")
+
+    for nav_label in nav_buttons:
+        button_label = f"• {nav_label}" if current_view == nav_label else nav_label
+        if st.button(button_label, use_container_width=True, key=f"sidebar_nav_btn_{nav_label}"):
+            current_view_ui = nav_label
+
             if current_view_ui == "Comparisons" and current_view == "Comparisons":
                 if has_unsaved_comparison_changes() and not st.session_state.get("show_leave_prompt"):
                     st.session_state["show_leave_prompt"] = True
@@ -4812,18 +4941,24 @@ if st.session_state.get("show_leave_prompt"):
     if note_map.get(action_type):
         st.caption(note_map[action_type])
 
-    ask_c1, ask_c2 = st.columns(2)
-    with ask_c1:
+    ask_top_left, ask_top_right = st.columns(2)
+    with ask_top_left:
         if st.button("Yes", key="leave_prompt_yes", use_container_width=True):
             st.session_state["leave_prompt_step"] = "save"
             st.rerun()
-    with ask_c2:
+    with ask_top_right:
         if st.button("No", key="leave_prompt_no", use_container_width=True):
             st.session_state["leave_prompt_step"] = ""
             st.session_state["comparison_dirty"] = False
             st.session_state["comparison_user_modified"] = False
             st.session_state["comparison_clean_generation"] = st.session_state.get("comparison_edit_generation", 0)
             execute_pending_leave_action()
+            st.rerun()
+
+    ask_bottom_left, ask_bottom_right = st.columns(2)
+    with ask_bottom_left:
+        if st.button("Cancel", key="leave_prompt_cancel", use_container_width=True):
+            restore_leave_prompt_snapshot()
             st.rerun()
 
     if st.session_state.get("leave_prompt_step") == "save":
@@ -6068,6 +6203,132 @@ def _clean_pdf_price_text(value) -> str:
     return text
 
 
+def _extract_json_payload_from_ai_text(text: str):
+    raw = str(text or '').strip()
+    if not raw:
+        return []
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        m = re.search(r'```json\s*(.*?)```', raw, flags=re.S | re.I)
+        if m:
+            try:
+                payload = json.loads(m.group(1))
+            except Exception:
+                return []
+        else:
+            return []
+    if isinstance(payload, dict):
+        rows = payload.get('rows', [])
+    elif isinstance(payload, list):
+        rows = payload
+    else:
+        rows = []
+    return rows if isinstance(rows, list) else []
+
+
+def _coerce_ai_pdf_rows(rows, current_category: str = '', company_hint: str = '', page_number=None):
+    out = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        product = _normalize_text_simple(row.get('product_name') or row.get('product') or row.get('description') or row.get('name') or '')
+        if not product or len(product) < 2:
+            continue
+        category = _normalize_text_simple(row.get('category') or current_category or 'PDF Catalog')
+        sap = _normalize_text_simple(row.get('sap_code') or row.get('sap') or row.get('code') or '')
+        price = row.get('price')
+        price = _to_float_or_none(price if price is not None else row.get('price_text'))
+        width = row.get('width_mm')
+        length = row.get('length_mm')
+        thickness = row.get('thickness_mm')
+        dims = []
+        for label, val in [('T', thickness), ('W', width), ('L', length)]:
+            vv = _to_float_or_none(val)
+            if vv is not None:
+                vv = int(vv) if float(vv).is_integer() else float(vv)
+                dims.append(f'{label}:{vv}mm')
+        mm_text = _normalize_text_simple(' | '.join(dims) or row.get('mm') or '')
+        package = _normalize_text_simple(row.get('package') or '')
+        unit = _normalize_text_simple(row.get('unit') or '')
+        notes_bits = []
+        if unit:
+            notes_bits.append(f'Unit {unit}')
+        if row.get('notes'):
+            notes_bits.append(_normalize_text_simple(row.get('notes')))
+        if page_number:
+            notes_bits.append(f'Source Page {page_number}')
+        confidence = _to_float_or_none(row.get('confidence'))
+        if confidence is None:
+            confidence = 0.86 if (sap and price is not None) else 0.76
+        out.append({
+            'confidence': max(0.0, min(1.0, float(confidence))),
+            'SAP': sap,
+            'Product': product,
+            'Base Price': price,
+            'Increase %': 0.0,
+            'Price': price,
+            'MM': mm_text or _extract_mm_from_text(product),
+            'Package': package or _extract_package_from_text(product),
+            'Category': category,
+            'Notes': _normalize_text_simple(' | '.join([n for n in notes_bits if n])),
+            'Company': company_hint or '',
+        })
+    return out
+
+
+def _ai_extract_pdf_rows_from_text(text: str, current_category: str = '', company_hint: str = '', page_number=None):
+    txt = _normalize_text_simple(text)
+    if not txt or _looks_like_pdf_contents_page(txt) or _looks_like_pdf_marketing_page(txt):
+        return [], {}
+    client = get_openai_client_for_pdf_extraction()
+    if client is None:
+        return [], {}
+    system_prompt = (
+        'Είσαι σύστημα εξαγωγής δομημένων προϊόντων από PDF τιμοκαταλόγους δομικών υλικών, χημικών και ξηράς δόμησης. '
+        'Στόχος: να εξάγεις ΟΛΑ τα εμπορικά variants. 1 row = 1 variant. '
+        'Αγνόησε εξώφυλλα, marketing pages και πίνακες περιεχομένων. '
+        'Αν ένα προϊόν έχει πολλά μήκη, πάχη, συσκευασίες ή SAP codes, επέστρεψε ξεχωριστό row για κάθε variant. '
+        'Μην απορρίπτεις row επειδή λείπει ένα πεδίο. Προτίμησε over-extraction και βάλε confidence. '
+        'Επέστρεψε μόνο JSON object με κλειδί rows.'
+    )
+    user_prompt = (
+        'Εξήγαγε προϊόντα από το παρακάτω κείμενο PDF page.\n'
+        f'Company hint: {company_hint or ""}\n'
+        f'Current category hint: {current_category or ""}\n'
+        f'Page: {page_number or ""}\n\n'
+        'Επιστροφή σε JSON με μορφή {"rows": [...]} και για κάθε row fields: '
+        'category, product_name, sap_code, code, thickness_mm, width_mm, length_mm, package, unit, price, price_text, notes, confidence.\n\n'
+        'ΚΕΙΜΕΝΟ:\n' + text[:45000]
+    )
+    usage_meta = {}
+    try:
+        resp = client.chat.completions.create(
+            model=os.getenv('OPENAI_PDF_MODEL', 'gpt-4o-mini'),
+            temperature=0,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+        content = ''
+        if getattr(resp, 'choices', None):
+            content = resp.choices[0].message.content or ''
+        rows = _extract_json_payload_from_ai_text(content)
+        usage = getattr(resp, 'usage', None)
+        usage_meta = {
+            'prompt_tokens': int(getattr(usage, 'prompt_tokens', 0) or 0),
+            'completion_tokens': int(getattr(usage, 'completion_tokens', 0) or 0),
+            'total_tokens': int(getattr(usage, 'total_tokens', 0) or 0),
+            'model': os.getenv('OPENAI_PDF_MODEL', 'gpt-4o-mini'),
+        }
+        return _coerce_ai_pdf_rows(rows, current_category=current_category, company_hint=company_hint, page_number=page_number), usage_meta
+    except Exception as e:
+        usage_meta['error'] = str(e)
+        return [], usage_meta
+
+
 def _parse_pdf_candidate_row(values, current_category: str = '', company_hint: str = ''):
     cleaned = [_normalize_text_simple(v) for v in values]
     cleaned = [v for v in cleaned if v]
@@ -6076,22 +6337,32 @@ def _parse_pdf_candidate_row(values, current_category: str = '', company_hint: s
 
     if len(cleaned) == 1 and _looks_like_pdf_section_title(cleaned[0]):
         return {'__section_title__': cleaned[0]}
-    if _looks_like_pdf_contents_page(' '.join(cleaned)):
+    joined = ' '.join(cleaned)
+    if _looks_like_pdf_contents_page(joined):
         return None
 
-    price_indices = []
+    likely_price_candidates = []
     for idx, value in enumerate(cleaned):
-        price_num = _to_float_or_none(value)
-        if price_num is not None and 0 < price_num < 100000:
-            price_indices.append((idx, price_num))
+        raw = str(value or '').strip()
+        price_num = _to_float_or_none(raw)
+        if price_num is None or not (0 < price_num < 100000):
+            continue
+        score = 0
+        if '€' in raw or 'eur' in raw.lower():
+            score += 4
+        if re.fullmatch(r'?\d+[.,]\d{1,4}', raw.replace('€', '').strip()):
+            score += 3
+        if idx >= len(cleaned) - 2:
+            score += 2
+        if price_num < 1000:
+            score += 1
+        likely_price_candidates.append((score, idx, price_num))
 
-    if not price_indices:
+    if not likely_price_candidates:
         return None
 
-    price_idx, base_price = price_indices[-1]
-    if base_price is None:
-        return None
-
+    likely_price_candidates.sort(key=lambda x: (x[0], x[1]))
+    _, price_idx, base_price = likely_price_candidates[-1]
     left = cleaned[:price_idx]
     if not left:
         return None
@@ -6110,13 +6381,13 @@ def _parse_pdf_candidate_row(values, current_category: str = '', company_hint: s
         return None
 
     trailing = cleaned[price_idx + 1:]
-    package_text = _extract_package_from_text(product_text)
-    mm_text = _extract_mm_from_text(product_text)
+    package_text = _extract_package_from_text(joined) or _extract_package_from_text(product_text)
+    mm_text = _extract_mm_from_text(joined) or _extract_mm_from_text(product_text)
     notes_text = _normalize_text_simple(' '.join(trailing))
 
     category_text = current_category or 'PDF Catalog'
     return {
-        'confidence': 0.65 if sap_text else 0.55,
+        'confidence': 0.72 if sap_text else 0.60,
         'SAP': sap_text,
         'Product': product_text,
         'Base Price': base_price,
@@ -6169,6 +6440,8 @@ def convert_supplier_pdf_to_source(uploaded_file):
     rows_missing_product = 0
     detected_section_titles = []
     company_hint = Path(uploaded_file.name).stem
+    ai_usage_totals = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "calls": 0}
+    ai_enabled = current_user_can_use_pdf_catalog_extraction() and (get_openai_client_for_pdf_extraction() is not None)
 
     with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
         for page_idx, page in enumerate(pdf.pages, start=1):
@@ -6205,13 +6478,22 @@ def convert_supplier_pdf_to_source(uploaded_file):
                     if candidate:
                         page_rows.append(candidate)
 
-            if not page_rows:
-                page_rows.extend(_parse_pdf_detail_page_text(text, current_category=current_category, company_hint=company_hint))
+            detail_rows = _parse_pdf_detail_page_text(text, current_category=current_category, company_hint=company_hint)
+            page_rows.extend(detail_rows)
 
-            if not page_rows:
-                fallback_rows, fallback_titles = _extract_pdf_rows_from_text(text, current_category=current_category, company_hint=company_hint)
-                page_rows.extend(fallback_rows)
-                detected_section_titles.extend([f'{page_label}: {title}' for title in fallback_titles])
+            fallback_rows, fallback_titles = _extract_pdf_rows_from_text(text, current_category=current_category, company_hint=company_hint)
+            page_rows.extend(fallback_rows)
+            detected_section_titles.extend([f'{page_label}: {title}' for title in fallback_titles])
+
+            if ai_enabled and len(page_rows) < 8:
+                ai_rows, usage_meta = _ai_extract_pdf_rows_from_text(text, current_category=current_category, company_hint=company_hint, page_number=page_idx)
+                ai_usage_totals['prompt_tokens'] += int(usage_meta.get('prompt_tokens', 0) or 0)
+                ai_usage_totals['completion_tokens'] += int(usage_meta.get('completion_tokens', 0) or 0)
+                ai_usage_totals['total_tokens'] += int(usage_meta.get('total_tokens', 0) or 0)
+                if usage_meta.get('prompt_tokens') or usage_meta.get('completion_tokens'):
+                    ai_usage_totals['calls'] += 1
+                if ai_rows:
+                    page_rows.extend(ai_rows)
 
             if not page_rows:
                 skipped_pages.append(f'{page_label} (no valid product rows)')
@@ -6270,7 +6552,23 @@ def convert_supplier_pdf_to_source(uploaded_file):
         'detected_section_titles': detected_section_titles,
         'total_rows': len(source_df),
         'input_kind': 'pdf',
+        'ai_prompt_tokens': int(ai_usage_totals.get('prompt_tokens', 0) or 0),
+        'ai_completion_tokens': int(ai_usage_totals.get('completion_tokens', 0) or 0),
+        'ai_total_tokens': int(ai_usage_totals.get('total_tokens', 0) or 0),
+        'ai_calls': int(ai_usage_totals.get('calls', 0) or 0),
     }
+    if stats['ai_calls'] > 0 and is_admin_user():
+        append_pdf_ai_usage_log({
+            'timestamp': datetime.now().isoformat(timespec='seconds'),
+            'user': get_current_user_email() or 'admin',
+            'file_name': getattr(uploaded_file, 'name', 'pdf_upload'),
+            'pages': len(used_pages),
+            'rows': len(source_df),
+            'prompt_tokens': stats['ai_prompt_tokens'],
+            'completion_tokens': stats['ai_completion_tokens'],
+            'total_tokens': stats['ai_total_tokens'],
+            'ai_calls': stats['ai_calls'],
+        })
     return source_df, stats
 
 def convert_supplier_pricelist_to_source(uploaded_file):
@@ -6636,6 +6934,19 @@ def render_sources():
                 st.metric("Missing Prices", conversion_stats.get("missing_price_rows", 0))
             with m4:
                 st.metric("Missing SAP/Product", conversion_stats.get("missing_sap_rows", 0) + conversion_stats.get("missing_product_rows", 0))
+
+            if input_kind == "pdf" and is_admin_user():
+                ai_calls = int(conversion_stats.get("ai_calls", 0) or 0)
+                if ai_calls > 0:
+                    a1, a2, a3 = st.columns(3)
+                    with a1:
+                        st.metric("AI Calls", ai_calls)
+                    with a2:
+                        st.metric("Prompt Tokens", int(conversion_stats.get("ai_prompt_tokens", 0) or 0))
+                    with a3:
+                        st.metric("Completion Tokens", int(conversion_stats.get("ai_completion_tokens", 0) or 0))
+                    month_usage = current_month_pdf_ai_usage_summary()
+                    st.caption(f"Admin AI usage this month: {month_usage['calls']} calls • {month_usage['pages']} pages • {month_usage['rows']} rows extracted")
 
             detected_titles = conversion_stats.get("detected_section_titles", [])
             if detected_titles:
@@ -7668,12 +7979,7 @@ def render_comparisons():
                             use_container_width=True,
                         ):
                             if has_unsaved_comparison_changes():
-                                st.session_state["show_leave_prompt"] = True
-                                st.session_state["leave_prompt_step"] = ""
-                                st.session_state["pending_action_type"] = "switch_view"
-                                st.session_state["pending_target_view"] = "Comparisons"
-                                st.session_state["comparison_mode"] = "menu"
-                                st.session_state["show_saved_comparisons"] = False
+                                open_leave_prompt("switch_view", target_view="Comparisons")
                                 st.rerun()
                             else:
                                 st.session_state["comparison_mode"] = "menu"
