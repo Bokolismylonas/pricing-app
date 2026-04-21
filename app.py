@@ -4746,6 +4746,9 @@ if not st.session_state.get("comparison_saved_signature"):
 # -------------------------------------------------
 # SIDEBAR
 # -------------------------------------------------
+current_view = st.session_state.get("committed_view", "Comparisons")
+current_view_ui = current_view
+
 with st.sidebar:
     render_logo_if_available(FULL_LOGO_PATH, width=180)
     st.markdown("### Account")
@@ -4769,7 +4772,17 @@ with st.sidebar:
             else:
                 st.warning("Plan: Locked")
 
+    st.markdown("---")
+    st.subheader("🧭 Navigation")
 
+    nav_buttons = ["Company Manager", "Sources", "Comparisons"]
+    if is_admin_user():
+        nav_buttons.append("Admin Panel")
+
+    for i, nav_label in enumerate(nav_buttons):
+        button_label = f"• {nav_label}" if current_view == nav_label else nav_label
+        if st.button(button_label, use_container_width=True, key=f"sidebar_nav_btn_{nav_label}_{i}"):
+            current_view_ui = nav_label
 
             if current_view_ui == "Comparisons" and current_view == "Comparisons":
                 if has_unsaved_comparison_changes() and not st.session_state.get("show_leave_prompt"):
