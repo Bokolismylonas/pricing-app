@@ -6004,7 +6004,7 @@ def _parse_pdf_line_stateful(line: str, state: _PdfParseState, company_hint: str
     if not txt:
         return None
     low = txt.lower()
-    if any(k in low for k in ['κωδικ', 'sap code', 'list price', 'τιμη πωλησης', 'packaging', 'width', 'length', 'μονάδα μέτρησης']):
+    if any(k in low for k in ['κωδικ', 'sap code', 'list price', 'τιμη πωλησης', 'packaging', 'width', 'length', 'μονάδα μέτρησης', 'delivery conditions', 'valid from', 'table of contents']):
         return None
     if _looks_like_pdf_section_title(txt):
         state.category = txt
@@ -6102,16 +6102,29 @@ def _parse_pdf_line_stateful(line: str, state: _PdfParseState, company_hint: str
 
 def _looks_like_pdf_section_title(line: str) -> bool:
     line = _normalize_text_simple(line)
-    if not line or len(line) > 90:
+    if not line or len(line) > 140:
         return False
+    low = line.lower()
     if _to_float_or_none(line) is not None:
         return False
+    if re.search(r'\b\d+[.,]\d+\b', low):
+        return False
+    hard_markers = [
+        'price list', 'catalog', 'table of contents', 'contents', 'delivery conditions',
+        'valid from', 'recommended retail', 'technical data', 'product range', 'system solutions',
+        'installation', 'classification', 'overview', 'description', 'application', 'packaging',
+        'τιμοκαταλογος', 'περιεχομενα', 'ισχυς απο', 'προυποθεσεις', 'συσκευασια',
+        'τεχνικα χαρακτηριστικα', 'εφαρμογη', 'περιγραφη', 'λυσεις συστηματων',
+        'γυψοσανιδες για', 'γυψοπλακες για', 'οι τιμες ειναι', 'χωρις φπα'
+    ]
+    if any(m in low for m in hard_markers):
+        return True
     letters = [ch for ch in line if ch.isalpha()]
     if len(letters) < 3:
         return False
     upper_ratio = sum(1 for ch in letters if ch.isupper()) / max(len(letters), 1)
-    return upper_ratio >= 0.7 or (len(line.split()) <= 5 and _is_all_capsish(line))
-
+    words = line.split()
+    return upper_ratio >= 0.75 or (len(words) <= 10 and _is_all_capsish(line) and not any(ch.isdigit() for ch in line))
 
 def _extract_package_from_text(text: str) -> str:
     s = _normalize_text_simple(text).lower()
@@ -6152,17 +6165,16 @@ def _looks_like_pdf_contents_page(text: str) -> bool:
     if not s:
         return False
     markers = [
-        'περιεχομενα', 'price list 2021', 'delivery term', 'valid from',
-        'environmental product declaration', 'building performance',
-        'ισχυρη παρουσια', 'πιστοποιημενο συστημα', 'phototimokatalogos',
-        'φωτοτιμοκαταλογος', 'timo katalogos'
+        'περιεχομενα', 'price list 2021', 'price list 2025', 'price list 2026', 'delivery term', 'valid from',
+        'table of contents', 'contents', 'environmental product declaration', 'building performance',
+        'ισχυρη παρουσια', 'πιστοποιημενο συστημα', 'phototimokatalogos', 'φωτοτιμοκαταλογος',
+        'timo katalogos', 'recommended retail prices', 'catalogue', 'index'
     ]
     if any(m in s for m in markers):
         if 'sap code' in s or 'κωδικ' in s or 'list price' in s or 'τιμη' in s:
             return False
         return True
     return False
-
 
 def _looks_like_pdf_marketing_page(text: str) -> bool:
     s = _normalize_text_simple(text).lower()
@@ -6173,17 +6185,26 @@ def _looks_like_pdf_marketing_page(text: str) -> bool:
     marketing_markers = [
         'learn more', 'μαθετε περισσοτερα', 'environmental product declaration',
         'η πρωτη ελληνικη εταιρεια', 'παθος για καινοτομια', 'ισχυρη παρουσια',
-        'trust in every bond', 'home beauty', 'smart clean paint'
+        'trust in every bond', 'home beauty', 'smart clean paint', 'road to sustainability',
+        'inspiring ways of living', 'our brands', 'our main brands', 'δρομος προς την αειφορια',
+        'discover more', 'sustainability', 'corporate profile'
     ]
     return any(m in s for m in marketing_markers)
 
-
 def _looks_like_pdf_product_code(value: str) -> bool:
     v = _normalize_text_simple(value).replace(' ', '')
-    if not v or len(v) > 32 or v in {'-', '—'}:
+    if not v or len(v) > 16 or v in {'-', '—'}:
         return False
-    return bool(re.match(r'^[A-Za-z0-9./_-]{4,}$', v)) and any(ch.isdigit() for ch in v)
-
+    if any('Ͱ' <= ch <= 'Ͽ' for ch in v):
+        return False
+    if not any(ch.isdigit() for ch in v):
+        return False
+    # Prefer true SAP-like numeric codes, but allow short structured alphanumeric SKUs such as CW75/UA50.
+    if re.fullmatch(r'\d{5,8}', v):
+        return True
+    if re.fullmatch(r'[A-Z]{1,4}\d{1,5}[A-Z0-9./_-]{0,4}', v):
+        return True
+    return False
 
 def _parse_pdf_table_variants(table, current_category: str = '', company_hint: str = ''):
     rows = []
@@ -6635,14 +6656,13 @@ def _pdf_processing_max_pages() -> int:
 
 def _recommended_pdf_chunk_size(total_pages: int) -> int:
     base = _pdf_processing_chunk_size()
-    if total_pages >= 180:
+    if total_pages >= 150:
+        return 1
+    if total_pages >= 80:
         return min(base, 2)
-    if total_pages >= 100:
+    if total_pages >= 40:
         return min(base, 3)
-    if total_pages >= 60:
-        return min(base, 4)
     return base
-
 
 def _iter_pdf_chunks(file_bytes: bytes, chunk_size: int, max_pages: int = 0):
     reader = PdfReader(io.BytesIO(file_bytes))
@@ -6815,6 +6835,9 @@ def convert_supplier_pdf_to_source(uploaded_file):
     source_df = source_df[~((source_df['Product'].astype(str).str.strip().eq('')) & source_df['Base Price'].isna())].copy()
     source_df = source_df[~(source_df['Product'].str.lower().isin(['περιεχομενα', 'contents']))].copy()
     source_df = source_df[~source_df['Base Price'].astype(str).str.contains(r'x|mm|cm', case=False, na=False)].copy()
+    title_noise_re = r'(?:^|\b)(price list|catalog|table of contents|contents|delivery conditions|valid from|technical data|overview|description|application|packaging|recommended retail|τιμοκαταλογος|περιεχομενα|ισχυς απο|προυποθεσεις|τεχνικα χαρακτηριστικα|εφαρμογη|περιγραφη|γυψοσανιδες για|γυψοπλακες για|οι τιμες ειναι|χωρις φπα)(?:\b|$)'
+    source_df = source_df[~source_df['Product'].str.lower().str.contains(title_noise_re, regex=True, na=False)].copy()
+    source_df['SAP'] = source_df['SAP'].where(source_df['SAP'].astype(str).str.match(r'^(?:\d{5,8}|[A-Z]{1,4}\d{1,5}[A-Z0-9./_-]{0,4})$', na=False), '')
     dedupe_cols = [c for c in ['SAP','Product','Package','Base Price','Category'] if c in source_df.columns]
     if dedupe_cols:
         source_df = source_df.drop_duplicates(subset=dedupe_cols, keep='first')
