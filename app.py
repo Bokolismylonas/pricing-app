@@ -5994,40 +5994,234 @@ def _merge_packaging_into_product(product: str, package: str) -> str:
     return product
 
 
+
+
+COLOR_WORDS = {
+    "white", "black", "grey", "gray", "light grey", "dark grey", "light gray", "dark gray",
+    "red", "green", "blue", "light blue", "dark blue", "yellow", "brown", "beige", "ivory",
+    "transparent", "clear", "silver", "gold",
+    "λευκο", "λευκό", "μαυρο", "μαύρο", "γκρι", "γκρι ανοιχτο", "γκρι ανοιχτό", "γκρι σκουρο", "γκρι σκούρο",
+    "κοκκινο", "κόκκινο", "πρασινο", "πράσινο", "μπλε", "μπλε ανοιχτο", "μπλε ανοιχτό", "μπλε σκουρο", "μπλε σκούρο",
+    "κιτρινο", "κίτρινο", "καφε", "καφέ", "μπεζ", "διαφανο", "διάφανο", "ασημι", "ασημί"
+}
+
+ATTRIBUTE_ONLY_WORDS = {
+    "matt", "mat", "gloss", "satin", "silk", "super matt", "semi matt", "semi-matt",
+    "extra", "base", "standard", "classic", "eco", "pro", "premium",
+    "ματ", "σατινε", "σατινέ", "γυαλιστερο", "γυαλιστερό", "βαση", "βάση", "βασικο", "βασικό", "κλασικο", "κλασικό"
+}
+
+PACKAGING_ONLY_WORDS = {
+    "τεμ", "τεμαχιο", "τεμάχιο", "τεμαχια", "τεμάχια", "κιβ", "κιβωτιο", "κιβώτιο", "κιβωτια", "κιβώτια", "παλ", "παλετα", "παλέτα", "παλετες", "παλέτες",
+    "σακι", "σακί", "σακια", "σακιά", "ρολο", "ρολό", "ρολα", "ρολά", "φυλλο", "φύλλο", "δεμα", "δέμα", "δοχειο", "δοχείο", "δοχεια", "δοχεία",
+    "pack", "box", "boxes", "pcs", "piece", "pieces", "bag", "bags", "pail", "drum", "bucket", "roll", "sheet", "bundle", "pallet"
+}
+
+MATERIAL_KEYWORDS = {
+    "knauf", "siniat", "isomat", "sika", "bauer", "fibran", "insulation",
+    "γυψοσανιδ", "προφιλ", "προφίλ", "ορυκτοβαμβ", "ορυκτοβάμβ", "τσιμεντ", "στοκ", "στόκ", "κολλα", "κόλλα", "ασταρ", "αστάρ",
+    "στεγανω", "μονωτ", "plaster", "panel", "board", "profile", "adhesive", "sealant", "primer", "foam", "mortar", "putty", "cement", "wool"
+}
+
+DIMENSION_RE = re.compile(r'(?i)\b\d+(?:[.,]\d+)?\s?(?:x|×)\s?\d+(?:[.,]\d+)?(?:\s?(?:x|×)\s?\d+(?:[.,]\d+)?)?\b')
+UNIT_RE = re.compile(r'(?i)\b(?:mm|cm|m|m2|m3|kg|gr|g|lt|l|ml|τεμ|pcs|pc|bag|roll|pack|box|pail)\b')
+PURE_ATTRIBUTE_RE = re.compile(r'(?i)^\s*(?:light|dark|super|extra|semi)?\s*(?:white|black|grey|gray|red|green|blue|yellow|brown|beige|ivory|matt|mat|gloss|satin|silk|λευκο|λευκό|μαυρο|μαύρο|γκρι|κοκκινο|κόκκινο|πρασινο|πράσινο|μπλε|κιτρινο|κίτρινο|καφε|καφέ|μπεζ|ματ|σατινε|σατινέ|γυαλιστερο|γυαλιστερό)\s*$')
+CODE_LIKE_RE = re.compile(r'^[A-Z0-9._/\-]{3,}$', re.I)
+PRICE_LIKE_RE = re.compile(r'^\s*\d+(?:[.,]\d{1,4})?\s*$')
+
+
+def _contains_any_token(text, token_set):
+    t = _normalize_text_simple(text).lower()
+    return any(tok in t for tok in token_set)
+
+
+def _looks_like_dimension_text(text):
+    return bool(DIMENSION_RE.search(_normalize_text_simple(text)))
+
+
+def _looks_like_unit_text(text):
+    return bool(UNIT_RE.search(_normalize_text_simple(text)))
+
+
+def _looks_like_code_text(text):
+    return bool(CODE_LIKE_RE.match(_normalize_text_simple(text)))
+
+
+def _looks_like_price_text(text):
+    return bool(PRICE_LIKE_RE.match(_normalize_text_simple(text)))
+
+
+def _is_attribute_only_text(text: str) -> bool:
+    t = _normalize_text_simple(text).lower()
+    if not t:
+        return False
+    if PURE_ATTRIBUTE_RE.match(t):
+        return True
+    if t in COLOR_WORDS or t in ATTRIBUTE_ONLY_WORDS:
+        return True
+    words = [w for w in re.split(r'[\s,/()\-\+]+', t) if w]
+    return 1 <= len(words) <= 3 and all((w in COLOR_WORDS or w in ATTRIBUTE_ONLY_WORDS) for w in words)
+
+
+def _is_packaging_only_text_v3(text: str) -> bool:
+    t = _normalize_text_simple(text).lower()
+    if not t:
+        return False
+    words = [w for w in re.split(r'[\s,/()\-\+]+', t) if w]
+    if not words:
+        return False
+    has_pack_word = any(w in PACKAGING_ONLY_WORDS for w in words)
+    has_unit = _looks_like_unit_text(t)
+    has_dimension = _looks_like_dimension_text(t)
+    has_material = _contains_any_token(t, MATERIAL_KEYWORDS)
+    if has_pack_word and not has_material and not has_dimension:
+        return True
+    if has_unit and len(words) <= 4 and not has_material and not has_dimension:
+        return True
+    return False
+
+
+def _extract_package_from_product_name(product_text: str, package_text: str = ""):
+    product_text = _normalize_text_simple(product_text)
+    package_text = _normalize_text_simple(package_text)
+    if not product_text:
+        return product_text, package_text
+    extracted = []
+    patterns = [
+        r'(?i)\b\d+(?:[.,]\d+)?\s?(?:kg|gr|g|lt|l|ml|m2|m3|τεμ|pcs|pc)\b',
+        r'(?i)\b\d+\s?(?:x|×)\s?\d+\b(?:\s?(?:τεμ|pcs|pc))?',
+        r'(?i)\b(?:σακι|σακί|σακια|σακιά|παλετα|παλέτα|παλετες|παλέτες|κιβωτιο|κιβώτιο|κιβωτια|κιβώτια|pack|box|boxes|bag|bags|roll|ρολο|ρολό|ρολα|ρολά|sheet|φυλλο|φύλλο|bundle|δεμα|δέμα|bucket|δοχειο|δοχείο|pail|drum)\b',
+    ]
+    cleaned = product_text
+    for pat in patterns:
+        found = re.findall(pat, cleaned)
+        if found:
+            extracted.extend(found)
+            cleaned = re.sub(pat, ' ', cleaned)
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip(' -_/,.')
+    merged_package = ' '.join([x for x in [_normalize_text_simple(package_text), ' '.join(extracted).strip()] if x]).strip()
+    merged_package = re.sub(r'\s+', ' ', merged_package).strip()
+    return cleaned, merged_package
+
+
+def _has_strong_product_signal(product="", sap="", price="", mm="", package="", category=""):
+    product = _normalize_text_simple(product)
+    sap = _normalize_text_simple(sap)
+    price = _normalize_text_simple(price)
+    mm = _normalize_text_simple(mm)
+    package = _normalize_text_simple(package)
+    category = _normalize_text_simple(category)
+    score = 0
+    if product:
+        if len(product) >= 8:
+            score += 1
+        if _contains_any_token(product, MATERIAL_KEYWORDS):
+            score += 1
+        if _looks_like_dimension_text(product):
+            score += 1
+    if sap and _looks_like_code_text(sap):
+        score += 1
+    if price and _looks_like_price_text(price):
+        score += 1
+    if mm and _looks_like_unit_text(mm):
+        score += 1
+    if package and (_looks_like_unit_text(package) or _contains_any_token(package, PACKAGING_ONLY_WORDS)):
+        score += 1
+    if category:
+        score += 1
+    return score >= 2
+
+
+def _should_drop_pdf_row_v3(product="", sap="", price="", mm="", package="", category="", profile=""):
+    product = _normalize_text_simple(product)
+    sap = _normalize_text_simple(sap)
+    price = _normalize_text_simple(price)
+    mm = _normalize_text_simple(mm)
+    package = _normalize_text_simple(package)
+    category = _normalize_text_simple(category)
+    profile = _normalize_text_simple(profile).lower()
+    if not any([product, sap, price, mm, package, category]):
+        return True
+    if _is_attribute_only_text(product):
+        return True
+    if _is_packaging_only_text_v3(product):
+        return True
+    words = [w for w in re.split(r'[\s,/()\-\+]+', product) if w]
+    if product and len(words) <= 3 and _looks_like_unit_text(product) and not _contains_any_token(product, MATERIAL_KEYWORDS):
+        return True
+    if not _has_strong_product_signal(product, sap, price, mm, package, category):
+        return True
+    if profile == 'isomat':
+        low_info = not sap and not category and not _contains_any_token(product, MATERIAL_KEYWORDS)
+        if low_info:
+            return True
+        if len(words) <= 2 and not _looks_like_dimension_text(product) and not _looks_like_code_text(product):
+            return True
+    return False
+
 def _postprocess_pdf_source_df(source_df: pd.DataFrame, profile: str = 'generic') -> pd.DataFrame:
     if source_df is None or source_df.empty:
         return source_df
     df = source_df.copy()
-    for col in ['Product', 'Package', 'SAP', 'Category', 'Notes']:
+    for col in ['Product', 'Package', 'SAP', 'Category', 'Notes', 'MM', 'Base Price', 'Price']:
         if col not in df.columns:
             df[col] = ''
-    df['Product'] = df['Product'].astype(str).str.replace(r'\s+', ' ', regex=True).str.strip()
-    df['Package'] = df['Package'].astype(str).str.replace(r'\s+', ' ', regex=True).str.strip()
-    df['Category'] = df['Category'].astype(str).str.replace(r'\s+', ' ', regex=True).str.strip().replace('', 'PDF Catalog')
+    df['Product'] = df['Product'].astype(str).map(_normalize_text_simple)
+    df['Package'] = df['Package'].astype(str).map(_clean_pdf_package_text)
+    df['SAP'] = df['SAP'].astype(str).map(_normalize_text_simple)
+    df['Category'] = df['Category'].astype(str).map(_normalize_text_simple).replace('', 'PDF Catalog')
+    df['MM'] = df['MM'].astype(str).map(_normalize_text_simple)
 
-    # move packaging-only pseudo-products into Package then drop them as standalone rows
     pack_mask = df['Product'].apply(_is_packaging_only_text)
     empty_package_mask = df['Package'].astype(str).str.strip().eq('')
     df.loc[pack_mask & empty_package_mask, 'Package'] = df.loc[pack_mask & empty_package_mask, 'Product'].apply(lambda x: _normalize_package_label(x) or x)
     df = df.loc[~pack_mask].copy()
 
-    # normalize package labels and enrich very short product labels for display
+    cleaned_products = []
+    cleaned_packages = []
+    for prod, pkg in zip(df['Product'].astype(str), df['Package'].astype(str)):
+        prod2, pkg2 = _extract_package_from_product_name(prod, pkg)
+        pkg2 = _clean_pdf_package_text(pkg2)
+        if len(prod2) < 6 and pkg2 and not _contains_any_token(prod2, MATERIAL_KEYWORDS):
+            prod2 = _merge_packaging_into_product(prod2 or prod, pkg2)
+        cleaned_products.append(prod2 or _normalize_text_simple(prod))
+        cleaned_packages.append(pkg2)
+    df['Product'] = cleaned_products
+    df['Package'] = cleaned_packages
+
+    df = df[~df['Product'].str.lower().str.contains(PDF_EXPLANATORY_ROW_RE, regex=True, na=False)].copy()
+
+    if profile == 'siniat':
+        sap_re = r'^(?:\d{5,8}|[A-Z]{1,3}\d{2,5})$'
+    elif profile == 'isomat':
+        sap_re = r'^\d{5,8}$'
+    else:
+        sap_re = r'^(?:\d{5,8}|[A-Z]{1,4}\d{1,5}[A-Z0-9./_-]{0,4})$'
+    df['SAP'] = df['SAP'].where(df['SAP'].astype(str).str.match(sap_re, na=False), '')
+
     df['Package'] = df['Package'].apply(lambda x: _normalize_package_label(x) or x)
-    short_mask = df['Product'].str.split().str.len().fillna(0) <= 3
+    short_mask = df['Product'].str.split().str.len().fillna(0) <= 2
     df.loc[short_mask, 'Product'] = [
         _merge_packaging_into_product(prod, pkg)
         for prod, pkg in zip(df.loc[short_mask, 'Product'], df.loc[short_mask, 'Package'])
     ]
 
-    # suppress explanatory/header rows that still slipped through
-    df = df[~df['Product'].str.lower().str.contains(PDF_EXPLANATORY_ROW_RE, regex=True, na=False)].copy()
-
-    # profile-aware SAP hardening
-    if profile == 'siniat':
-        sap_re = r'^(?:\d{5,8}|[A-Z]{1,3}\d{2,5})$'
-    else:
-        sap_re = r'^(?:\d{5,8}|[A-Z]{1,4}\d{1,5}[A-Z0-9./_-]{0,4})$'
-    df['SAP'] = df['SAP'].where(df['SAP'].astype(str).str.match(sap_re, na=False), '')
+    keep_mask = []
+    for _, r in df.iterrows():
+        price_value = r.get('Price', '')
+        if price_value is None or str(price_value).strip() in {'', 'nan', 'None'}:
+            price_value = r.get('Base Price', '')
+        keep_mask.append(not _should_drop_pdf_row_v3(
+            product=r.get('Product', ''),
+            sap=r.get('SAP', ''),
+            price=str(price_value),
+            mm=r.get('MM', ''),
+            package=r.get('Package', ''),
+            category=r.get('Category', ''),
+            profile=profile,
+        ))
+    df = df[pd.Series(keep_mask, index=df.index)].copy()
+    df = df.drop_duplicates(subset=['SAP', 'Product', 'Package', 'Base Price', 'Category'], keep='first')
     return df
 
 
