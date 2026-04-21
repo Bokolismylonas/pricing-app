@@ -5,3 +5,17 @@ data/
 uploads/
 companies.csv
 .streamlit/secrets.toml
+
+AI_Key.txt
+.env
+.env.local
+.streamlit/secrets.toml
+__pycache__/
+*.pyc
+
+echo AI_Key.txt>>.gitignore
+echo .env>>.gitignore
+echo .streamlit/secrets.toml>>.gitignoreAI_Key.txt
+.env
+.env.local
+.streamlit/secrets.toml

@@ -6,6 +6,7 @@ import re
 import uuid
 import shutil
 import time
+import gc
 from difflib import SequenceMatcher
 from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
@@ -18,6 +19,7 @@ from supabase import create_client, Client
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 import pdfplumber
+from pypdf import PdfReader, PdfWriter
 try:
     from openai import OpenAI
 except Exception:
@@ -717,13 +719,6 @@ ADMIN_DIR.mkdir(parents=True, exist_ok=True)
 
 USERS_REGISTRY_FILE = ADMIN_DIR / "users_registry.json"
 COMPANIES_REGISTRY_FILE = ADMIN_DIR / "companies_registry.json"
-PDF_AI_USAGE_FILE = ADMIN_DIR / "pdf_ai_usage_log.json"
-
-DEFAULT_AI_MONTHLY_USES_PER_USER = 20
-DEFAULT_AI_SELL_PRICE_PER_USE = 1.50
-DEFAULT_AI_MAX_MONTHLY_CHARGE_PER_USER = 30.0
-DEFAULT_AI_INTERNAL_PROMPT_COST_PER_1M = 5.0
-DEFAULT_AI_INTERNAL_COMPLETION_COST_PER_1M = 15.0
 
 MAIN_CODES = ["SINIAT", "KNAUF", "SAINT_GOBAIN"]
 ADMIN_EMAILS = ["gmyl13@gmail.com"]
@@ -1082,188 +1077,6 @@ def current_month_pdf_ai_usage_summary():
     }
 
 
-def _safe_int(value, default=0):
-    try:
-        return int(value)
-    except Exception:
-        return default
-
-
-def _safe_float(value, default=0.0):
-    try:
-        return float(value)
-    except Exception:
-        return default
-
-
-def get_company_ai_pricing(company_row=None, company_key=None):
-    company = company_row
-    if company is None and company_key:
-        company = find_company_by_key(load_companies_registry(), company_key)
-    company = ensure_company_fields(company or {})
-    return {
-        "ai_feature_enabled": bool(company.get("ai_feature_enabled", False)),
-        "ai_monthly_uses_per_user": _safe_int(company.get("ai_monthly_uses_per_user"), DEFAULT_AI_MONTHLY_USES_PER_USER),
-        "ai_sell_price_per_use": _safe_float(company.get("ai_sell_price_per_use"), DEFAULT_AI_SELL_PRICE_PER_USE),
-        "ai_max_monthly_charge_per_user": _safe_float(company.get("ai_max_monthly_charge_per_user"), DEFAULT_AI_MAX_MONTHLY_CHARGE_PER_USER),
-        "ai_internal_prompt_cost_per_1m": _safe_float(company.get("ai_internal_prompt_cost_per_1m"), DEFAULT_AI_INTERNAL_PROMPT_COST_PER_1M),
-        "ai_internal_completion_cost_per_1m": _safe_float(company.get("ai_internal_completion_cost_per_1m"), DEFAULT_AI_INTERNAL_COMPLETION_COST_PER_1M),
-    }
-
-
-def get_effective_user_ai_settings(user_row=None, company_row=None):
-    user = ensure_user_fields(user_row or {})
-    company = ensure_company_fields(company_row or {})
-    company_ai = get_company_ai_pricing(company)
-    enabled_override = user.get("ai_enabled_override")
-    enabled = company_ai["ai_feature_enabled"] if enabled_override is None else bool(enabled_override)
-    monthly_limit = _safe_int(user.get("ai_monthly_uses_limit_override"), 0) or company_ai["ai_monthly_uses_per_user"]
-    sell_price = _safe_float(user.get("ai_sell_price_per_use_override"), 0.0) or company_ai["ai_sell_price_per_use"]
-    max_charge = _safe_float(user.get("ai_max_monthly_charge_override"), 0.0) or company_ai["ai_max_monthly_charge_per_user"]
-    return {
-        "enabled": bool(enabled),
-        "monthly_limit": int(monthly_limit),
-        "sell_price_per_use": float(sell_price),
-        "max_monthly_charge": float(max_charge),
-        "internal_prompt_cost_per_1m": company_ai["ai_internal_prompt_cost_per_1m"],
-        "internal_completion_cost_per_1m": company_ai["ai_internal_completion_cost_per_1m"],
-    }
-
-
-def set_user_ai_overrides(email, sub, enabled_mode, monthly_limit_override, sell_price_override, max_charge_override):
-    users = load_users_registry()
-    idx = find_user_index(users, email, sub)
-    if idx is None:
-        return
-    users[idx] = ensure_user_fields(users[idx])
-    if enabled_mode == "inherit":
-        users[idx]["ai_enabled_override"] = None
-    elif enabled_mode == "enabled":
-        users[idx]["ai_enabled_override"] = True
-    else:
-        users[idx]["ai_enabled_override"] = False
-    users[idx]["ai_monthly_uses_limit_override"] = None if _safe_int(monthly_limit_override, 0) <= 0 else int(monthly_limit_override)
-    users[idx]["ai_sell_price_per_use_override"] = None if _safe_float(sell_price_override, 0.0) <= 0 else float(sell_price_override)
-    users[idx]["ai_max_monthly_charge_override"] = None if _safe_float(max_charge_override, 0.0) <= 0 else float(max_charge_override)
-    save_users_registry(users)
-
-
-def set_company_ai_pricing(company_key, ai_feature_enabled, ai_monthly_uses_per_user, ai_sell_price_per_use, ai_max_monthly_charge_per_user, ai_internal_prompt_cost_per_1m, ai_internal_completion_cost_per_1m):
-    companies = load_companies_registry()
-    idx = find_company_index(companies, normalize_company_key(company_key))
-    if idx is None:
-        return
-    companies[idx] = ensure_company_fields(companies[idx])
-    companies[idx]["ai_feature_enabled"] = bool(ai_feature_enabled)
-    companies[idx]["ai_monthly_uses_per_user"] = max(0, _safe_int(ai_monthly_uses_per_user, DEFAULT_AI_MONTHLY_USES_PER_USER))
-    companies[idx]["ai_sell_price_per_use"] = max(0.0, _safe_float(ai_sell_price_per_use, DEFAULT_AI_SELL_PRICE_PER_USE))
-    companies[idx]["ai_max_monthly_charge_per_user"] = max(0.0, _safe_float(ai_max_monthly_charge_per_user, DEFAULT_AI_MAX_MONTHLY_CHARGE_PER_USER))
-    companies[idx]["ai_internal_prompt_cost_per_1m"] = max(0.0, _safe_float(ai_internal_prompt_cost_per_1m, DEFAULT_AI_INTERNAL_PROMPT_COST_PER_1M))
-    companies[idx]["ai_internal_completion_cost_per_1m"] = max(0.0, _safe_float(ai_internal_completion_cost_per_1m, DEFAULT_AI_INTERNAL_COMPLETION_COST_PER_1M))
-    save_companies_registry(companies)
-
-
-def _internal_cost_from_tokens(prompt_tokens, completion_tokens, prompt_rate_per_1m, completion_rate_per_1m):
-    return ((prompt_tokens or 0) / 1_000_000.0) * prompt_rate_per_1m + ((completion_tokens or 0) / 1_000_000.0) * completion_rate_per_1m
-
-
-def get_pdf_ai_usage_dashboard(month_prefix=None):
-    rows = load_pdf_ai_usage_log()
-    prefix = month_prefix or datetime.now().strftime("%Y-%m")
-    rows = [r for r in rows if str(r.get("timestamp", "")).startswith(prefix)]
-    users = [ensure_user_fields(r) for r in load_users_registry()]
-    companies = [ensure_company_fields(c) for c in load_companies_registry()]
-    users_by_email = {str(r.get("email", "")).strip().lower(): r for r in users}
-    companies_by_key = {str(c.get("key", "")).strip(): c for c in companies}
-
-    user_buckets = {}
-    company_buckets = {}
-    for row in rows:
-        email = str(row.get("user", "")).strip().lower()
-        user_row = users_by_email.get(email, ensure_user_fields({"email": email}))
-        company_key = str(row.get("company_key", user_row.get("company_key") or "")).strip()
-        company_row = companies_by_key.get(company_key, ensure_company_fields({"key": company_key, "name": row.get("company_name", "") or company_key}))
-        settings = get_effective_user_ai_settings(user_row, company_row)
-        prompt_tokens = _safe_int(row.get("prompt_tokens"), 0)
-        completion_tokens = _safe_int(row.get("completion_tokens"), 0)
-        internal_cost = _internal_cost_from_tokens(prompt_tokens, completion_tokens, settings["internal_prompt_cost_per_1m"], settings["internal_completion_cost_per_1m"])
-
-        user_bucket = user_buckets.setdefault(email or "unknown", {
-            "User": email or "unknown",
-            "Company": company_row.get("name", "") or user_row.get("company_name", "") or "-",
-            "AI Enabled": settings["enabled"],
-            "Uses": 0,
-            "Monthly Limit": settings["monthly_limit"],
-            "Prompt Tokens": 0,
-            "Completion Tokens": 0,
-            "Total Tokens": 0,
-            "Pages": 0,
-            "Rows": 0,
-            "Internal Cost (€)": 0.0,
-            "Billable Before Cap (€)": 0.0,
-            "Max Charge/User (€)": settings["max_monthly_charge"],
-            "Billable Cost (€)": 0.0,
-            "Sell Price/Use (€)": settings["sell_price_per_use"],
-        })
-        user_bucket["Uses"] += 1
-        user_bucket["Prompt Tokens"] += prompt_tokens
-        user_bucket["Completion Tokens"] += completion_tokens
-        user_bucket["Total Tokens"] += _safe_int(row.get("total_tokens"), prompt_tokens + completion_tokens)
-        user_bucket["Pages"] += _safe_int(row.get("pages"), 0)
-        user_bucket["Rows"] += _safe_int(row.get("rows"), 0)
-        user_bucket["Internal Cost (€)"] += internal_cost
-        user_bucket["Billable Before Cap (€)"] += settings["sell_price_per_use"]
-
-        company_bucket = company_buckets.setdefault(company_key or "no_company", {
-            "Company": company_row.get("name", "") or company_key or "-",
-            "Users": set(),
-            "Uses": 0,
-            "Prompt Tokens": 0,
-            "Completion Tokens": 0,
-            "Total Tokens": 0,
-            "Pages": 0,
-            "Rows": 0,
-            "Internal Cost (€)": 0.0,
-            "Billable Cost (€)": 0.0,
-        })
-        company_bucket["Users"].add(email or "unknown")
-        company_bucket["Uses"] += 1
-        company_bucket["Prompt Tokens"] += prompt_tokens
-        company_bucket["Completion Tokens"] += completion_tokens
-        company_bucket["Total Tokens"] += _safe_int(row.get("total_tokens"), prompt_tokens + completion_tokens)
-        company_bucket["Pages"] += _safe_int(row.get("pages"), 0)
-        company_bucket["Rows"] += _safe_int(row.get("rows"), 0)
-        company_bucket["Internal Cost (€)"] += internal_cost
-
-    user_rows = []
-    for bucket in user_buckets.values():
-        bucket["Internal Cost (€)"] = round(bucket["Internal Cost (€)"], 4)
-        bucket["Billable Before Cap (€)"] = round(bucket["Billable Before Cap (€)"], 2)
-        bucket["Billable Cost (€)"] = round(min(bucket["Billable Before Cap (€)"], bucket["Max Charge/User (€)"] or bucket["Billable Before Cap (€)"]), 2)
-        user_rows.append(bucket)
-
-    company_billable_map = {}
-    for u in user_rows:
-        company_name = u["Company"]
-        company_billable_map[company_name] = company_billable_map.get(company_name, 0.0) + u["Billable Cost (€)"]
-
-    company_rows = []
-    for bucket in company_buckets.values():
-        bucket["Users"] = len(bucket["Users"])
-        bucket["Internal Cost (€)"] = round(bucket["Internal Cost (€)"], 4)
-        bucket["Billable Cost (€)"] = round(company_billable_map.get(bucket["Company"], 0.0), 2)
-        company_rows.append(bucket)
-
-    totals = {
-        "uses": sum(r["Uses"] for r in user_rows),
-        "internal_cost": round(sum(r["Internal Cost (€)"] for r in user_rows), 4),
-        "billable_cost": round(sum(r["Billable Cost (€)"] for r in user_rows), 2),
-        "users": len(user_rows),
-        "companies": len(company_rows),
-    }
-    return {"users": user_rows, "companies": company_rows, "totals": totals, "month_prefix": prefix}
-
-
 # -------------------------------------------------
 # BILLING / PLANS
 # -------------------------------------------------
@@ -1428,14 +1241,6 @@ def ensure_user_fields(user_row):
         user_row["role"] = "member"
     if "max_active_sessions_override" not in user_row:
         user_row["max_active_sessions_override"] = None
-    if "ai_enabled_override" not in user_row:
-        user_row["ai_enabled_override"] = None
-    if "ai_monthly_uses_limit_override" not in user_row:
-        user_row["ai_monthly_uses_limit_override"] = None
-    if "ai_sell_price_per_use_override" not in user_row:
-        user_row["ai_sell_price_per_use_override"] = None
-    if "ai_max_monthly_charge_override" not in user_row:
-        user_row["ai_max_monthly_charge_override"] = None
     return user_row
 
 
@@ -1462,18 +1267,6 @@ def ensure_company_fields(company_row):
         company_row["stripe_subscription_id"] = None
     if "owner_email" not in company_row:
         company_row["owner_email"] = ""
-    if "ai_feature_enabled" not in company_row:
-        company_row["ai_feature_enabled"] = False
-    if "ai_monthly_uses_per_user" not in company_row:
-        company_row["ai_monthly_uses_per_user"] = DEFAULT_AI_MONTHLY_USES_PER_USER
-    if "ai_sell_price_per_use" not in company_row:
-        company_row["ai_sell_price_per_use"] = DEFAULT_AI_SELL_PRICE_PER_USE
-    if "ai_max_monthly_charge_per_user" not in company_row:
-        company_row["ai_max_monthly_charge_per_user"] = DEFAULT_AI_MAX_MONTHLY_CHARGE_PER_USER
-    if "ai_internal_prompt_cost_per_1m" not in company_row:
-        company_row["ai_internal_prompt_cost_per_1m"] = DEFAULT_AI_INTERNAL_PROMPT_COST_PER_1M
-    if "ai_internal_completion_cost_per_1m" not in company_row:
-        company_row["ai_internal_completion_cost_per_1m"] = DEFAULT_AI_INTERNAL_COMPLETION_COST_PER_1M
     return company_row
 
 
@@ -1974,12 +1767,6 @@ def upsert_company(
     shared_workspace_enabled=False,
     plan_start=None,
     plan_end=None,
-    ai_feature_enabled=False,
-    ai_monthly_uses_per_user=DEFAULT_AI_MONTHLY_USES_PER_USER,
-    ai_sell_price_per_use=DEFAULT_AI_SELL_PRICE_PER_USE,
-    ai_max_monthly_charge_per_user=DEFAULT_AI_MAX_MONTHLY_CHARGE_PER_USER,
-    ai_internal_prompt_cost_per_1m=DEFAULT_AI_INTERNAL_PROMPT_COST_PER_1M,
-    ai_internal_completion_cost_per_1m=DEFAULT_AI_INTERNAL_COMPLETION_COST_PER_1M,
 ):
     companies = load_companies_registry()
     normalized_key = normalize_company_key(company_key)
@@ -2001,17 +1788,11 @@ def upsert_company(
         "plan_start": plan_start.isoformat() if hasattr(plan_start, "isoformat") else (str(plan_start) if plan_start else None),
         "plan_end": plan_end.isoformat() if hasattr(plan_end, "isoformat") else (str(plan_end) if plan_end else None),
         "updated_at": now_iso(),
-        "ai_feature_enabled": bool(ai_feature_enabled),
-        "ai_monthly_uses_per_user": int(ai_monthly_uses_per_user),
-        "ai_sell_price_per_use": float(ai_sell_price_per_use),
-        "ai_max_monthly_charge_per_user": float(ai_max_monthly_charge_per_user),
-        "ai_internal_prompt_cost_per_1m": float(ai_internal_prompt_cost_per_1m),
-        "ai_internal_completion_cost_per_1m": float(ai_internal_completion_cost_per_1m),
     }
 
     if idx is None:
         payload["created_at"] = now_iso()
-        companies.append(ensure_company_fields(payload))
+        companies.append(payload)
     else:
         existing = companies[idx]
         payload["created_at"] = existing.get("created_at", now_iso())
@@ -2026,7 +1807,7 @@ def upsert_company(
             payload["plan_start"] = existing.get("plan_start")
         if plan_end in [None, ""]:
             payload["plan_end"] = existing.get("plan_end")
-        companies[idx] = ensure_company_fields(payload)
+        companies[idx] = payload
 
     save_companies_registry(companies)
 
@@ -6641,6 +6422,51 @@ def _extract_pdf_rows_from_text(text: str, current_category: str = '', company_h
     return rows, detected_titles
 
 
+
+def _pdf_processing_chunk_size() -> int:
+    try:
+        return max(1, min(20, int(os.getenv("PDF_PROCESSING_CHUNK_SIZE", "6"))))
+    except Exception:
+        return 6
+
+
+def _pdf_processing_max_pages() -> int:
+    try:
+        raw = int(os.getenv("PDF_PROCESSING_MAX_PAGES", "0"))
+        return max(0, raw)
+    except Exception:
+        return 0
+
+
+def _iter_pdf_chunks(file_bytes: bytes, chunk_size: int, max_pages: int = 0):
+    reader = PdfReader(io.BytesIO(file_bytes))
+    total_pages = len(reader.pages)
+    if max_pages and max_pages > 0:
+        total_pages = min(total_pages, max_pages)
+    for start in range(0, total_pages, chunk_size):
+        writer = PdfWriter()
+        end = min(start + chunk_size, total_pages)
+        for i in range(start, end):
+            writer.add_page(reader.pages[i])
+        buf = io.BytesIO()
+        writer.write(buf)
+        yield start, end, buf.getvalue(), total_pages
+        buf.close()
+        gc.collect()
+
+
+def _flush_pdfplumber_page(page):
+    try:
+        page.flush_cache()
+    except Exception:
+        pass
+    try:
+        page.get_textmap.cache_clear()
+    except Exception:
+        pass
+
+
+
 def convert_supplier_pdf_to_source(uploaded_file):
     file_bytes = uploaded_file.getvalue()
     all_rows = []
@@ -6654,70 +6480,90 @@ def convert_supplier_pdf_to_source(uploaded_file):
     ai_usage_totals = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "calls": 0}
     ai_enabled = current_user_can_use_pdf_catalog_extraction() and (get_openai_client_for_pdf_extraction() is not None)
 
-    with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
-        for page_idx, page in enumerate(pdf.pages, start=1):
-            page_label = f'Page {page_idx}'
-            page_rows = []
-            current_category = f'PDF Page {page_idx}'
+    chunk_size = _pdf_processing_chunk_size()
+    max_pages = _pdf_processing_max_pages()
+    total_pages_seen = 0
 
-            text = page.extract_text() or ''
-            normalized_text = _normalize_text_simple(text)
-            text_lines = [_normalize_text_simple(line) for line in text.splitlines() if _normalize_text_simple(line)]
+    for chunk_start, chunk_end, chunk_bytes, total_pages in _iter_pdf_chunks(file_bytes, chunk_size=chunk_size, max_pages=max_pages):
+        total_pages_seen = max(total_pages_seen, total_pages)
+        with pdfplumber.open(io.BytesIO(chunk_bytes)) as pdf:
+            for offset, page in enumerate(pdf.pages, start=0):
+                page_idx = chunk_start + offset + 1
+                page_label = f'Page {page_idx}'
+                page_rows = []
+                current_category = f'PDF Page {page_idx}'
 
-            if _looks_like_pdf_contents_page(normalized_text) or _looks_like_pdf_marketing_page(normalized_text):
-                skipped_pages.append(f'{page_label} (contents/marketing page)')
-                continue
+                text = page.extract_text() or ''
+                normalized_text = _normalize_text_simple(text)
+                text_lines = [_normalize_text_simple(line) for line in text.splitlines() if _normalize_text_simple(line)]
 
-            for line in text_lines[:25]:
-                if _looks_like_pdf_section_title(line) and 'page' not in line.lower():
-                    current_category = line
-                    detected_section_titles.append(f'{page_label}: {line}')
-                    break
-
-            tables = page.extract_tables() or []
-            for table in tables:
-                variant_rows = _parse_pdf_table_variants(table, current_category=current_category, company_hint=company_hint)
-                if variant_rows:
-                    page_rows.extend(variant_rows)
+                if _looks_like_pdf_contents_page(normalized_text) or _looks_like_pdf_marketing_page(normalized_text):
+                    skipped_pages.append(f'{page_label} (contents/marketing page)')
+                    _flush_pdfplumber_page(page)
+                    del text, normalized_text, text_lines, page_rows
+                    gc.collect()
                     continue
-                for raw_row in table:
-                    candidate = _parse_pdf_candidate_row(raw_row or [], current_category=current_category, company_hint=company_hint)
-                    if isinstance(candidate, dict) and candidate.get('__section_title__'):
-                        current_category = candidate['__section_title__']
-                        detected_section_titles.append(f'{page_label}: {current_category}')
+
+                for line in text_lines[:25]:
+                    if _looks_like_pdf_section_title(line) and 'page' not in line.lower():
+                        current_category = line
+                        detected_section_titles.append(f'{page_label}: {line}')
+                        break
+
+                tables = page.extract_tables() or []
+                for table in tables:
+                    variant_rows = _parse_pdf_table_variants(table, current_category=current_category, company_hint=company_hint)
+                    if variant_rows:
+                        page_rows.extend(variant_rows)
                         continue
-                    if candidate:
-                        page_rows.append(candidate)
+                    for raw_row in table:
+                        candidate = _parse_pdf_candidate_row(raw_row or [], current_category=current_category, company_hint=company_hint)
+                        if isinstance(candidate, dict) and candidate.get('__section_title__'):
+                            current_category = candidate['__section_title__']
+                            detected_section_titles.append(f'{page_label}: {current_category}')
+                            continue
+                        if candidate:
+                            page_rows.append(candidate)
 
-            detail_rows = _parse_pdf_detail_page_text(text, current_category=current_category, company_hint=company_hint)
-            page_rows.extend(detail_rows)
+                detail_rows = _parse_pdf_detail_page_text(text, current_category=current_category, company_hint=company_hint)
+                page_rows.extend(detail_rows)
 
-            fallback_rows, fallback_titles = _extract_pdf_rows_from_text(text, current_category=current_category, company_hint=company_hint)
-            page_rows.extend(fallback_rows)
-            detected_section_titles.extend([f'{page_label}: {title}' for title in fallback_titles])
+                fallback_rows, fallback_titles = _extract_pdf_rows_from_text(text, current_category=current_category, company_hint=company_hint)
+                page_rows.extend(fallback_rows)
+                detected_section_titles.extend([f'{page_label}: {title}' for title in fallback_titles])
 
-            if ai_enabled and len(page_rows) < 8:
-                ai_rows, usage_meta = _ai_extract_pdf_rows_from_text(text, current_category=current_category, company_hint=company_hint, page_number=page_idx)
-                ai_usage_totals['prompt_tokens'] += int(usage_meta.get('prompt_tokens', 0) or 0)
-                ai_usage_totals['completion_tokens'] += int(usage_meta.get('completion_tokens', 0) or 0)
-                ai_usage_totals['total_tokens'] += int(usage_meta.get('total_tokens', 0) or 0)
-                if usage_meta.get('prompt_tokens') or usage_meta.get('completion_tokens'):
-                    ai_usage_totals['calls'] += 1
-                if ai_rows:
-                    page_rows.extend(ai_rows)
+                if ai_enabled and len(page_rows) < 8:
+                    ai_rows, usage_meta = _ai_extract_pdf_rows_from_text(text, current_category=current_category, company_hint=company_hint, page_number=page_idx)
+                    ai_usage_totals['prompt_tokens'] += int(usage_meta.get('prompt_tokens', 0) or 0)
+                    ai_usage_totals['completion_tokens'] += int(usage_meta.get('completion_tokens', 0) or 0)
+                    ai_usage_totals['total_tokens'] += int(usage_meta.get('total_tokens', 0) or 0)
+                    if usage_meta.get('prompt_tokens') or usage_meta.get('completion_tokens'):
+                        ai_usage_totals['calls'] += 1
+                    if ai_rows:
+                        page_rows.extend(ai_rows)
 
-            if not page_rows:
-                skipped_pages.append(f'{page_label} (no valid product rows)')
-                continue
+                if not page_rows:
+                    skipped_pages.append(f'{page_label} (no valid product rows)')
+                    _flush_pdfplumber_page(page)
+                    del text, normalized_text, text_lines, tables, detail_rows, fallback_rows, fallback_titles, page_rows
+                    gc.collect()
+                    continue
 
-            used_pages.append(page_label)
-            for row in page_rows:
-                notes = row.get('Notes', '') or ''
-                row['Notes'] = (notes + (f' | Source {page_label}' if notes else f'Source {page_label}')).strip()
-                row.setdefault('Category', current_category)
-                row.setdefault('Company', company_hint or '')
-                row.setdefault('confidence', 0.70)
-            all_rows.extend(page_rows)
+                used_pages.append(page_label)
+                for row in page_rows:
+                    notes = row.get('Notes', '') or ''
+                    row['Notes'] = (notes + (f' | Source {page_label}' if notes else f'Source {page_label}')).strip()
+                    row.setdefault('Category', current_category)
+                    row.setdefault('Company', company_hint or '')
+                    row.setdefault('confidence', 0.70)
+                all_rows.extend(page_rows)
+
+                _flush_pdfplumber_page(page)
+                del text, normalized_text, text_lines, tables, detail_rows, fallback_rows, fallback_titles, page_rows
+                gc.collect()
+
+        del chunk_bytes
+        gc.collect()
 
     if not all_rows:
         return None, {
@@ -6729,6 +6575,8 @@ def convert_supplier_pdf_to_source(uploaded_file):
             'detected_section_titles': detected_section_titles,
             'total_rows': 0,
             'input_kind': 'pdf',
+            'processed_pages': total_pages_seen,
+            'chunk_size': chunk_size,
         }
 
     source_df = pd.DataFrame(all_rows)
@@ -6767,15 +6615,13 @@ def convert_supplier_pdf_to_source(uploaded_file):
         'ai_completion_tokens': int(ai_usage_totals.get('completion_tokens', 0) or 0),
         'ai_total_tokens': int(ai_usage_totals.get('total_tokens', 0) or 0),
         'ai_calls': int(ai_usage_totals.get('calls', 0) or 0),
+        'processed_pages': total_pages_seen,
+        'chunk_size': chunk_size,
     }
     if stats['ai_calls'] > 0 and is_admin_user():
-        current_company = get_current_user_company() or {}
         append_pdf_ai_usage_log({
             'timestamp': datetime.now().isoformat(timespec='seconds'),
             'user': get_current_user_email() or 'admin',
-            'user_name': get_current_user_name() or '',
-            'company_key': current_company.get('key', '') if isinstance(current_company, dict) else '',
-            'company_name': current_company.get('name', '') if isinstance(current_company, dict) else '',
             'file_name': getattr(uploaded_file, 'name', 'pdf_upload'),
             'pages': len(used_pages),
             'rows': len(source_df),
@@ -6785,6 +6631,7 @@ def convert_supplier_pdf_to_source(uploaded_file):
             'ai_calls': stats['ai_calls'],
         })
     return source_df, stats
+
 
 def convert_supplier_pricelist_to_source(uploaded_file):
     xls, file_bytes = load_excel_file_any(uploaded_file)
@@ -8707,9 +8554,6 @@ def render_admin_panel():
                     "Premium": row.get("is_premium", False),
                     "Company": row.get("company_name", "") or "",
                     "Role": row.get("role", "member"),
-                    "AI Override": "Inherit" if row.get("ai_enabled_override") is None else ("Enabled" if row.get("ai_enabled_override") else "Disabled"),
-                    "AI Uses Override": row.get("ai_monthly_uses_limit_override") or "",
-                    "AI Max Charge Override": row.get("ai_max_monthly_charge_override") or "",
                     "Active Sessions": f"{sessions_count}/{get_user_max_active_sessions(row)}",
                     "Session Details": summarize_active_sessions(row.get("active_sessions", [])),
                         "Max Sessions": get_user_max_active_sessions(row),
@@ -8779,90 +8623,6 @@ def render_admin_panel():
                         0,
                     )
                     st.success(f"Session limit reset to default for: {selected_user_row.get('email', '')}")
-                    st.rerun()
-
-        st.markdown("#### User AI Billing Overrides")
-        ai_enabled_mode_default = "inherit"
-        ai_monthly_override_default = 0
-        ai_sell_override_default = 0.0
-        ai_max_charge_override_default = 0.0
-        if selected_user_row:
-            if selected_user_row.get("ai_enabled_override") is True:
-                ai_enabled_mode_default = "enabled"
-            elif selected_user_row.get("ai_enabled_override") is False:
-                ai_enabled_mode_default = "disabled"
-            ai_monthly_override_default = _safe_int(selected_user_row.get("ai_monthly_uses_limit_override"), 0)
-            ai_sell_override_default = _safe_float(selected_user_row.get("ai_sell_price_per_use_override"), 0.0)
-            ai_max_charge_override_default = _safe_float(selected_user_row.get("ai_max_monthly_charge_override"), 0.0)
-
-        uai1, uai2, uai3, uai4, uai5, uai6 = st.columns([1.4, 1, 1, 1, 1, 1])
-        with uai1:
-            admin_user_ai_enabled_mode = st.selectbox(
-                "AI access",
-                options=["inherit", "enabled", "disabled"],
-                index=["inherit", "enabled", "disabled"].index(ai_enabled_mode_default),
-                format_func=lambda x: {"inherit": "Inherit company default", "enabled": "Enabled", "disabled": "Disabled"}.get(x, x),
-                key="admin_user_ai_enabled_mode",
-            )
-        with uai2:
-            admin_user_ai_uses_override = st.number_input(
-                "AI uses override",
-                min_value=0,
-                max_value=10000,
-                value=int(ai_monthly_override_default),
-                step=1,
-                key="admin_user_ai_uses_override",
-                help="0 = use company default",
-            )
-        with uai3:
-            admin_user_ai_sell_override = st.number_input(
-                "Sell €/use override",
-                min_value=0.0,
-                max_value=1000.0,
-                value=float(ai_sell_override_default),
-                step=0.1,
-                key="admin_user_ai_sell_override",
-                help="0 = use company default",
-            )
-        with uai4:
-            admin_user_ai_max_charge_override = st.number_input(
-                "Max €/user override",
-                min_value=0.0,
-                max_value=100000.0,
-                value=float(ai_max_charge_override_default),
-                step=1.0,
-                key="admin_user_ai_max_charge_override",
-                help="0 = use company default",
-            )
-        with uai5:
-            st.write("")
-            st.write("")
-            if st.button("Save AI Overrides", key="save_user_ai_overrides_button", use_container_width=True):
-                if selected_user_row:
-                    set_user_ai_overrides(
-                        selected_user_row.get("email", ""),
-                        selected_user_row.get("sub", ""),
-                        admin_user_ai_enabled_mode,
-                        int(admin_user_ai_uses_override),
-                        float(admin_user_ai_sell_override),
-                        float(admin_user_ai_max_charge_override),
-                    )
-                    st.success(f"AI overrides updated for: {selected_user_row.get('email', '')}")
-                    st.rerun()
-        with uai6:
-            st.write("")
-            st.write("")
-            if st.button("Reset AI Overrides", key="reset_user_ai_overrides_button", use_container_width=True):
-                if selected_user_row:
-                    set_user_ai_overrides(
-                        selected_user_row.get("email", ""),
-                        selected_user_row.get("sub", ""),
-                        "inherit",
-                        0,
-                        0.0,
-                        0.0,
-                    )
-                    st.success(f"AI overrides reset for: {selected_user_row.get('email', '')}")
                     st.rerun()
 
         c1, c2, c3, c4, c5, c6, c7, c8 = st.columns(8)
@@ -8983,10 +8743,6 @@ def render_admin_panel():
                 "Plan End": company.get("plan_end", ""),
                 "Active": company.get("is_active", True),
                 "Trial End": company.get("trial_end", ""),
-                "AI Enabled": company.get("ai_feature_enabled", False),
-                "AI Uses/User": company.get("ai_monthly_uses_per_user", DEFAULT_AI_MONTHLY_USES_PER_USER),
-                "AI €/Use": company.get("ai_sell_price_per_use", DEFAULT_AI_SELL_PRICE_PER_USE),
-                "AI Max €/User": company.get("ai_max_monthly_charge_per_user", DEFAULT_AI_MAX_MONTHLY_CHARGE_PER_USER),
             }
         )
 
@@ -9047,58 +8803,6 @@ def render_admin_panel():
         help="When enabled, users of this company share the same saved Comparisons.",
     )
 
-    st.markdown("#### AI Pricing Defaults For This Company")
-    ai_cfg1, ai_cfg2, ai_cfg3 = st.columns(3)
-    with ai_cfg1:
-        company_ai_feature_enabled = st.checkbox(
-            "Enable AI for this company",
-            value=False,
-            key="company_ai_feature_enabled",
-            help="Allows you to predefine AI pricing and usage limits per user for this company.",
-        )
-        company_ai_monthly_uses = st.number_input(
-            "Monthly AI uses / user",
-            min_value=0,
-            max_value=10000,
-            value=DEFAULT_AI_MONTHLY_USES_PER_USER,
-            step=1,
-            key="company_ai_monthly_uses",
-        )
-    with ai_cfg2:
-        company_ai_sell_price_per_use = st.number_input(
-            "Sell price / use (€)",
-            min_value=0.0,
-            max_value=1000.0,
-            value=float(DEFAULT_AI_SELL_PRICE_PER_USE),
-            step=0.1,
-            key="company_ai_sell_price_per_use",
-        )
-        company_ai_max_monthly_charge = st.number_input(
-            "Max charge / user / month (€)",
-            min_value=0.0,
-            max_value=100000.0,
-            value=float(DEFAULT_AI_MAX_MONTHLY_CHARGE_PER_USER),
-            step=1.0,
-            key="company_ai_max_monthly_charge",
-        )
-    with ai_cfg3:
-        company_ai_internal_prompt_rate = st.number_input(
-            "Internal prompt cost / 1M tokens (€)",
-            min_value=0.0,
-            max_value=1000.0,
-            value=float(DEFAULT_AI_INTERNAL_PROMPT_COST_PER_1M),
-            step=0.5,
-            key="company_ai_internal_prompt_rate",
-        )
-        company_ai_internal_completion_rate = st.number_input(
-            "Internal completion cost / 1M tokens (€)",
-            min_value=0.0,
-            max_value=1000.0,
-            value=float(DEFAULT_AI_INTERNAL_COMPLETION_COST_PER_1M),
-            step=0.5,
-            key="company_ai_internal_completion_rate",
-        )
-
     cp1, cp2 = st.columns(2)
     with cp1:
         company_plan_start_input = st.date_input(
@@ -9139,12 +8843,6 @@ def render_admin_panel():
                     company_shared_workspace_input,
                     company_plan_start_input,
                     company_plan_end_input,
-                    company_ai_feature_enabled,
-                    company_ai_monthly_uses,
-                    company_ai_sell_price_per_use,
-                    company_ai_max_monthly_charge,
-                    company_ai_internal_prompt_rate,
-                    company_ai_internal_completion_rate,
                 )
                 st.success(f"Company workspace saved: {company_name_input}")
                 st.rerun()
@@ -9171,31 +8869,6 @@ def render_admin_panel():
                     f"Company workspace deleted: {selected_company_to_delete}"
                 )
                 st.rerun()
-    st.markdown("---")
-    st.markdown("### AI Usage & Pricing Dashboard")
-    ai_dashboard = get_pdf_ai_usage_dashboard()
-    d1, d2, d3, d4 = st.columns(4)
-    with d1:
-        st.metric("AI Uses This Month", ai_dashboard["totals"]["uses"])
-    with d2:
-        st.metric("Tracked Users", ai_dashboard["totals"]["users"])
-    with d3:
-        st.metric("Internal AI Cost (€)", f"{ai_dashboard['totals']['internal_cost']:.4f}")
-    with d4:
-        st.metric("Billable AI Revenue (€)", f"{ai_dashboard['totals']['billable_cost']:.2f}")
-
-    user_ai_rows = ai_dashboard.get("users", [])
-    if user_ai_rows:
-        st.caption(f"Month: {ai_dashboard['month_prefix']} • Maximum monthly charge is applied per user before company totals are calculated.")
-        st.dataframe(pd.DataFrame(user_ai_rows), use_container_width=True, hide_index=True)
-    else:
-        st.caption("No AI usage logged yet for this month.")
-
-    company_ai_rows = ai_dashboard.get("companies", [])
-    if company_ai_rows:
-        st.markdown("#### Company AI Totals")
-        st.dataframe(pd.DataFrame(company_ai_rows), use_container_width=True, hide_index=True)
-
     st.markdown("</div>", unsafe_allow_html=True)
 
 
