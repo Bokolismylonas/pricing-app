@@ -5921,6 +5921,115 @@ def _extract_section_title(values):
 
 
 
+PDF_PACKAGING_WORDS = [
+    "σακι", "σακί", "bag", "bags", "pallet", "παλετα", "παλέτα", "παλετες", "παλέτες",
+    "box", "boxes", "κιβωτιο", "κιβώτιο", "κιβωτια", "κιβώτια", "bucket", "δοχειο", "δοχείο",
+    "roll", "ρολο", "ρολό", "sheet", "φυλλο", "φύλλο", "bundle", "δεμα", "δέμα", "pack"
+]
+
+PDF_PACKAGING_ONLY_PATTERNS = [
+    r'^\s*(?:bag|bags|σακι|σακί|box|boxes|κιβωτιο|κιβώτιο|bucket|δοχειο|δοχείο|pallet|παλετα|παλέτα|roll|ρολο|ρολό|sheet|φυλλο|φύλλο|bundle|δεμα|δέμα|pack)\s*$',
+    r'^\s*\d+(?:[.,]\d+)?\s*(?:kg|g|gr|lt|l|ml|m2|m²|m|pcs?|τεμ\.?)\s*(?:/\s*(?:bag|bags|σακι|σακί|box|boxes|κιβωτιο|κιβώτιο|bucket|δοχειο|δοχείο|pallet|παλετα|παλέτα|roll|ρολο|ρολό|sheet|φυλλο|φύλλο|bundle|δεμα|δέμα|pack))?\s*$',
+]
+
+PDF_EXPLANATORY_ROW_RE = r'(?:^|\b)(delivery conditions|valid from|table of contents|contents|technical data|application|description|overview|recommended retail|price list|catalog|τιμοκαταλογος|περιεχομενα|ισχυς απο|προυποθεσεις|τεχνικα χαρακτηριστικα|εφαρμογη|περιγραφη|χωρις φπα|οι τιμες ειναι)(?:\b|$)'
+
+
+def _pdf_vendor_profile(company_hint: str, total_pages: int = 0) -> str:
+    s = _normalize_text_simple(company_hint).lower()
+    if 'siniat' in s:
+        return 'siniat'
+    if 'isomat' in s:
+        return 'isomat'
+    if 'sika' in s:
+        return 'sika'
+    if total_pages >= 100:
+        return 'heavy_catalog'
+    return 'generic'
+
+
+def _is_packaging_only_text(text: str) -> bool:
+    s = _normalize_text_simple(text).lower()
+    if not s:
+        return False
+    if any(re.fullmatch(pat, s, flags=re.I) for pat in PDF_PACKAGING_ONLY_PATTERNS):
+        return True
+    words = [w for w in re.split(r'\s+', s) if w]
+    if not words:
+        return False
+    if len(words) <= 3 and all((w in PDF_PACKAGING_WORDS) or bool(re.fullmatch(r'\d+(?:[.,]\d+)?(?:kg|g|gr|lt|l|ml|m2|m²|m|pcs?|τεμ\.?)?', w, re.I)) for w in words):
+        return True
+    return False
+
+
+def _normalize_package_label(text: str) -> str:
+    s = _normalize_text_simple(text).lower()
+    if not s:
+        return ''
+    mapping = {
+        'σακι': 'σακί', 'σακί': 'σακί', 'bag': 'bag', 'bags': 'bag',
+        'παλετα': 'παλέτα', 'παλέτα': 'παλέτα', 'παλετες': 'παλέτα', 'παλέτες': 'παλέτα', 'pallet': 'pallet',
+        'κιβωτιο': 'κιβώτιο', 'κιβώτιο': 'κιβώτιο', 'box': 'box', 'boxes': 'box',
+        'δοχειο': 'δοχείο', 'δοχείο': 'δοχείο', 'bucket': 'bucket',
+        'ρολο': 'ρολό', 'ρολό': 'ρολό', 'roll': 'roll',
+        'δεμα': 'δέμα', 'δέμα': 'δέμα', 'bundle': 'bundle',
+        'φυλλο': 'φύλλο', 'φύλλο': 'φύλλο', 'sheet': 'sheet',
+        'pack': 'pack',
+    }
+    for k, v in mapping.items():
+        if re.search(rf'\b{re.escape(k)}\b', s):
+            return v
+    return ''
+
+
+def _merge_packaging_into_product(product: str, package: str) -> str:
+    product = _normalize_text_simple(product)
+    package = _normalize_text_simple(package)
+    if not product or not package:
+        return product
+    if package.lower() in product.lower():
+        return product
+    if len(product.split()) <= 3:
+        return f"{product} ({package})"
+    return product
+
+
+def _postprocess_pdf_source_df(source_df: pd.DataFrame, profile: str = 'generic') -> pd.DataFrame:
+    if source_df is None or source_df.empty:
+        return source_df
+    df = source_df.copy()
+    for col in ['Product', 'Package', 'SAP', 'Category', 'Notes']:
+        if col not in df.columns:
+            df[col] = ''
+    df['Product'] = df['Product'].astype(str).str.replace(r'\s+', ' ', regex=True).str.strip()
+    df['Package'] = df['Package'].astype(str).str.replace(r'\s+', ' ', regex=True).str.strip()
+    df['Category'] = df['Category'].astype(str).str.replace(r'\s+', ' ', regex=True).str.strip().replace('', 'PDF Catalog')
+
+    # move packaging-only pseudo-products into Package then drop them as standalone rows
+    pack_mask = df['Product'].apply(_is_packaging_only_text)
+    empty_package_mask = df['Package'].astype(str).str.strip().eq('')
+    df.loc[pack_mask & empty_package_mask, 'Package'] = df.loc[pack_mask & empty_package_mask, 'Product'].apply(lambda x: _normalize_package_label(x) or x)
+    df = df.loc[~pack_mask].copy()
+
+    # normalize package labels and enrich very short product labels for display
+    df['Package'] = df['Package'].apply(lambda x: _normalize_package_label(x) or x)
+    short_mask = df['Product'].str.split().str.len().fillna(0) <= 3
+    df.loc[short_mask, 'Product'] = [
+        _merge_packaging_into_product(prod, pkg)
+        for prod, pkg in zip(df.loc[short_mask, 'Product'], df.loc[short_mask, 'Package'])
+    ]
+
+    # suppress explanatory/header rows that still slipped through
+    df = df[~df['Product'].str.lower().str.contains(PDF_EXPLANATORY_ROW_RE, regex=True, na=False)].copy()
+
+    # profile-aware SAP hardening
+    if profile == 'siniat':
+        sap_re = r'^(?:\d{5,8}|[A-Z]{1,3}\d{2,5})$'
+    else:
+        sap_re = r'^(?:\d{5,8}|[A-Z]{1,4}\d{1,5}[A-Z0-9./_-]{0,4})$'
+    df['SAP'] = df['SAP'].where(df['SAP'].astype(str).str.match(sap_re, na=False), '')
+    return df
+
 
 class _PdfParseState:
     def __init__(self):
@@ -6818,14 +6927,21 @@ def _pdf_processing_max_pages() -> int:
         return 0
 
 
-def _recommended_pdf_chunk_size(total_pages: int) -> int:
+def _recommended_pdf_chunk_size(total_pages: int, profile: str = 'generic') -> int:
     base = _pdf_processing_chunk_size()
+    if profile in {'isomat', 'sika', 'heavy_catalog'}:
+        if total_pages >= 120:
+            return 1
+        if total_pages >= 60:
+            return min(base, 2)
+        if total_pages >= 30:
+            return min(base, 2)
     if total_pages >= 180:
         return min(base, 2)
     if total_pages >= 100:
-        return min(base, 3)
+        return min(base, 2)
     if total_pages >= 60:
-        return min(base, 4)
+        return min(base, 3)
     return base
 
 
@@ -6872,7 +6988,8 @@ def convert_supplier_pdf_to_source(uploaded_file):
     preview_total_pages = len(reader_preview.pages)
     del reader_preview
     gc.collect()
-    chunk_size = _recommended_pdf_chunk_size(preview_total_pages)
+    profile = _pdf_vendor_profile(company_hint, preview_total_pages)
+    chunk_size = _recommended_pdf_chunk_size(preview_total_pages, profile=profile)
     max_pages = _pdf_processing_max_pages()
     total_pages_seen = 0
     state = _PdfParseState()
@@ -6893,6 +7010,15 @@ def convert_supplier_pdf_to_source(uploaded_file):
                 text = page.extract_text() or ''
                 normalized_text = _normalize_text_simple(text)
                 text_lines = [_normalize_text_simple(line) for line in text.splitlines() if _normalize_text_simple(line)]
+
+                if profile in {'isomat', 'sika', 'heavy_catalog'}:
+                    pricing_hits = len(re.findall(r'\d+[.,]\d+|\b\d{4,8}\b', normalized_text))
+                    if pricing_hits < 3 and not any(k in normalized_text.lower() for k in ['sap code', 'κωδικ', 'τιμη', 'list price']):
+                        skipped_pages.append(f'{page_label} (low pricing density)')
+                        _flush_pdfplumber_page(page)
+                        del text, normalized_text, text_lines, page_rows
+                        gc.collect()
+                        continue
 
                 if _looks_like_pdf_noise_page_relaxed(normalized_text):
                     skipped_pages.append(f'{page_label} (contents/marketing page)')
@@ -6937,7 +7063,7 @@ def convert_supplier_pdf_to_source(uploaded_file):
                     page_rows.extend(fallback_rows)
                     detected_section_titles.extend([f'{page_label}: {_normalize_pdf_category_name(title)}' for title in fallback_titles])
 
-                if ai_enabled and len(page_rows) < 4 and len(normalized_text) < 24000:
+                if ai_enabled and profile not in {'isomat', 'sika', 'heavy_catalog'} and len(page_rows) < 4 and len(normalized_text) < 24000:
                     ai_rows, usage_meta = _ai_extract_pdf_rows_from_text(text, current_category=current_category, company_hint=company_hint, page_number=page_idx)
                     ai_usage_totals['prompt_tokens'] += int(usage_meta.get('prompt_tokens', 0) or 0)
                     ai_usage_totals['completion_tokens'] += int(usage_meta.get('completion_tokens', 0) or 0)
@@ -6989,6 +7115,7 @@ def convert_supplier_pdf_to_source(uploaded_file):
         }
 
     source_df = _finalize_pdf_source_dataframe(pd.DataFrame(all_rows))
+    source_df = _postprocess_pdf_source_df(source_df, profile=profile)
 
     rows_missing_price = int(source_df['Base Price'].isna().sum())
     rows_missing_sap = int(source_df['SAP'].astype(str).str.strip().eq('').sum())
