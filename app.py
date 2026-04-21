@@ -6004,7 +6004,7 @@ def _parse_pdf_line_stateful(line: str, state: _PdfParseState, company_hint: str
     if not txt:
         return None
     low = txt.lower()
-    if any(k in low for k in ['κωδικ', 'sap code', 'list price', 'τιμη πωλησης', 'packaging', 'width', 'length', 'μονάδα μέτρησης', 'delivery conditions', 'valid from', 'table of contents']):
+    if any(k in low for k in ['κωδικ', 'sap code', 'list price', 'τιμη πωλησης', 'packaging', 'width', 'length', 'μονάδα μέτρησης']):
         return None
     if _looks_like_pdf_section_title(txt):
         state.category = txt
@@ -6102,29 +6102,16 @@ def _parse_pdf_line_stateful(line: str, state: _PdfParseState, company_hint: str
 
 def _looks_like_pdf_section_title(line: str) -> bool:
     line = _normalize_text_simple(line)
-    if not line or len(line) > 140:
+    if not line or len(line) > 90:
         return False
-    low = line.lower()
     if _to_float_or_none(line) is not None:
         return False
-    if re.search(r'\b\d+[.,]\d+\b', low):
-        return False
-    hard_markers = [
-        'price list', 'catalog', 'table of contents', 'contents', 'delivery conditions',
-        'valid from', 'recommended retail', 'technical data', 'product range', 'system solutions',
-        'installation', 'classification', 'overview', 'description', 'application', 'packaging',
-        'τιμοκαταλογος', 'περιεχομενα', 'ισχυς απο', 'προυποθεσεις', 'συσκευασια',
-        'τεχνικα χαρακτηριστικα', 'εφαρμογη', 'περιγραφη', 'λυσεις συστηματων',
-        'γυψοσανιδες για', 'γυψοπλακες για', 'οι τιμες ειναι', 'χωρις φπα'
-    ]
-    if any(m in low for m in hard_markers):
-        return True
     letters = [ch for ch in line if ch.isalpha()]
     if len(letters) < 3:
         return False
     upper_ratio = sum(1 for ch in letters if ch.isupper()) / max(len(letters), 1)
-    words = line.split()
-    return upper_ratio >= 0.75 or (len(words) <= 10 and _is_all_capsish(line) and not any(ch.isdigit() for ch in line))
+    return upper_ratio >= 0.7 or (len(line.split()) <= 5 and _is_all_capsish(line))
+
 
 def _extract_package_from_text(text: str) -> str:
     s = _normalize_text_simple(text).lower()
@@ -6160,21 +6147,207 @@ def _extract_mm_from_text(text: str) -> str:
 
 
 
+
+PDF_SECTION_ALIASES = {
+    "ΣΚΥΡΟΔΈΤΗΣΗ": "ΣΚΥΡΟΔΕΤΗΣΗ",
+    "ΣΚΥΡΟΔΕΤΗΣΗ": "ΣΚΥΡΟΔΕΤΗΣΗ",
+    "ΣΤΕΓΑΝΟΠΟΊΗΣΗ": "ΣΤΕΓΑΝΟΠΟΙΗΣΗ",
+    "ΣΤΕΓΑΝΟΠΟΙΗΣΗ": "ΣΤΕΓΑΝΟΠΟΙΗΣΗ",
+    "ΣΦΡΆΓΙΣΗ & ΣΥΓΚΌΛΛΗΣΗ": "ΣΦΡΑΓΙΣΗ & ΣΥΓΚΟΛΛΗΣΗ",
+    "ΣΦΡΑΓΙΣΗ & ΣΥΓΚΟΛΛΗΣΗ": "ΣΦΡΑΓΙΣΗ & ΣΥΓΚΟΛΛΗΣΗ",
+    "ΕΠΙΣΚΕΥΉ & ΠΡΟΣΤΑΣΊΑ": "ΕΠΙΣΚΕΥΗ & ΠΡΟΣΤΑΣΙΑ",
+    "ΕΠΙΣΚΕΥΗ & ΠΡΟΣΤΑΣΙΑ": "ΕΠΙΣΚΕΥΗ & ΠΡΟΣΤΑΣΙΑ",
+    "ΕΞΩΤΕΡΙΚΉ ΘΕΡΜΟΜΌΝΩΣΗ": "ΕΞΩΤΕΡΙΚΗ ΘΕΡΜΟΜΟΝΩΣΗ",
+    "ΕΞΩΤΕΡΙΚΗ ΘΕΡΜΟΜΟΝΩΣΗ": "ΕΞΩΤΕΡΙΚΗ ΘΕΡΜΟΜΟΝΩΣΗ",
+    "ΔΟΜΗΤΙΚΉ ΕΝΊΣΧΥΣΗ": "ΔΟΜΗΤΙΚΗ ΕΝΙΣΧΥΣΗ",
+    "ΔΟΜΗΤΙΚΗ ΕΝΙΣΧΥΣΗ": "ΔΟΜΗΤΙΚΗ ΕΝΙΣΧΥΣΗ",
+    "ΣΤΕΡΈΩΣΗ & ΑΓΚΎΡΩΣΗ": "ΣΤΕΡΕΩΣΗ & ΑΓΚΥΡΩΣΗ",
+    "ΣΤΕΡΕΩΣΗ & ΑΓΚΥΡΩΣΗ": "ΣΤΕΡΕΩΣΗ & ΑΓΚΥΡΩΣΗ",
+    "ΕΠΊΣΤΡΩΣΗ ΔΑΠΈΔΟΥ": "ΕΠΙΣΤΡΩΣΗ ΔΑΠΕΔΟΥ",
+    "ΕΠΙΣΤΡΩΣΗ ΔΑΠΕΔΟΥ": "ΕΠΙΣΤΡΩΣΗ ΔΑΠΕΔΟΥ",
+    "ΕΠΊΣΤΡΩΣΗ ΠΛΑΚΙΔΊΩΝ": "ΕΠΙΣΤΡΩΣΗ ΠΛΑΚΙΔΙΩΝ",
+    "ΕΠΙΣΤΡΩΣΗ ΠΛΑΚΙΔΙΩΝ": "ΕΠΙΣΤΡΩΣΗ ΠΛΑΚΙΔΙΩΝ",
+    "ΒΟΗΘΗΤΙΚΆ ΠΡΟΪΌΝΤΑ": "ΒΟΗΘΗΤΙΚΑ ΠΡΟΪΟΝΤΑ",
+    "ΒΟΗΘΗΤΙΚΑ ΠΡΟΪΟΝΤΑ": "ΒΟΗΘΗΤΙΚΑ ΠΡΟΪΟΝΤΑ",
+    "PDF Catalog": "PDF Catalog",
+}
+
+PIECE_PACKAGE_WORDS = [
+    'σακ', 'δοχει', 'δοχείο', 'bucket', 'pail', 'bag', 'kit', 'box', 'carton', 'κιβ', 'φια', 'φύσιγ',
+    'cartridge', 'roll', 'ρολό', 'drum', 'βαρέλι', 'barrel', 'τεμάχ', 'τεμ', 'tube', 'spray', 'can', 'tin'
+]
+
+
+def _normalize_pdf_category_name(value: str) -> str:
+    txt = _normalize_text_simple(value)
+    if not txt:
+        return 'PDF Catalog'
+    return PDF_SECTION_ALIASES.get(txt, txt)
+
+
+def _clean_pdf_package_text(value: str) -> str:
+    txt = _normalize_text_simple(value)
+    if not txt:
+        return ''
+    txt = txt.replace('λίτ', 'lt').replace('lit', 'lt').replace('ltr', 'lt')
+    txt = txt.replace('τεμ.', 'τεμ').replace('pcs.', 'pcs')
+    txt = re.sub(r'\s+', ' ', txt).strip(' -|,;')
+    m = re.search(r'(\d+(?:[.,]\d+)?)\s*(kg|gr|g|lt|l|ml|m2|m²|m3|m³|mm|cm)', txt, flags=re.IGNORECASE)
+    if m:
+        qty = m.group(1).replace(',', '.')
+        unit = m.group(2).lower().replace('m²', 'm2').replace('m³', 'm3')
+        qty = qty.rstrip('0').rstrip('.') if '.' in qty else qty
+        prefix = txt[:m.start()].strip()
+        if prefix:
+            return f"{prefix} {qty}{unit}".strip()
+        return f"{qty}{unit}"
+    return txt
+
+
+def _package_implies_piece(value: str) -> bool:
+    txt = _normalize_text_simple(value).lower()
+    return bool(txt) and any(w in txt for w in PIECE_PACKAGE_WORDS)
+
+
+def _normalize_pdf_mm_unit(mm_value: str, package_value: str, product_value: str) -> str:
+    mm = _normalize_text_simple(mm_value).lower()
+    mm = mm.replace('m²', 'm2').replace('m³', 'm3').replace('τεμ.', 'τεμ')
+    aliases = {
+        'pcs': 'τμχ', 'pc': 'τμχ', 'piece': 'τμχ', 'pieces': 'τμχ', 'τεμ': 'τμχ', 'tmx': 'τμχ',
+        'lt': 'lt', 'l': 'lt', 'kg': 'kg', 'gr': 'g', 'g': 'g', 'm2': 'm2', 'm': 'm', 'mm': 'mm', 'cm': 'cm', 'm3': 'm3'
+    }
+    if mm in aliases:
+        return aliases[mm]
+    if mm:
+        return mm
+    if _package_implies_piece(package_value):
+        return 'τμχ'
+    probe = ' '.join([_normalize_text_simple(package_value), _normalize_text_simple(product_value)])
+    m = re.search(r'(kg|gr|g|lt|l|ml|m2|m²|m3|m³|mm|cm)', probe, flags=re.IGNORECASE)
+    if m:
+        unit = m.group(1).lower().replace('m²', 'm2').replace('m³', 'm3')
+        return aliases.get(unit, unit)
+    return ''
+
+
+def _product_contains_package(product: str, package: str) -> bool:
+    p = _normalize_text_simple(product).lower()
+    q = _normalize_text_simple(package).lower()
+    return bool(p and q and q in p)
+
+
+def _build_pdf_source_product_name(product: str, package: str) -> str:
+    product = _normalize_text_simple(product)
+    package = _clean_pdf_package_text(package)
+    if not product:
+        return ''
+    if package and not _product_contains_package(product, package):
+        return f"{product} - {package}"
+    return product
+
+
+def _is_pdf_noise_row(product: str, category: str, package: str) -> bool:
+    blob = ' '.join([_normalize_text_simple(product), _normalize_text_simple(category), _normalize_text_simple(package)]).lower()
+    if not blob:
+        return True
+    noise_markers = [
+        'εφαρμογ', 'χαρακτηριστικ', 'πλεονεκτημ', 'καταναλωσ', 'consumption', 'applications', 'features',
+        'τεχνικ', 'learn more', 'περιεχομενα', 'contents'
+    ]
+    return any(m in blob for m in noise_markers)
+
+
+def _extract_pdf_toc_category_ranges(file_bytes: bytes):
+    ranges = []
+    try:
+        reader = PdfReader(io.BytesIO(file_bytes))
+        section_starts = []
+        current_section = ''
+        for idx in range(min(len(reader.pages), 20)):
+            text = reader.pages[idx].extract_text() or ''
+            low = _normalize_text_simple(text).lower()
+            if 'περιεχομ' not in low and 'contents' not in low and 'πιν' not in low:
+                continue
+            for raw_line in text.splitlines():
+                line = _normalize_text_simple(raw_line)
+                if not line:
+                    continue
+                if _looks_like_pdf_section_title(line) and not re.search(r'\d\s*$', line):
+                    current_section = _normalize_pdf_category_name(line)
+                    continue
+                if not current_section:
+                    continue
+                m = re.search(r'(\d{1,3})\s*$', line)
+                if m:
+                    page_no = int(m.group(1))
+                    if page_no >= 1 and (not section_starts or section_starts[-1][1] != current_section):
+                        section_starts.append((page_no, current_section))
+        section_starts = sorted(section_starts, key=lambda x: x[0])
+        for i, (start, category) in enumerate(section_starts):
+            end = section_starts[i + 1][0] - 1 if i + 1 < len(section_starts) else 100000
+            ranges.append((start, end, category))
+    except Exception:
+        return []
+    return ranges
+
+
+def _lookup_pdf_toc_category(page_number: int, ranges) -> str:
+    for start, end, category in ranges or []:
+        if start <= int(page_number) <= end:
+            return category
+    return ''
+
+
+def _finalize_pdf_source_dataframe(source_df: pd.DataFrame) -> pd.DataFrame:
+    if source_df is None or source_df.empty:
+        return pd.DataFrame(columns=_source_generator_output_columns())
+    df = source_df.copy()
+    for col, default in [('SAP',''),('Product',''),('Base Price',None),('Price',None),('MM',''),('Package',''),('Category','PDF Catalog')]:
+        if col not in df.columns:
+            df[col] = default
+    df['SAP'] = df['SAP'].astype(str).str.strip()
+    df['Product'] = df['Product'].astype(str).map(_normalize_text_simple)
+    df['Package'] = df['Package'].astype(str).map(_clean_pdf_package_text)
+    df['Category'] = df['Category'].astype(str).map(_normalize_pdf_category_name)
+    df['MM'] = [
+        _normalize_pdf_mm_unit(mm, pack, prod)
+        for mm, pack, prod in zip(df['MM'].astype(str), df['Package'].astype(str), df['Product'].astype(str))
+    ]
+    df['Product'] = [
+        _build_pdf_source_product_name(prod, pack)
+        for prod, pack in zip(df['Product'].astype(str), df['Package'].astype(str))
+    ]
+    df['Base Price'] = pd.to_numeric(df['Base Price'], errors='coerce')
+    df['Price'] = df['Base Price']
+    df = df[~df.apply(lambda r: _is_pdf_noise_row(r.get('Product', ''), r.get('Category', ''), r.get('Package', '')), axis=1)].copy()
+    df = df[~((df['Product'].astype(str).str.strip() == '') & df['Base Price'].isna())].copy()
+    df = df[~(df['Product'].str.lower().isin(['περιεχομενα', 'contents', 'pdf catalog']))].copy()
+    non_empty_sap = df['SAP'].astype(str).str.strip().ne('')
+    if non_empty_sap.any():
+        df_with_sap = df[non_empty_sap].drop_duplicates(subset=['SAP', 'Package', 'Base Price', 'Category'], keep='first')
+        df_without_sap = df[~non_empty_sap].drop_duplicates(subset=['Product', 'Package', 'Base Price', 'Category'], keep='first')
+        df = pd.concat([df_with_sap, df_without_sap], ignore_index=True)
+    else:
+        df = df.drop_duplicates(subset=['Product', 'Package', 'Base Price', 'Category'], keep='first')
+    df = df.sort_values(by=['Category', 'Product', 'SAP', 'Package'], kind='stable').reset_index(drop=True)
+    return df[_source_generator_output_columns()].reset_index(drop=True)
+
 def _looks_like_pdf_contents_page(text: str) -> bool:
     s = _normalize_text_simple(text).lower()
     if not s:
         return False
     markers = [
-        'περιεχομενα', 'price list 2021', 'price list 2025', 'price list 2026', 'delivery term', 'valid from',
-        'table of contents', 'contents', 'environmental product declaration', 'building performance',
-        'ισχυρη παρουσια', 'πιστοποιημενο συστημα', 'phototimokatalogos', 'φωτοτιμοκαταλογος',
-        'timo katalogos', 'recommended retail prices', 'catalogue', 'index'
+        'περιεχομενα', 'price list 2021', 'delivery term', 'valid from',
+        'environmental product declaration', 'building performance',
+        'ισχυρη παρουσια', 'πιστοποιημενο συστημα', 'phototimokatalogos',
+        'φωτοτιμοκαταλογος', 'timo katalogos'
     ]
     if any(m in s for m in markers):
         if 'sap code' in s or 'κωδικ' in s or 'list price' in s or 'τιμη' in s:
             return False
         return True
     return False
+
 
 def _looks_like_pdf_marketing_page(text: str) -> bool:
     s = _normalize_text_simple(text).lower()
@@ -6185,26 +6358,17 @@ def _looks_like_pdf_marketing_page(text: str) -> bool:
     marketing_markers = [
         'learn more', 'μαθετε περισσοτερα', 'environmental product declaration',
         'η πρωτη ελληνικη εταιρεια', 'παθος για καινοτομια', 'ισχυρη παρουσια',
-        'trust in every bond', 'home beauty', 'smart clean paint', 'road to sustainability',
-        'inspiring ways of living', 'our brands', 'our main brands', 'δρομος προς την αειφορια',
-        'discover more', 'sustainability', 'corporate profile'
+        'trust in every bond', 'home beauty', 'smart clean paint'
     ]
     return any(m in s for m in marketing_markers)
 
+
 def _looks_like_pdf_product_code(value: str) -> bool:
     v = _normalize_text_simple(value).replace(' ', '')
-    if not v or len(v) > 16 or v in {'-', '—'}:
+    if not v or len(v) > 32 or v in {'-', '—'}:
         return False
-    if any('Ͱ' <= ch <= 'Ͽ' for ch in v):
-        return False
-    if not any(ch.isdigit() for ch in v):
-        return False
-    # Prefer true SAP-like numeric codes, but allow short structured alphanumeric SKUs such as CW75/UA50.
-    if re.fullmatch(r'\d{5,8}', v):
-        return True
-    if re.fullmatch(r'[A-Z]{1,4}\d{1,5}[A-Z0-9./_-]{0,4}', v):
-        return True
-    return False
+    return bool(re.match(r'^[A-Za-z0-9./_-]{4,}$', v)) and any(ch.isdigit() for ch in v)
+
 
 def _parse_pdf_table_variants(table, current_category: str = '', company_hint: str = ''):
     rows = []
@@ -6473,20 +6637,20 @@ def _ai_extract_pdf_rows_from_text(text: str, current_category: str = '', compan
     if client is None:
         return [], {}
     system_prompt = (
-        'Είσαι σύστημα εξαγωγής δομημένων προϊόντων από PDF τιμοκαταλόγους δομικών υλικών, χημικών και ξηράς δόμησης. '
-        'Στόχος: να εξάγεις ΟΛΑ τα εμπορικά variants. 1 row = 1 variant. '
-        'Αγνόησε εξώφυλλα, marketing pages και πίνακες περιεχομένων. '
-        'Αν ένα προϊόν έχει πολλά μήκη, πάχη, συσκευασίες ή SAP codes, επέστρεψε ξεχωριστό row για κάθε variant. '
-        'Μην απορρίπτεις row επειδή λείπει ένα πεδίο. Προτίμησε over-extraction και βάλε confidence. '
-        'Επέστρεψε μόνο JSON object με κλειδί rows.'
+        'Είσαι σύστημα εξαγωγής source rows από PDF τιμοκαταλόγους. '
+        'Στόχος: 1 row = 1 πραγματικό εμπορικό SKU/variant. '
+        'Εξάγεις ΜΟΝΟ γραμμές τιμοκαταλόγου με code/SAP, product, package, unit, price και category. '
+        'Αγνόησε τεχνικές περιγραφές, applications, χαρακτηριστικά, marketing, headings χωρίς εμπορικά στοιχεία. '
+        'Αν το ίδιο προϊόν έχει πολλές συσκευασίες, μήκη, πάχη ή SAP, επέστρεψε ξεχωριστό row για κάθε variant. '
+        'Μην επινοείς τιμές ή κωδικούς. Επέστρεψε μόνο JSON object με κλειδί rows.'
     )
     user_prompt = (
-        'Εξήγαγε προϊόντα από το παρακάτω κείμενο PDF page.\n'
+        'Εξήγαγε source rows από το παρακάτω κείμενο PDF page.\n'
         f'Company hint: {company_hint or ""}\n'
         f'Current category hint: {current_category or ""}\n'
         f'Page: {page_number or ""}\n\n'
-        'Επιστροφή σε JSON με μορφή {"rows": [...]} και για κάθε row fields: '
-        'category, product_name, sap_code, code, thickness_mm, width_mm, length_mm, package, unit, price, price_text, notes, confidence.\n\n'
+        'JSON μορφή: {"rows": [...]} με fields: category, product_name, sap_code, code, thickness_mm, width_mm, length_mm, package, unit, price, price_text, notes, confidence.\n'
+        'Κράτα μόνο εμπορικές εγγραφές που μπορούν να μπουν σε Source Excel.\n\n'
         'ΚΕΙΜΕΝΟ:\n' + text[:45000]
     )
     usage_meta = {}
@@ -6656,13 +6820,14 @@ def _pdf_processing_max_pages() -> int:
 
 def _recommended_pdf_chunk_size(total_pages: int) -> int:
     base = _pdf_processing_chunk_size()
-    if total_pages >= 150:
-        return 1
-    if total_pages >= 80:
+    if total_pages >= 180:
         return min(base, 2)
-    if total_pages >= 40:
+    if total_pages >= 100:
         return min(base, 3)
+    if total_pages >= 60:
+        return min(base, 4)
     return base
+
 
 def _iter_pdf_chunks(file_bytes: bytes, chunk_size: int, max_pages: int = 0):
     reader = PdfReader(io.BytesIO(file_bytes))
@@ -6698,9 +6863,6 @@ def convert_supplier_pdf_to_source(uploaded_file):
     all_rows = []
     used_pages = []
     skipped_pages = []
-    rows_missing_price = 0
-    rows_missing_sap = 0
-    rows_missing_product = 0
     detected_section_titles = []
     company_hint = Path(uploaded_file.name).stem
     ai_usage_totals = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "calls": 0}
@@ -6714,6 +6876,7 @@ def convert_supplier_pdf_to_source(uploaded_file):
     max_pages = _pdf_processing_max_pages()
     total_pages_seen = 0
     state = _PdfParseState()
+    toc_ranges = _extract_pdf_toc_category_ranges(file_bytes)
 
     for chunk_start, chunk_end, chunk_bytes, total_pages in _iter_pdf_chunks(file_bytes, chunk_size=chunk_size, max_pages=max_pages):
         total_pages_seen = max(total_pages_seen, total_pages)
@@ -6722,7 +6885,10 @@ def convert_supplier_pdf_to_source(uploaded_file):
                 page_idx = chunk_start + offset + 1
                 page_label = f'Page {page_idx}'
                 page_rows = []
-                current_category = state.category or f'PDF Page {page_idx}'
+                toc_category = _lookup_pdf_toc_category(page_idx, toc_ranges)
+                current_category = toc_category or state.category or f'PDF Page {page_idx}'
+                if toc_category:
+                    state.category = toc_category
 
                 text = page.extract_text() or ''
                 normalized_text = _normalize_text_simple(text)
@@ -6737,10 +6903,10 @@ def convert_supplier_pdf_to_source(uploaded_file):
 
                 for line in text_lines[:30]:
                     if _looks_like_pdf_section_title(line) and 'page' not in line.lower():
-                        current_category = line
+                        current_category = _normalize_pdf_category_name(line)
                         state.category = current_category
                         state.reset_family()
-                        detected_section_titles.append(f'{page_label}: {line}')
+                        detected_section_titles.append(f'{page_label}: {current_category}')
                         break
                     if _looks_like_pdf_family_title(line):
                         state.family = line
@@ -6754,20 +6920,24 @@ def convert_supplier_pdf_to_source(uploaded_file):
                     for raw_row in table:
                         candidate = _parse_pdf_candidate_row(raw_row or [], current_category=current_category, company_hint=company_hint)
                         if isinstance(candidate, dict) and candidate.get('__section_title__'):
-                            current_category = candidate['__section_title__']
+                            current_category = _normalize_pdf_category_name(candidate['__section_title__'])
                             detected_section_titles.append(f'{page_label}: {current_category}')
                             continue
                         if candidate:
                             page_rows.append(candidate)
 
-                detail_rows = _parse_pdf_detail_page_text(text, current_category=current_category, company_hint=company_hint)
-                page_rows.extend(detail_rows)
+                detail_rows = []
+                if len(page_rows) < 3:
+                    detail_rows = _parse_pdf_detail_page_text(text, current_category=current_category, company_hint=company_hint)
+                    page_rows.extend(detail_rows)
 
-                fallback_rows, fallback_titles = _extract_pdf_rows_from_text(text, current_category=current_category, company_hint=company_hint)
-                page_rows.extend(fallback_rows)
-                detected_section_titles.extend([f'{page_label}: {title}' for title in fallback_titles])
+                fallback_rows, fallback_titles = [], []
+                if len(page_rows) < 3:
+                    fallback_rows, fallback_titles = _extract_pdf_rows_from_text(text, current_category=current_category, company_hint=company_hint)
+                    page_rows.extend(fallback_rows)
+                    detected_section_titles.extend([f'{page_label}: {_normalize_pdf_category_name(title)}' for title in fallback_titles])
 
-                if ai_enabled and len(page_rows) < 6 and len(normalized_text) < 24000:
+                if ai_enabled and len(page_rows) < 4 and len(normalized_text) < 24000:
                     ai_rows, usage_meta = _ai_extract_pdf_rows_from_text(text, current_category=current_category, company_hint=company_hint, page_number=page_idx)
                     ai_usage_totals['prompt_tokens'] += int(usage_meta.get('prompt_tokens', 0) or 0)
                     ai_usage_totals['completion_tokens'] += int(usage_meta.get('completion_tokens', 0) or 0)
@@ -6790,11 +6960,9 @@ def convert_supplier_pdf_to_source(uploaded_file):
                 for row in page_rows:
                     if (not row.get('Product')) and state.family:
                         row['Product'] = state.family
-                    if row.get('Category') in {'', 'PDF Catalog', f'PDF Page {page_idx}'} and state.category:
-                        row['Category'] = state.category
+                    row['Category'] = _normalize_pdf_category_name(row.get('Category') or current_category or state.category or toc_category or 'PDF Catalog')
                     notes = row.get('Notes', '') or ''
                     row['Notes'] = (notes + (f' | Source {page_label}' if notes else f'Source {page_label}')).strip()
-                    row.setdefault('Category', current_category)
                     row.setdefault('Company', company_hint or '')
                     row.setdefault('confidence', 0.70)
                 all_rows.extend(page_rows)
@@ -6820,28 +6988,7 @@ def convert_supplier_pdf_to_source(uploaded_file):
             'chunk_size': chunk_size,
         }
 
-    source_df = pd.DataFrame(all_rows)
-    source_df['Base Price'] = pd.to_numeric(source_df['Base Price'], errors='coerce')
-    source_df['Price'] = source_df['Base Price']
-
-    for col, default in [('SAP',''),('Product',''),('MM',''),('Package',''),('Category','PDF Catalog'),('confidence',0.70)]:
-        if col not in source_df.columns:
-            source_df[col] = default
-
-    source_df['Product'] = source_df['Product'].astype(str).str.replace(r'\s+', ' ', regex=True).str.strip()
-    source_df['SAP'] = source_df['SAP'].astype(str).str.strip()
-    source_df['Package'] = source_df['Package'].astype(str).str.strip()
-    source_df['Category'] = source_df['Category'].astype(str).str.strip().replace('', 'PDF Catalog')
-    source_df = source_df[~((source_df['Product'].astype(str).str.strip().eq('')) & source_df['Base Price'].isna())].copy()
-    source_df = source_df[~(source_df['Product'].str.lower().isin(['περιεχομενα', 'contents']))].copy()
-    source_df = source_df[~source_df['Base Price'].astype(str).str.contains(r'x|mm|cm', case=False, na=False)].copy()
-    title_noise_re = r'(?:^|\b)(price list|catalog|table of contents|contents|delivery conditions|valid from|technical data|overview|description|application|packaging|recommended retail|τιμοκαταλογος|περιεχομενα|ισχυς απο|προυποθεσεις|τεχνικα χαρακτηριστικα|εφαρμογη|περιγραφη|γυψοσανιδες για|γυψοπλακες για|οι τιμες ειναι|χωρις φπα)(?:\b|$)'
-    source_df = source_df[~source_df['Product'].str.lower().str.contains(title_noise_re, regex=True, na=False)].copy()
-    source_df['SAP'] = source_df['SAP'].where(source_df['SAP'].astype(str).str.match(r'^(?:\d{5,8}|[A-Z]{1,4}\d{1,5}[A-Z0-9./_-]{0,4})$', na=False), '')
-    dedupe_cols = [c for c in ['SAP','Product','Package','Base Price','Category'] if c in source_df.columns]
-    if dedupe_cols:
-        source_df = source_df.drop_duplicates(subset=dedupe_cols, keep='first')
-    source_df = source_df[_source_generator_output_columns()].reset_index(drop=True)
+    source_df = _finalize_pdf_source_dataframe(pd.DataFrame(all_rows))
 
     rows_missing_price = int(source_df['Base Price'].isna().sum())
     rows_missing_sap = int(source_df['SAP'].astype(str).str.strip().eq('').sum())
