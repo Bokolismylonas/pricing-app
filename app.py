@@ -5934,6 +5934,108 @@ PDF_PACKAGING_ONLY_PATTERNS = [
 
 PDF_EXPLANATORY_ROW_RE = r'(?:^|\b)(delivery conditions|valid from|table of contents|contents|technical data|application|description|overview|recommended retail|price list|catalog|τιμοκαταλογος|περιεχομενα|ισχυς απο|προυποθεσεις|τεχνικα χαρακτηριστικα|εφαρμογη|περιγραφη|χωρις φπα|οι τιμες ειναι)(?:\b|$)'
 
+PDF_CONSUMPTION_PATTERNS = [
+    r'\bκαταναλωσ(?:η|ης|εων)?\b', r'\bconsumption\b', r'\bcoverage\b', r'\byield\b',
+    r'\bπεριπου\b', r'\bapprox\.?\b', r'\bkg\s*/\s*m2\b', r'\bkg\s*/\s*m²\b',
+    r'\bgr\s*/\s*m2\b', r'\bgr\s*/\s*m²\b', r'\bml\s*/\s*m2\b', r'\bml\s*/\s*m²\b',
+    r'\bανά?\s*m2\b',
+]
+PDF_HARD_REJECT_PATTERNS = [
+    r'\bεπικοινων(?:ια|ίας)?\b', r'\bemail\b', r'\bwebsite\b', r'\bwww\.', r'\bτηλ\.?\b', r'\btelephone\b',
+    r'\bπεριεχομενα\b', r'\bcontents\b', r'\bχρωματολογ(?:ιο|ια)\b', r'\bcolor system\b',
+    r'\bαποχρωσ(?:η|εις)\b', r'\bshade\b', r'\bsand beige\b', r'\blight blue\b', r'\bdark blue\b',
+]
+PDF_INFO_HEADER_PATTERNS = [
+    r'\bο τιμοκαταλογος ισχυει\b', r'\bισχυει απο\b', r'\bdelivery conditions\b', r'\bvalid from\b',
+    r'\bοι τιμες ειναι\b', r'\bχωρις φπα\b', r'\bprices are in\b', r'\bour key brands\b',
+]
+PDF_SECTION_TITLE_NEGATIVE_PATTERNS = [
+    r'\bπλεονεκτημ', r'\badvantages\b', r'\bfeatures\b', r'\bapplications\b', r'\bτεχνικ', r'\btechnical\b',
+    r'\bπιστοποι', r'\bcertif', r'\bdeclaration\b',
+]
+
+def _matches_any_pattern(text: str, patterns) -> bool:
+    s = _normalize_text_simple(text).lower()
+    return bool(s) and any(re.search(p, s, flags=re.I) for p in patterns)
+
+def _looks_like_consumption_text(text: str) -> bool:
+    return _matches_any_pattern(text, PDF_CONSUMPTION_PATTERNS)
+
+def _looks_like_hard_reject_text(text: str) -> bool:
+    return _matches_any_pattern(text, PDF_HARD_REJECT_PATTERNS) or _matches_any_pattern(text, PDF_INFO_HEADER_PATTERNS)
+
+def _looks_like_info_header_text(text: str) -> bool:
+    return _matches_any_pattern(text, PDF_INFO_HEADER_PATTERNS)
+
+def _extract_piece_package_from_text(text: str) -> str:
+    s = _normalize_text_simple(text)
+    if not s:
+        return ''
+    for pat in [
+        r'(\d+)\s*(σανιδ(?:ες|α)|boards?)', r'(\d+)\s*(παλετ(?:ες|α)|pallets?)', r'(\d+)\s*(σακ(?:ια|ι)|bags?)',
+        r'(\d+)\s*(κουβαδ(?:ες|α)|buckets?)', r'(\d+)\s*(τεμ(?:αχια|αχιο)?|pcs?)', r'(\d+)\s*(δεμ(?:ατ(?:α|ο))?|bundles?)',
+    ]:
+        m = re.search(pat, s, flags=re.I)
+        if m:
+            return f"{m.group(1)} {m.group(2)}"
+    return ''
+
+def _looks_like_sparse_info_product(product: str, price=None, sap: str = '', package: str = '', mm: str = '') -> bool:
+    p = _normalize_text_simple(product).lower()
+    if not p:
+        return True
+    if _looks_like_consumption_text(p) or _looks_like_hard_reject_text(p) or _is_packaging_only_text(p):
+        return True
+    words = [w for w in p.split() if w]
+    has_price = _to_float_or_none(price) is not None
+    has_sap = bool(_normalize_text_simple(sap))
+    has_package = bool(_normalize_text_simple(package))
+    has_mm = bool(_normalize_text_simple(mm))
+    if len(words) <= 2 and not (has_price and has_sap):
+        if set(words) & {'σακι','σακί','παλετα','παλέτα','κουβας','κουβάς','ρολο','ρολό','bag','bucket','pallet','roll'}:
+            return True
+    return len(words) <= 3 and not (has_price or has_sap or (has_package and has_mm))
+
+def _pdf_page_classification(text: str) -> str:
+    s = _normalize_text_simple(text).lower()
+    if not s:
+        return 'EMPTY'
+    if _looks_like_pdf_contents_page(s):
+        return 'INDEX'
+    if _looks_like_pdf_marketing_page(s):
+        return 'MARKETING'
+    if _looks_like_consumption_text(s) and len(re.findall(r'\d+[.,]\d+', s)) < 8:
+        return 'CONSUMPTION'
+    pricing_hits = len(re.findall(r'\d+[.,]\d+|\b\d{4,8}\b', s))
+    unit_hits = len(re.findall(r'\b(?:m2|m²|kg|lt|ml|mm|cm|τεμ|pcs?)\b', s))
+    table_hints = ('sap code' in s) or ('κωδικ' in s) or ('τιμη' in s) or ('list price' in s)
+    if pricing_hits >= 10 and (unit_hits >= 3 or table_hints):
+        return 'PRICE_LIST'
+    if pricing_hits >= 4:
+        return 'MIXED'
+    if _matches_any_pattern(s, PDF_SECTION_TITLE_NEGATIVE_PATTERNS):
+        return 'TECHNICAL'
+    return 'MIXED'
+
+def _should_try_ai_on_pdf_page(page_text: str, profile: str, page_rows_count: int, ai_calls_so_far: int) -> bool:
+    txt = _normalize_text_simple(page_text)
+    cls = _pdf_page_classification(txt)
+    if not txt or cls in {'INDEX','MARKETING','CONSUMPTION','EMPTY'}:
+        return False
+    if ai_calls_so_far >= int(os.getenv('OPENAI_PDF_MAX_CALLS', '16')):
+        return False
+    if len(txt) > int(os.getenv('OPENAI_PDF_MAX_PAGE_CHARS', '18000')):
+        return False
+    return page_rows_count < (6 if profile in {'isomat','sika','heavy_catalog'} else 5) or cls == 'MIXED'
+
+def _build_ai_pdf_page_payload(text: str) -> str:
+    lines=[]
+    for raw in str(text or '').splitlines():
+        line=_normalize_text_simple(raw)
+        if line and not _looks_like_info_header_text(line):
+            lines.append(line)
+    return '\n'.join(lines[:220])[:18000]
+
 
 def _pdf_vendor_profile(company_hint: str, total_pages: int = 0) -> str:
     s = _normalize_text_simple(company_hint).lower()
@@ -5994,234 +6096,56 @@ def _merge_packaging_into_product(product: str, package: str) -> str:
     return product
 
 
-
-
-COLOR_WORDS = {
-    "white", "black", "grey", "gray", "light grey", "dark grey", "light gray", "dark gray",
-    "red", "green", "blue", "light blue", "dark blue", "yellow", "brown", "beige", "ivory",
-    "transparent", "clear", "silver", "gold",
-    "λευκο", "λευκό", "μαυρο", "μαύρο", "γκρι", "γκρι ανοιχτο", "γκρι ανοιχτό", "γκρι σκουρο", "γκρι σκούρο",
-    "κοκκινο", "κόκκινο", "πρασινο", "πράσινο", "μπλε", "μπλε ανοιχτο", "μπλε ανοιχτό", "μπλε σκουρο", "μπλε σκούρο",
-    "κιτρινο", "κίτρινο", "καφε", "καφέ", "μπεζ", "διαφανο", "διάφανο", "ασημι", "ασημί"
-}
-
-ATTRIBUTE_ONLY_WORDS = {
-    "matt", "mat", "gloss", "satin", "silk", "super matt", "semi matt", "semi-matt",
-    "extra", "base", "standard", "classic", "eco", "pro", "premium",
-    "ματ", "σατινε", "σατινέ", "γυαλιστερο", "γυαλιστερό", "βαση", "βάση", "βασικο", "βασικό", "κλασικο", "κλασικό"
-}
-
-PACKAGING_ONLY_WORDS = {
-    "τεμ", "τεμαχιο", "τεμάχιο", "τεμαχια", "τεμάχια", "κιβ", "κιβωτιο", "κιβώτιο", "κιβωτια", "κιβώτια", "παλ", "παλετα", "παλέτα", "παλετες", "παλέτες",
-    "σακι", "σακί", "σακια", "σακιά", "ρολο", "ρολό", "ρολα", "ρολά", "φυλλο", "φύλλο", "δεμα", "δέμα", "δοχειο", "δοχείο", "δοχεια", "δοχεία",
-    "pack", "box", "boxes", "pcs", "piece", "pieces", "bag", "bags", "pail", "drum", "bucket", "roll", "sheet", "bundle", "pallet"
-}
-
-MATERIAL_KEYWORDS = {
-    "knauf", "siniat", "isomat", "sika", "bauer", "fibran", "insulation",
-    "γυψοσανιδ", "προφιλ", "προφίλ", "ορυκτοβαμβ", "ορυκτοβάμβ", "τσιμεντ", "στοκ", "στόκ", "κολλα", "κόλλα", "ασταρ", "αστάρ",
-    "στεγανω", "μονωτ", "plaster", "panel", "board", "profile", "adhesive", "sealant", "primer", "foam", "mortar", "putty", "cement", "wool"
-}
-
-DIMENSION_RE = re.compile(r'(?i)\b\d+(?:[.,]\d+)?\s?(?:x|×)\s?\d+(?:[.,]\d+)?(?:\s?(?:x|×)\s?\d+(?:[.,]\d+)?)?\b')
-UNIT_RE = re.compile(r'(?i)\b(?:mm|cm|m|m2|m3|kg|gr|g|lt|l|ml|τεμ|pcs|pc|bag|roll|pack|box|pail)\b')
-PURE_ATTRIBUTE_RE = re.compile(r'(?i)^\s*(?:light|dark|super|extra|semi)?\s*(?:white|black|grey|gray|red|green|blue|yellow|brown|beige|ivory|matt|mat|gloss|satin|silk|λευκο|λευκό|μαυρο|μαύρο|γκρι|κοκκινο|κόκκινο|πρασινο|πράσινο|μπλε|κιτρινο|κίτρινο|καφε|καφέ|μπεζ|ματ|σατινε|σατινέ|γυαλιστερο|γυαλιστερό)\s*$')
-CODE_LIKE_RE = re.compile(r'^[A-Z0-9._/\-]{3,}$', re.I)
-PRICE_LIKE_RE = re.compile(r'^\s*\d+(?:[.,]\d{1,4})?\s*$')
-
-
-def _contains_any_token(text, token_set):
-    t = _normalize_text_simple(text).lower()
-    return any(tok in t for tok in token_set)
-
-
-def _looks_like_dimension_text(text):
-    return bool(DIMENSION_RE.search(_normalize_text_simple(text)))
-
-
-def _looks_like_unit_text(text):
-    return bool(UNIT_RE.search(_normalize_text_simple(text)))
-
-
-def _looks_like_code_text(text):
-    return bool(CODE_LIKE_RE.match(_normalize_text_simple(text)))
-
-
-def _looks_like_price_text(text):
-    return bool(PRICE_LIKE_RE.match(_normalize_text_simple(text)))
-
-
-def _is_attribute_only_text(text: str) -> bool:
-    t = _normalize_text_simple(text).lower()
-    if not t:
-        return False
-    if PURE_ATTRIBUTE_RE.match(t):
-        return True
-    if t in COLOR_WORDS or t in ATTRIBUTE_ONLY_WORDS:
-        return True
-    words = [w for w in re.split(r'[\s,/()\-\+]+', t) if w]
-    return 1 <= len(words) <= 3 and all((w in COLOR_WORDS or w in ATTRIBUTE_ONLY_WORDS) for w in words)
-
-
-def _is_packaging_only_text_v3(text: str) -> bool:
-    t = _normalize_text_simple(text).lower()
-    if not t:
-        return False
-    words = [w for w in re.split(r'[\s,/()\-\+]+', t) if w]
-    if not words:
-        return False
-    has_pack_word = any(w in PACKAGING_ONLY_WORDS for w in words)
-    has_unit = _looks_like_unit_text(t)
-    has_dimension = _looks_like_dimension_text(t)
-    has_material = _contains_any_token(t, MATERIAL_KEYWORDS)
-    if has_pack_word and not has_material and not has_dimension:
-        return True
-    if has_unit and len(words) <= 4 and not has_material and not has_dimension:
-        return True
-    return False
-
-
-def _extract_package_from_product_name(product_text: str, package_text: str = ""):
-    product_text = _normalize_text_simple(product_text)
-    package_text = _normalize_text_simple(package_text)
-    if not product_text:
-        return product_text, package_text
-    extracted = []
-    patterns = [
-        r'(?i)\b\d+(?:[.,]\d+)?\s?(?:kg|gr|g|lt|l|ml|m2|m3|τεμ|pcs|pc)\b',
-        r'(?i)\b\d+\s?(?:x|×)\s?\d+\b(?:\s?(?:τεμ|pcs|pc))?',
-        r'(?i)\b(?:σακι|σακί|σακια|σακιά|παλετα|παλέτα|παλετες|παλέτες|κιβωτιο|κιβώτιο|κιβωτια|κιβώτια|pack|box|boxes|bag|bags|roll|ρολο|ρολό|ρολα|ρολά|sheet|φυλλο|φύλλο|bundle|δεμα|δέμα|bucket|δοχειο|δοχείο|pail|drum)\b',
-    ]
-    cleaned = product_text
-    for pat in patterns:
-        found = re.findall(pat, cleaned)
-        if found:
-            extracted.extend(found)
-            cleaned = re.sub(pat, ' ', cleaned)
-    cleaned = re.sub(r'\s+', ' ', cleaned).strip(' -_/,.')
-    merged_package = ' '.join([x for x in [_normalize_text_simple(package_text), ' '.join(extracted).strip()] if x]).strip()
-    merged_package = re.sub(r'\s+', ' ', merged_package).strip()
-    return cleaned, merged_package
-
-
-def _has_strong_product_signal(product="", sap="", price="", mm="", package="", category=""):
-    product = _normalize_text_simple(product)
-    sap = _normalize_text_simple(sap)
-    price = _normalize_text_simple(price)
-    mm = _normalize_text_simple(mm)
-    package = _normalize_text_simple(package)
-    category = _normalize_text_simple(category)
-    score = 0
-    if product:
-        if len(product) >= 8:
-            score += 1
-        if _contains_any_token(product, MATERIAL_KEYWORDS):
-            score += 1
-        if _looks_like_dimension_text(product):
-            score += 1
-    if sap and _looks_like_code_text(sap):
-        score += 1
-    if price and _looks_like_price_text(price):
-        score += 1
-    if mm and _looks_like_unit_text(mm):
-        score += 1
-    if package and (_looks_like_unit_text(package) or _contains_any_token(package, PACKAGING_ONLY_WORDS)):
-        score += 1
-    if category:
-        score += 1
-    return score >= 2
-
-
-def _should_drop_pdf_row_v3(product="", sap="", price="", mm="", package="", category="", profile=""):
-    product = _normalize_text_simple(product)
-    sap = _normalize_text_simple(sap)
-    price = _normalize_text_simple(price)
-    mm = _normalize_text_simple(mm)
-    package = _normalize_text_simple(package)
-    category = _normalize_text_simple(category)
-    profile = _normalize_text_simple(profile).lower()
-    if not any([product, sap, price, mm, package, category]):
-        return True
-    if _is_attribute_only_text(product):
-        return True
-    if _is_packaging_only_text_v3(product):
-        return True
-    words = [w for w in re.split(r'[\s,/()\-\+]+', product) if w]
-    if product and len(words) <= 3 and _looks_like_unit_text(product) and not _contains_any_token(product, MATERIAL_KEYWORDS):
-        return True
-    if not _has_strong_product_signal(product, sap, price, mm, package, category):
-        return True
-    if profile == 'isomat':
-        low_info = not sap and not category and not _contains_any_token(product, MATERIAL_KEYWORDS)
-        if low_info:
-            return True
-        if len(words) <= 2 and not _looks_like_dimension_text(product) and not _looks_like_code_text(product):
-            return True
-    return False
-
 def _postprocess_pdf_source_df(source_df: pd.DataFrame, profile: str = 'generic') -> pd.DataFrame:
     if source_df is None or source_df.empty:
         return source_df
     df = source_df.copy()
-    for col in ['Product', 'Package', 'SAP', 'Category', 'Notes', 'MM', 'Base Price', 'Price']:
+    for col in ['Product', 'Package', 'SAP', 'Category', 'Notes']:
         if col not in df.columns:
             df[col] = ''
-    df['Product'] = df['Product'].astype(str).map(_normalize_text_simple)
-    df['Package'] = df['Package'].astype(str).map(_clean_pdf_package_text)
-    df['SAP'] = df['SAP'].astype(str).map(_normalize_text_simple)
-    df['Category'] = df['Category'].astype(str).map(_normalize_text_simple).replace('', 'PDF Catalog')
-    df['MM'] = df['MM'].astype(str).map(_normalize_text_simple)
+    df['Product'] = df['Product'].astype(str).str.replace(r'\s+', ' ', regex=True).str.strip()
+    df['Package'] = df['Package'].astype(str).str.replace(r'\s+', ' ', regex=True).str.strip()
+    df['Category'] = df['Category'].astype(str).str.replace(r'\s+', ' ', regex=True).str.strip().replace('', 'PDF Catalog')
 
+    # expand package detection from product when useful
+    inferred_piece_pkg = df['Product'].apply(_extract_piece_package_from_text)
+    blank_pkg = df['Package'].astype(str).str.strip().eq('')
+    df.loc[blank_pkg, 'Package'] = inferred_piece_pkg[blank_pkg]
+
+    # move packaging-only pseudo-products into Package then drop them as standalone rows
     pack_mask = df['Product'].apply(_is_packaging_only_text)
     empty_package_mask = df['Package'].astype(str).str.strip().eq('')
     df.loc[pack_mask & empty_package_mask, 'Package'] = df.loc[pack_mask & empty_package_mask, 'Product'].apply(lambda x: _normalize_package_label(x) or x)
     df = df.loc[~pack_mask].copy()
 
-    cleaned_products = []
-    cleaned_packages = []
-    for prod, pkg in zip(df['Product'].astype(str), df['Package'].astype(str)):
-        prod2, pkg2 = _extract_package_from_product_name(prod, pkg)
-        pkg2 = _clean_pdf_package_text(pkg2)
-        if len(prod2) < 6 and pkg2 and not _contains_any_token(prod2, MATERIAL_KEYWORDS):
-            prod2 = _merge_packaging_into_product(prod2 or prod, pkg2)
-        cleaned_products.append(prod2 or _normalize_text_simple(prod))
-        cleaned_packages.append(pkg2)
-    df['Product'] = cleaned_products
-    df['Package'] = cleaned_packages
+    # normalize package labels
+    df['Package'] = df['Package'].apply(lambda x: _normalize_package_label(x) or x)
 
+    # suppress explanatory/header/consumption rows that still slipped through
     df = df[~df['Product'].str.lower().str.contains(PDF_EXPLANATORY_ROW_RE, regex=True, na=False)].copy()
+    df = df[~df['Product'].apply(_looks_like_consumption_text)].copy()
+    df = df[~df['Product'].apply(_looks_like_hard_reject_text)].copy()
 
+    # prefer product title with embedded packaging
+    merge_mask = df['Package'].astype(str).str.strip().ne('') & (~df['Product'].apply(_is_packaging_only_text))
+    df.loc[merge_mask, 'Product'] = [
+        _merge_packaging_into_product(prod, pkg)
+        for prod, pkg in zip(df.loc[merge_mask, 'Product'], df.loc[merge_mask, 'Package'])
+    ]
+
+    # drop suspicious sparse rows after merge
+    sparse_mask = [
+        _looks_like_sparse_info_product(prod, price=price, sap=sap, package=pkg, mm=mm)
+        for prod, price, sap, pkg, mm in zip(df['Product'], df['Base Price'], df['SAP'], df['Package'], df['MM'])
+    ]
+    df = df.loc[[not x for x in sparse_mask]].copy()
+
+    # profile-aware SAP hardening
     if profile == 'siniat':
         sap_re = r'^(?:\d{5,8}|[A-Z]{1,3}\d{2,5})$'
-    elif profile == 'isomat':
-        sap_re = r'^\d{5,8}$'
     else:
         sap_re = r'^(?:\d{5,8}|[A-Z]{1,4}\d{1,5}[A-Z0-9./_-]{0,4})$'
     df['SAP'] = df['SAP'].where(df['SAP'].astype(str).str.match(sap_re, na=False), '')
-
-    df['Package'] = df['Package'].apply(lambda x: _normalize_package_label(x) or x)
-    short_mask = df['Product'].str.split().str.len().fillna(0) <= 2
-    df.loc[short_mask, 'Product'] = [
-        _merge_packaging_into_product(prod, pkg)
-        for prod, pkg in zip(df.loc[short_mask, 'Product'], df.loc[short_mask, 'Package'])
-    ]
-
-    keep_mask = []
-    for _, r in df.iterrows():
-        price_value = r.get('Price', '')
-        if price_value is None or str(price_value).strip() in {'', 'nan', 'None'}:
-            price_value = r.get('Base Price', '')
-        keep_mask.append(not _should_drop_pdf_row_v3(
-            product=r.get('Product', ''),
-            sap=r.get('SAP', ''),
-            price=str(price_value),
-            mm=r.get('MM', ''),
-            package=r.get('Package', ''),
-            category=r.get('Category', ''),
-            profile=profile,
-        ))
-    df = df[pd.Series(keep_mask, index=df.index)].copy()
-    df = df.drop_duplicates(subset=['SAP', 'Product', 'Package', 'Base Price', 'Category'], keep='first')
     return df
 
 
@@ -6290,12 +6214,11 @@ def _looks_like_pdf_noise_page_relaxed(text: str) -> bool:
     s = _normalize_text_simple(text).lower()
     if not s:
         return True
+    cls = _pdf_page_classification(s)
+    if cls in {'INDEX', 'MARKETING', 'CONSUMPTION', 'EMPTY'}:
+        return True
     if 'sap code' in s or 'κωδικ' in s or 'list price' in s or 'τιμη πωλησης' in s or 'τιμη' in s:
         return False
-    if _looks_like_pdf_contents_page(s):
-        return True
-    if _looks_like_pdf_marketing_page(s):
-        return True
     paragraph_lines = [ln for ln in s.splitlines() if len(ln.split()) > 10]
     numeric_hits = len(re.findall(r'\d+[.,]\d+|\d{4,8}', s))
     unit_hits = len(re.findall(r'(?:m2|m²|kg|lt|ml|mm|cm|τεμ|pcs?)', s))
@@ -6408,6 +6331,9 @@ def _looks_like_pdf_section_title(line: str) -> bool:
     if not line or len(line) > 90:
         return False
     if _to_float_or_none(line) is not None:
+        return False
+    low = line.lower()
+    if _looks_like_hard_reject_text(low) or _looks_like_consumption_text(low) or _matches_any_pattern(low, PDF_SECTION_TITLE_NEGATIVE_PATTERNS):
         return False
     letters = [ch for ch in line if ch.isalpha()]
     if len(letters) < 3:
@@ -6553,9 +6479,11 @@ def _is_pdf_noise_row(product: str, category: str, package: str) -> bool:
     blob = ' '.join([_normalize_text_simple(product), _normalize_text_simple(category), _normalize_text_simple(package)]).lower()
     if not blob:
         return True
+    if _looks_like_consumption_text(blob) or _looks_like_hard_reject_text(blob):
+        return True
     noise_markers = [
-        'εφαρμογ', 'χαρακτηριστικ', 'πλεονεκτημ', 'καταναλωσ', 'consumption', 'applications', 'features',
-        'τεχνικ', 'learn more', 'περιεχομενα', 'contents'
+        'εφαρμογ', 'χαρακτηριστικ', 'πλεονεκτημ', 'consumption', 'applications', 'features',
+        'τεχνικ', 'learn more', 'περιεχομενα', 'contents', 'πιστοποι', 'certif', 'declaration'
     ]
     return any(m in blob for m in noise_markers)
 
@@ -6771,7 +6699,7 @@ def _parse_pdf_table_variants(table, current_category: str = '', company_hint: s
             continue
 
         mm_text = _extract_mm_from_text(' '.join([str(unit), str(packaging_uom)])) or _extract_mm_from_text(product_text)
-        package_text = _extract_package_from_text(packaging) or _extract_package_from_text(product_text)
+        package_text = _extract_piece_package_from_text(packaging) or _extract_package_from_text(packaging) or _extract_piece_package_from_text(product_text) or _extract_package_from_text(product_text)
         notes = []
         if length:
             notes.append(f'Length {length}')
@@ -6781,6 +6709,9 @@ def _parse_pdf_table_variants(table, current_category: str = '', company_hint: s
             notes.append(packaging)
         if weight_sale:
             notes.append(f'Weight/U.M. Sale {weight_sale}')
+
+        if _looks_like_sparse_info_product(product_text, price=price, sap=code, package=package_text, mm=mm_text):
+            continue
 
         rows.append({
             'SAP': code,
@@ -6836,9 +6767,12 @@ def _parse_pdf_detail_page_text(text: str, current_category: str = '', company_h
             qty = package_match.group(1).replace(',', '.')
             qty = qty.rstrip('0').rstrip('.') if '.' in qty else qty
             package = f"{qty}{package_match.group(2).lower().replace('gr','g').replace('lt','l').replace('m²','m2')}"
+        product_candidate = title or current_category or 'PDF Product'
+        if _looks_like_sparse_info_product(product_candidate, price=price, sap=code, package=package, mm=_extract_mm_from_text(line)):
+            continue
         rows.append({
             'SAP': code,
-            'Product': title or current_category or 'PDF Product',
+            'Product': product_candidate,
             'Base Price': price,
             'Increase %': 0.0,
             'Price': price,
@@ -6905,6 +6839,8 @@ def _coerce_ai_pdf_rows(rows, current_category: str = '', company_hint: str = ''
                 dims.append(f'{label}:{vv}mm')
         mm_text = _normalize_text_simple(' | '.join(dims) or row.get('mm') or '')
         package = _normalize_text_simple(row.get('package') or '')
+        if not package:
+            package = _extract_piece_package_from_text(product) or _extract_package_from_text(product)
         unit = _normalize_text_simple(row.get('unit') or '')
         notes_bits = []
         if unit:
@@ -6916,6 +6852,10 @@ def _coerce_ai_pdf_rows(rows, current_category: str = '', company_hint: str = ''
         confidence = _to_float_or_none(row.get('confidence'))
         if confidence is None:
             confidence = 0.86 if (sap and price is not None) else 0.76
+        mm_final = mm_text or _extract_mm_from_text(product)
+        package_final = package or _extract_piece_package_from_text(product) or _extract_package_from_text(product)
+        if _looks_like_sparse_info_product(product, price=price, sap=sap, package=package_final, mm=mm_final):
+            continue
         out.append({
             'confidence': max(0.0, min(1.0, float(confidence))),
             'SAP': sap,
@@ -6923,8 +6863,8 @@ def _coerce_ai_pdf_rows(rows, current_category: str = '', company_hint: str = ''
             'Base Price': price,
             'Increase %': 0.0,
             'Price': price,
-            'MM': mm_text or _extract_mm_from_text(product),
-            'Package': package or _extract_package_from_text(product),
+            'MM': mm_final,
+            'Package': package_final,
             'Category': category,
             'Notes': _normalize_text_simple(' | '.join([n for n in notes_bits if n])),
             'Company': company_hint or '',
@@ -6945,16 +6885,16 @@ def _ai_extract_pdf_rows_from_text(text: str, current_category: str = '', compan
         'Εξάγεις ΜΟΝΟ γραμμές τιμοκαταλόγου με code/SAP, product, package, unit, price και category. '
         'Αγνόησε τεχνικές περιγραφές, applications, χαρακτηριστικά, marketing, headings χωρίς εμπορικά στοιχεία. '
         'Αν το ίδιο προϊόν έχει πολλές συσκευασίες, μήκη, πάχη ή SAP, επέστρεψε ξεχωριστό row για κάθε variant. '
-        'Μην επινοείς τιμές ή κωδικούς. Επέστρεψε μόνο JSON object με κλειδί rows.'
+        'Μην επινοείς τιμές ή κωδικούς. Μην επιστρέφεις κατανάλωση, αποχρώσεις, marketing, επικοινωνία, explanatory rows ή σκέτο packaging. Αν η γραμμή είναι consumption/info/header, αγνόησέ την. Επέστρεψε μόνο JSON object με κλειδί rows.'
     )
     user_prompt = (
         'Εξήγαγε source rows από το παρακάτω κείμενο PDF page.\n'
         f'Company hint: {company_hint or ""}\n'
         f'Current category hint: {current_category or ""}\n'
         f'Page: {page_number or ""}\n\n'
-        'JSON μορφή: {"rows": [...]} με fields: category, product_name, sap_code, code, thickness_mm, width_mm, length_mm, package, unit, price, price_text, notes, confidence.\n'
-        'Κράτα μόνο εμπορικές εγγραφές που μπορούν να μπουν σε Source Excel.\n\n'
-        'ΚΕΙΜΕΝΟ:\n' + text[:45000]
+        'JSON μορφή: {"rows": [...]} με fields: category, product_name, sap_code, code, thickness_mm, width_mm, length_mm, package, unit, price, price_text, notes, confidence, row_type.\n'
+        'Κράτα μόνο εμπορικές εγγραφές που μπορούν να μπουν σε Source Excel. Αν υπάρχει αμφιβολία, προτίμησε να ΜΗΝ επιστρέψεις row.\n\n'
+        'ΚΕΙΜΕΝΟ:\n' + _build_ai_pdf_page_payload(text)
     )
     usage_meta = {}
     try:
@@ -6993,7 +6933,7 @@ def _parse_pdf_candidate_row(values, current_category: str = '', company_hint: s
     if len(cleaned) == 1 and _looks_like_pdf_section_title(cleaned[0]):
         return {'__section_title__': cleaned[0]}
     joined = ' '.join(cleaned)
-    if _looks_like_pdf_contents_page(joined):
+    if _looks_like_pdf_contents_page(joined) or _looks_like_hard_reject_text(joined):
         return None
 
     price_idx, base_price = _extract_last_valid_price_from_values(cleaned)
@@ -7024,7 +6964,7 @@ def _parse_pdf_candidate_row(values, current_category: str = '', company_hint: s
     if _to_float_or_none(product_text) is not None:
         return None
 
-    package_text = _extract_package_from_text(joined) or _extract_package_from_text(product_text)
+    package_text = _extract_piece_package_from_text(joined) or _extract_package_from_text(joined) or _extract_piece_package_from_text(product_text) or _extract_package_from_text(product_text)
     mm_text = _extract_mm_from_text(joined) or _extract_mm_from_text(product_text)
     notes_bits = []
     if trailing:
@@ -7032,6 +6972,9 @@ def _parse_pdf_candidate_row(values, current_category: str = '', company_hint: s
     m = re.search(r'\d{3,4}\s*[xX]\s*\d{3,4}', joined)
     if m:
         notes_bits.append(m.group(0))
+
+    if _looks_like_sparse_info_product(product_text, price=base_price, sap=sap_text, package=package_text, mm=mm_text):
+        return None
 
     return {
         'confidence': 0.74 if (sap_text and base_price is not None) else 0.62,
@@ -7176,6 +7119,7 @@ def convert_supplier_pdf_to_source(uploaded_file):
     detected_section_titles = []
     company_hint = Path(uploaded_file.name).stem
     ai_usage_totals = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "calls": 0}
+    page_class_counts = {}
     ai_enabled = current_user_can_use_pdf_catalog_extraction() and (get_openai_client_for_pdf_extraction() is not None)
 
     reader_preview = PdfReader(io.BytesIO(file_bytes))
@@ -7204,6 +7148,8 @@ def convert_supplier_pdf_to_source(uploaded_file):
                 text = page.extract_text() or ''
                 normalized_text = _normalize_text_simple(text)
                 text_lines = [_normalize_text_simple(line) for line in text.splitlines() if _normalize_text_simple(line)]
+                page_class = _pdf_page_classification(normalized_text)
+                page_class_counts[page_class] = page_class_counts.get(page_class, 0) + 1
 
                 if profile in {'isomat', 'sika', 'heavy_catalog'}:
                     pricing_hits = len(re.findall(r'\d+[.,]\d+|\b\d{4,8}\b', normalized_text))
@@ -7257,7 +7203,7 @@ def convert_supplier_pdf_to_source(uploaded_file):
                     page_rows.extend(fallback_rows)
                     detected_section_titles.extend([f'{page_label}: {_normalize_pdf_category_name(title)}' for title in fallback_titles])
 
-                if ai_enabled and profile not in {'isomat', 'sika', 'heavy_catalog'} and len(page_rows) < 4 and len(normalized_text) < 24000:
+                if ai_enabled and _should_try_ai_on_pdf_page(text, profile=profile, page_rows_count=len(page_rows), ai_calls_so_far=ai_usage_totals.get('calls', 0)):
                     ai_rows, usage_meta = _ai_extract_pdf_rows_from_text(text, current_category=current_category, company_hint=company_hint, page_number=page_idx)
                     ai_usage_totals['prompt_tokens'] += int(usage_meta.get('prompt_tokens', 0) or 0)
                     ai_usage_totals['completion_tokens'] += int(usage_meta.get('completion_tokens', 0) or 0)
@@ -7306,6 +7252,7 @@ def convert_supplier_pdf_to_source(uploaded_file):
             'input_kind': 'pdf',
             'processed_pages': total_pages_seen,
             'chunk_size': chunk_size,
+            'page_class_counts': page_class_counts,
         }
 
     source_df = _finalize_pdf_source_dataframe(pd.DataFrame(all_rows))
@@ -7330,6 +7277,7 @@ def convert_supplier_pdf_to_source(uploaded_file):
         'ai_calls': int(ai_usage_totals.get('calls', 0) or 0),
         'processed_pages': total_pages_seen,
         'chunk_size': chunk_size,
+        'page_class_counts': page_class_counts,
     }
     if stats['ai_calls'] > 0 and is_admin_user():
         append_pdf_ai_usage_log({
