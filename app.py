@@ -4783,20 +4783,6 @@ with st.sidebar:
         if st.button(button_label, use_container_width=True, key=f"sidebar_nav_btn_{nav_label}"):
             current_view_ui = nav_label
 
-    st.markdown("---")
-    st.subheader("🧭 Navigation")
-
-    nav_buttons = ["Company Manager", "Sources", "Comparisons"]
-    if is_admin_user():
-        nav_buttons.append("Admin Panel")
-
-    current_view = st.session_state.get("committed_view", "Comparisons")
-
-    for nav_label in nav_buttons:
-        button_label = f"• {nav_label}" if current_view == nav_label else nav_label
-        if st.button(button_label, use_container_width=True, key=f"sidebar_nav_btn_{nav_label}"):
-            current_view_ui = nav_label
-
             if current_view_ui == "Comparisons" and current_view == "Comparisons":
                 if has_unsaved_comparison_changes() and not st.session_state.get("show_leave_prompt"):
                     st.session_state["show_leave_prompt"] = True
