@@ -4769,19 +4769,7 @@ with st.sidebar:
             else:
                 st.warning("Plan: Locked")
 
-    st.markdown("---")
-    st.subheader("🧭 Navigation")
 
-    nav_buttons = ["Company Manager", "Sources", "Comparisons"]
-    if is_admin_user():
-        nav_buttons.append("Admin Panel")
-
-    current_view = st.session_state.get("committed_view", "Comparisons")
-
-    for nav_label in nav_buttons:
-        button_label = f"• {nav_label}" if current_view == nav_label else nav_label
-        if st.button(button_label, use_container_width=True, key=f"sidebar_nav_btn_{nav_label}"):
-            current_view_ui = nav_label
 
             if current_view_ui == "Comparisons" and current_view == "Comparisons":
                 if has_unsaved_comparison_changes() and not st.session_state.get("show_leave_prompt"):
@@ -6336,8 +6324,11 @@ def _parse_pdf_candidate_row(values, current_category: str = '', company_hint: s
         score = 0
         if '€' in raw or 'eur' in raw.lower():
             score += 4
-        if re.fullmatch(r'?\d+[.,]\d{1,4}', raw.replace('€', '').strip()):
-            score += 3
+        try:
+            if re.fullmatch(r'-?\d+[.,]\d{1,4}', raw.replace('€', '').strip()):
+                score += 3
+        except re.error:
+            pass
         if idx >= len(cleaned) - 2:
             score += 2
         if price_num < 1000:
