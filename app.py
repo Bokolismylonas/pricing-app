@@ -2993,17 +2993,177 @@ def _assistant_matches_any(text: str, patterns) -> bool:
     return any(re.search(p, s, flags=re.I) for p in patterns)
 
 
-def _assistant_review_reason(row: dict) -> str:
-    product = _normalize_text_simple(row.get("Product", ""))
-    package = _normalize_text_simple(row.get("Package", ""))
-    sap = _normalize_text_simple(row.get("SAP", ""))
-    mm = _normalize_text_simple(row.get("MM", ""))
+
+PDF_ASSISTANT_BOARD_FAMILY_KEYWORDS = [
+    "nida", "ladura", "aquaboard", "aquapanel", "creason", "createx", "pregy", "knauf",
+    "hydro", "expert", "flam", "flex", "smart", "rigips", "silentboard", "drystar",
+    "diamond board", "fireboard"
+]
+
+PDF_ASSISTANT_BOARD_CATEGORY_KEYWORDS = [
+    "γυψοσαν", "σανιδ", "board", "boards", "plasterboard", "gypsum board", "drywall", "panel"
+]
+
+PDF_ASSISTANT_ACCESSORY_KEYWORDS = [
+    "προφιλ", "profile", "profiles", "screw", "βιδ", "ταιν", "joint", "connector", "hanger",
+    "clip", "γωνι", "corner", "trim", "accessor", "αξεσουαρ", "tape", "fastener"
+]
+
+PDF_ASSISTANT_CHEMICAL_KEYWORDS = [
+    "primer", "adhesive", "sealant", "putty", "mortar", "grout", "coating", "foam",
+    "τσιμεντ", "κονια", "στοκ", "κολλα", "ασταρ", "στεγαν", "ρητιν", "χρωμ", "βαφ", "epoxy"
+]
+
+PDF_ASSISTANT_BOARD_PACKAGE_PATTERNS = [
+    r"\b\d+\s*(?:σανιδ(?:ες|α)?|boards?|sheets?)\s*/\s*(?:παλετ[αες]?|pallet)\b",
+    r"\b(?:σανιδ(?:ες|α)?|boards?|sheets?)\s*/\s*(?:παλετ[αες]?|pallet)\b",
+    r"\b\d+\s*(?:σανιδ(?:ες|α)?|boards?|sheets?)\b",
+]
+
+PDF_ASSISTANT_VARIANT_ONLY_PATTERNS = [
+    r"^\d+(?:[.,]\d+)?\s*(?:mm|cm|m)?$",
+    r"^\d+\s*x\s*\d+\s*(?:mm|cm|m)?$",
+]
+
+def _assistant_norm(s):
+    return _normalize_text_simple(s)
+
+def _assistant_blob(*parts):
+    return " ".join([_assistant_norm(p) for p in parts if _assistant_norm(p)]).strip()
+
+def _assistant_contains_any(text, words):
+    low = _assistant_norm(text).lower()
+    return any(w in low for w in words)
+
+def _assistant_is_board_context(product="", category="", package=""):
+    blob = _assistant_blob(product, category, package).lower()
+    return _assistant_contains_any(blob, PDF_ASSISTANT_BOARD_FAMILY_KEYWORDS + PDF_ASSISTANT_BOARD_CATEGORY_KEYWORDS) or bool(_assistant_extract_board_package(blob))
+
+def _assistant_is_accessory_context(product="", category="", package=""):
+    blob = _assistant_blob(product, category, package).lower()
+    return _assistant_contains_any(blob, PDF_ASSISTANT_ACCESSORY_KEYWORDS)
+
+def _assistant_is_chemical_context(product="", category="", package=""):
+    blob = _assistant_blob(product, category, package).lower()
+    return _assistant_contains_any(blob, PDF_ASSISTANT_CHEMICAL_KEYWORDS) or _looks_like_consumption_text(blob)
+
+def _assistant_infer_section_type(row: dict) -> str:
+    product = _assistant_norm(row.get("Product", ""))
+    category = _assistant_norm(row.get("Category", ""))
+    package = _assistant_norm(row.get("Package", ""))
+    if _assistant_is_board_context(product, category, package):
+        return "boards"
+    if _assistant_is_accessory_context(product, category, package):
+        return "accessories"
+    if _assistant_is_chemical_context(product, category, package):
+        return "chemicals"
+    return "generic"
+
+def _assistant_extract_board_package(text: str) -> str:
+    s = _assistant_norm(text)
+    if not s:
+        return ""
+    for pat in PDF_ASSISTANT_BOARD_PACKAGE_PATTERNS:
+        m = re.search(pat, s, flags=re.I)
+        if m:
+            pkg = m.group(0)
+            pkg = re.sub(r"\s+", " ", pkg).strip(" -/,")
+            pkg = pkg.replace("boards", "σανίδες").replace("board", "σανίδα").replace("pallet", "παλέτα")
+            return pkg
+    return ""
+
+def _assistant_is_board_package_only_text(text: str) -> bool:
+    s = _assistant_norm(text)
+    if not s:
+        return False
+    if _assistant_extract_board_package(s):
+        stripped = re.sub(r"\s*-\s*παλετ[αες]\b", "", s, flags=re.I)
+        stripped = re.sub(r"\s*-\s*pallets?\b", "", stripped, flags=re.I)
+        remainder = re.sub("|".join(f"(?:{p})" for p in PDF_ASSISTANT_BOARD_PACKAGE_PATTERNS), "", stripped, flags=re.I)
+        remainder = _assistant_norm(remainder)
+        return remainder == "" or remainder in {"παλέτα", "παλέτες", "pallet", "pallets"}
+    return False
+
+def _assistant_extract_board_family(product: str) -> str:
+    s = _assistant_norm(product)
+    if not s:
+        return ""
+    s = re.sub(r"\+?\d+\s*mm\b", "", s, flags=re.I)
+    s = re.sub(r"\b\d+(?:[.,]\d+)?\s*(?:mm|cm|m)\b", "", s, flags=re.I)
+    s = re.sub(r"\b\d+\s*x\s*\d+\b", "", s, flags=re.I)
+    pkg = _assistant_extract_board_package(s)
+    if pkg:
+        s = re.sub(re.escape(pkg), "", s, flags=re.I)
+    s = re.sub(r"\b\d{5,8}\b", "", s)
+    s = re.sub(r"\s+", " ", s).strip(" -/,")
+    return s
+
+def _assistant_extract_board_variant(product: str) -> str:
+    s = _assistant_norm(product)
+    if not s:
+        return ""
+    fam = _assistant_extract_board_family(s)
+    if fam and fam.lower() in s.lower():
+        # preserve numeric variant after family
+        m = re.search(re.escape(fam), s, flags=re.I)
+        if m:
+            rest = _assistant_norm(s[m.end():])
+            rest = re.sub(r"^[-,/ ]+", "", rest)
+            rest = re.sub(re.escape(_assistant_extract_board_package(rest)), "", rest, flags=re.I)
+            rest = _assistant_norm(rest)
+            return rest
+    return ""
+
+def _assistant_row_has_real_signal(row: dict) -> bool:
+    product = _assistant_norm(row.get("Product", ""))
+    sap = _assistant_norm(row.get("SAP", ""))
     price = row.get("Base Price", None)
+    mm = _assistant_norm(row.get("MM", ""))
+    package = _assistant_norm(row.get("Package", ""))
+    signals = 0
+    if product and len(product) >= 4:
+        signals += 1
+    if sap:
+        signals += 1
+    if price is not None and str(price) not in {"", "nan", "None"}:
+        signals += 1
+    if mm:
+        signals += 1
+    if package:
+        signals += 1
+    return signals >= 2
+
+
+
+def _assistant_review_reason(row: dict) -> str:
+    product = _assistant_norm(row.get("Product", ""))
+    package = _assistant_norm(row.get("Package", ""))
+    sap = _assistant_norm(row.get("SAP", ""))
+    mm = _assistant_norm(row.get("MM", ""))
+    price = row.get("Base Price", None)
+    category = _assistant_norm(row.get("Category", ""))
     low = product.lower()
     words = [w for w in re.split(r"[\s,/()\-]+", low) if w]
+    section_type = _assistant_infer_section_type(row)
 
     if not product and (sap or price is not None):
         return "missing_product_name"
+
+    if section_type == "boards":
+        if _assistant_is_board_package_only_text(product):
+            return "board_package_only"
+        if product and any(re.fullmatch(p, low, flags=re.I) for p in PDF_ASSISTANT_VARIANT_ONLY_PATTERNS):
+            return "board_variant_only"
+        if _assistant_matches_any(product, PDF_ASSISTANT_REVIEW_PATTERNS["header_info"]):
+            return "header/info"
+        if _assistant_matches_any(product, PDF_ASSISTANT_REVIEW_PATTERNS["consumption"]):
+            return "consumption/spec"
+        if not sap and price is None and not package:
+            fam = _assistant_extract_board_family(product)
+            if not fam or len(fam.split()) <= 1:
+                return "weak_row"
+        return ""
+
     if _assistant_matches_any(product, PDF_ASSISTANT_REVIEW_PATTERNS["consumption"]):
         return "consumption/spec"
     if _assistant_matches_any(product, PDF_ASSISTANT_REVIEW_PATTERNS["header_info"]):
@@ -3012,6 +3172,9 @@ def _assistant_review_reason(row: dict) -> str:
         return "color/attribute"
     if product and len(words) <= 3 and all(w in PDF_ASSISTANT_PACKAGING_TERMS or bool(re.fullmatch(r"\d+(?:[.,]\d+)?(?:kg|g|gr|lt|l|ml|m2|m²|m|pcs?|τεμ\.?)?", w, re.I)) for w in words):
         return "packaging_only"
+    if section_type == "chemicals":
+        if _looks_like_consumption_text(_assistant_blob(product, category, package)):
+            return "consumption/spec"
     if price is None and not sap and not mm and not package:
         return "weak_row"
     return ""
@@ -3023,15 +3186,21 @@ def _assistant_apply_cleanup(df: pd.DataFrame, mode: str = "conservative") -> pd
     out = _ensure_preview_row_id(df)
     if "Keep" not in out.columns:
         out["Keep"] = True
+    if "Section Type" not in out.columns:
+        out["Section Type"] = ""
     reasons = []
+    section_types = []
     for _, row in out.iterrows():
-        reason = _assistant_review_reason(row)
+        section_type = _assistant_infer_section_type(row)
+        section_types.append(section_type)
+        reason = _assistant_review_reason({**row.to_dict(), "Section Type": section_type})
         reasons.append(reason)
+    out["Section Type"] = section_types
     out["Review Reason"] = reasons
     if mode == "suggest_only":
         return out
     if mode == "conservative":
-        drop_mask = out["Review Reason"].isin(["consumption/spec", "header/info", "color/attribute", "packaging_only"])
+        drop_mask = out["Review Reason"].isin(["consumption/spec", "header/info", "color/attribute", "packaging_only", "board_package_only", "board_variant_only"])
         out.loc[drop_mask, "Keep"] = False
     elif mode == "strict":
         drop_mask = out["Review Reason"].ne("")
@@ -3042,41 +3211,85 @@ def _assistant_apply_cleanup(df: pd.DataFrame, mode: str = "conservative") -> pd
 def _assistant_apply_family_fill(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return df
-    out = _ensure_preview_row_id(df)
+    out = _assistant_apply_cleanup(_ensure_preview_row_id(df), mode="suggest_only")
     current_family = ""
+    current_section_type = ""
     for idx in out.index:
-        product = _normalize_text_simple(out.at[idx, "Product"]) if "Product" in out.columns else ""
-        rr = _normalize_text_simple(out.at[idx, "Review Reason"]) if "Review Reason" in out.columns else ""
+        product = _assistant_norm(out.at[idx, "Product"]) if "Product" in out.columns else ""
+        rr = _assistant_norm(out.at[idx, "Review Reason"]) if "Review Reason" in out.columns else ""
+        section_type = _assistant_norm(out.at[idx, "Section Type"]) if "Section Type" in out.columns else ""
+
+        if section_type == "boards":
+            fam = _assistant_extract_board_family(product)
+            if fam and rr not in {"board_package_only", "missing_product_name", "weak_row"} and len(fam.split()) >= 1:
+                current_family = fam
+                current_section_type = "boards"
+            if rr in {"board_package_only", "missing_product_name", "board_variant_only"} and current_family:
+                pkg = _assistant_norm(out.at[idx, "Package"]) or _assistant_extract_board_package(product) or _extract_package_from_text(str(out.loc[idx].to_dict()))
+                variant = _assistant_extract_board_variant(product)
+                rebuilt = current_family
+                if variant:
+                    rebuilt = f"{current_family} {variant}".strip()
+                out.at[idx, "Product"] = rebuilt
+                if pkg and not _assistant_norm(out.at[idx, "Package"]):
+                    out.at[idx, "Package"] = pkg
+                if not _assistant_norm(out.at[idx, "Section Type"]):
+                    out.at[idx, "Section Type"] = "boards"
+                continue
+
         if product and rr not in {"packaging_only", "missing_product_name"} and len(product.split()) >= 2:
             current_family = product
+            current_section_type = section_type or current_section_type
             continue
         if (not product or rr in {"packaging_only", "missing_product_name"}) and current_family:
             if "Package" in out.columns and "Product" in out.columns:
-                pkg = _normalize_text_simple(out.at[idx, "Package"]) or _extract_package_from_text(str(out.loc[idx].to_dict()))
+                pkg = _assistant_norm(out.at[idx, "Package"]) or _extract_package_from_text(str(out.loc[idx].to_dict()))
                 out.at[idx, "Product"] = current_family
-                if pkg and not _normalize_text_simple(out.at[idx, "Package"]):
+                if pkg and not _assistant_norm(out.at[idx, "Package"]):
                     out.at[idx, "Package"] = pkg
-    return out
+                if current_section_type and not _assistant_norm(out.at[idx, "Section Type"]):
+                    out.at[idx, "Section Type"] = current_section_type
+    return _assistant_apply_cleanup(out, mode="suggest_only")
 
 
 def _assistant_export_ready_df(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame(columns=_source_generator_output_columns())
-    out = _ensure_preview_row_id(df).copy()
+    out = _assistant_apply_cleanup(_ensure_preview_row_id(df), mode="suggest_only").copy()
     if "Keep" in out.columns:
         out = out[out["Keep"].fillna(True)].copy()
-    out = out.drop(columns=[c for c in ["__row_id", "Keep", "Review Reason"] if c in out.columns], errors="ignore")
+
+    # board-specific product rebuild
+    current_board_family = ""
+    for idx in out.index:
+        section_type = _assistant_norm(out.at[idx, "Section Type"]) if "Section Type" in out.columns else ""
+        product = _assistant_norm(out.at[idx, "Product"])
+        rr = _assistant_norm(out.at[idx, "Review Reason"])
+        if section_type == "boards":
+            fam = _assistant_extract_board_family(product)
+            if fam and rr not in {"board_package_only", "missing_product_name", "weak_row"}:
+                current_board_family = fam
+            if rr in {"board_package_only", "board_variant_only", "missing_product_name"} and current_board_family:
+                variant = _assistant_extract_board_variant(product)
+                pkg = _assistant_norm(out.at[idx, "Package"]) or _assistant_extract_board_package(product)
+                out.at[idx, "Product"] = f"{current_board_family} {variant}".strip() if variant else current_board_family
+                if pkg and not _assistant_norm(out.at[idx, "Package"]):
+                    out.at[idx, "Package"] = pkg
+
+    out = out.drop(columns=[c for c in ["__row_id", "Keep", "Review Reason", "Section Type"] if c in out.columns], errors="ignore")
     expected = _source_generator_output_columns()
     for c in expected:
         if c not in out.columns:
             out[c] = ""
     out = out[expected].copy()
-    out["Base Price"] = pd.to_numeric(out["Base Price"], errors="coerce")
+    out["Base Price"] = pd.to_numeric(out["Base Price"], errors='coerce')
     out["Price"] = out["Base Price"]
     for col in ["SAP", "Product", "MM", "Package", "Category"]:
         out[col] = out[col].fillna("").astype(str).str.strip()
     out = out[~(out["Product"].eq("") & out["SAP"].eq("") & out["Base Price"].isna())].copy()
-    return out.reset_index(drop=True)
+    out = out[~out["Product"].map(_assistant_is_board_package_only_text)].copy()
+    out = out.reset_index(drop=True)
+    return out
 
 
 def _delete_selected_preview_rows_from_state(state_key: str, selected_row_ids) -> int:
@@ -7794,8 +8007,8 @@ def render_sources():
     st.markdown("### 1. Create Source from Supplier Pricelist")
     st.caption("Upload a supplier pricelist file, review the converted rows, edit anything you want, and then save it as a ready PRICELIST source file.")
 
-    pdf_ai_premium_enabled = current_user_can_use_pdf_catalog_extraction()
-    st.caption("Excel upload: διαθέσιμο για όλους. Το AI PDF extraction εμφανίζεται ως ξεχωριστό εργαλείο μόνο για Admin.")
+    pdf_ai_premium_enabled = False
+    st.caption("Excel upload: διαθέσιμο για όλους.")
 
     gen_c1, gen_c2, gen_c3 = st.columns(3)
     with gen_c1:
@@ -7833,7 +8046,7 @@ def render_sources():
             help="Enhanced extraction with better page filtering and variant expansion.",
         )
 
-    uploaded_supplier_file = uploaded_pdf_supplier_file if uploaded_pdf_supplier_file is not None else uploaded_supplier_file
+    uploaded_supplier_file = uploaded_supplier_file
 
     if uploaded_supplier_file is not None:
         source_df, conversion_stats = None, None
@@ -7964,7 +8177,7 @@ def render_sources():
             if is_pdf_upload and is_admin_user():
                 st.markdown("##### PDF Assistant (Admin Review)")
                 st.caption("Το PDF δεν αποθηκεύεται αυτόματα. Κάνε review, καθάρισε τις προτεινόμενες γραμμές και μετά σώσε το ready source.")
-                ac1, ac2, ac3, ac4 = st.columns(4)
+                ac1, ac2, ac3, ac4, ac5 = st.columns(5)
                 with ac1:
                     if st.button("Suggest cleanup", key="pdf_assistant_suggest_cleanup", use_container_width=True):
                         st.session_state["generated_source_working_df"] = _assistant_apply_cleanup(st.session_state["generated_source_working_df"], mode="suggest_only")
@@ -7978,6 +8191,10 @@ def render_sources():
                         st.session_state["generated_source_working_df"] = _assistant_apply_family_fill(st.session_state["generated_source_working_df"])
                         st.rerun()
                 with ac4:
+                    if st.button("Detect section types", key="pdf_assistant_detect_section_types", use_container_width=True):
+                        st.session_state["generated_source_working_df"] = _assistant_apply_cleanup(st.session_state["generated_source_working_df"], mode="suggest_only")
+                        st.rerun()
+                with ac5:
                     if st.button("Reset review", key="pdf_assistant_reset_review", use_container_width=True):
                         st.session_state["generated_source_working_df"] = _ensure_preview_row_id(source_df)
                         st.rerun()
@@ -7999,6 +8216,7 @@ def render_sources():
                     "Row": st.column_config.NumberColumn("Row", disabled=True),
                     "Keep": st.column_config.CheckboxColumn("Keep"),
                     "Review Reason": st.column_config.TextColumn("Review Reason", disabled=True, width="medium"),
+                    "Section Type": st.column_config.SelectboxColumn("Section Type", options=["generic", "boards", "accessories", "chemicals"]),
                     "SAP": st.column_config.TextColumn("SAP"),
                     "Product": st.column_config.TextColumn("Product", width="large"),
                     "Base Price": st.column_config.NumberColumn("Base Price", format="%.4f"),
