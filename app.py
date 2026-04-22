@@ -2960,6 +2960,125 @@ def _normalize_preview_editor_output(edited_df: pd.DataFrame) -> pd.DataFrame:
     return working
 
 
+PDF_ASSISTANT_REVIEW_PATTERNS = {
+    "consumption": [
+        r"\bκαταναλωσ(?:η|ης|εων)?\b", r"\bconsumption\b", r"\bcoverage\b", r"\byield\b",
+        r"\bπεριπου\b", r"\bapprox\.?\b", r"\bkg\s*/\s*m2\b", r"\bkg\s*/\s*m²\b",
+        r"\bgr\s*/\s*m2\b", r"\bgr\s*/\s*m²\b", r"\bml\s*/\s*m2\b", r"\bml\s*/\s*m²\b",
+        r"\bανά?\s*m2\b", r"\bανά?\s*m²\b",
+    ],
+    "header_info": [
+        r"\bτιμοκαταλογ", r"\bprice list\b", r"\bπεριεχομενα\b", r"\bcontents\b",
+        r"\bισχυει απο\b", r"\bvalid from\b", r"\bdelivery conditions\b", r"\bοι τιμες ειναι\b",
+        r"\btechnical data\b", r"\bapplication\b", r"\bdescription\b", r"\boverview\b",
+        r"\bεφαρμογ", r"\bπεριγραφ", r"\bιδιοτητ", r"\bπλεονεκτημ",
+    ],
+    "colors": [
+        r"\blight blue\b", r"\bdark blue\b", r"\blight grey\b", r"\bdark grey\b", r"\bsand beige\b",
+        r"\bblue\b", r"\bgrey\b", r"\bgray\b", r"\bbeige\b", r"\bgreen\b", r"\bred\b",
+        r"\bαποχρωσ", r"\bχρωμα", r"\bχρωματολογ",
+    ],
+}
+PDF_ASSISTANT_PACKAGING_TERMS = {
+    "bag", "bags", "σακί", "σακι", "παλέτα", "παλετα", "παλέτες", "παλετες", "pallet", "pallets",
+    "box", "boxes", "κιβώτιο", "κιβωτιο", "bucket", "δοχείο", "δοχειο", "roll", "ρολό", "ρολο",
+    "bundle", "δέμα", "δεμα", "pack", "pcs", "pc", "τεμ", "τεμ.", "σανίδες/παλέτα", "boards/pallet"
+}
+
+
+def _assistant_matches_any(text: str, patterns) -> bool:
+    s = _normalize_text_simple(text).lower()
+    if not s:
+        return False
+    return any(re.search(p, s, flags=re.I) for p in patterns)
+
+
+def _assistant_review_reason(row: dict) -> str:
+    product = _normalize_text_simple(row.get("Product", ""))
+    package = _normalize_text_simple(row.get("Package", ""))
+    sap = _normalize_text_simple(row.get("SAP", ""))
+    mm = _normalize_text_simple(row.get("MM", ""))
+    price = row.get("Base Price", None)
+    low = product.lower()
+    words = [w for w in re.split(r"[\s,/()\-]+", low) if w]
+
+    if not product and (sap or price is not None):
+        return "missing_product_name"
+    if _assistant_matches_any(product, PDF_ASSISTANT_REVIEW_PATTERNS["consumption"]):
+        return "consumption/spec"
+    if _assistant_matches_any(product, PDF_ASSISTANT_REVIEW_PATTERNS["header_info"]):
+        return "header/info"
+    if _assistant_matches_any(product, PDF_ASSISTANT_REVIEW_PATTERNS["colors"]):
+        return "color/attribute"
+    if product and len(words) <= 3 and all(w in PDF_ASSISTANT_PACKAGING_TERMS or bool(re.fullmatch(r"\d+(?:[.,]\d+)?(?:kg|g|gr|lt|l|ml|m2|m²|m|pcs?|τεμ\.?)?", w, re.I)) for w in words):
+        return "packaging_only"
+    if price is None and not sap and not mm and not package:
+        return "weak_row"
+    return ""
+
+
+def _assistant_apply_cleanup(df: pd.DataFrame, mode: str = "conservative") -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    out = _ensure_preview_row_id(df)
+    if "Keep" not in out.columns:
+        out["Keep"] = True
+    reasons = []
+    for _, row in out.iterrows():
+        reason = _assistant_review_reason(row)
+        reasons.append(reason)
+    out["Review Reason"] = reasons
+    if mode == "suggest_only":
+        return out
+    if mode == "conservative":
+        drop_mask = out["Review Reason"].isin(["consumption/spec", "header/info", "color/attribute", "packaging_only"])
+        out.loc[drop_mask, "Keep"] = False
+    elif mode == "strict":
+        drop_mask = out["Review Reason"].ne("")
+        out.loc[drop_mask, "Keep"] = False
+    return out
+
+
+def _assistant_apply_family_fill(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    out = _ensure_preview_row_id(df)
+    current_family = ""
+    for idx in out.index:
+        product = _normalize_text_simple(out.at[idx, "Product"]) if "Product" in out.columns else ""
+        rr = _normalize_text_simple(out.at[idx, "Review Reason"]) if "Review Reason" in out.columns else ""
+        if product and rr not in {"packaging_only", "missing_product_name"} and len(product.split()) >= 2:
+            current_family = product
+            continue
+        if (not product or rr in {"packaging_only", "missing_product_name"}) and current_family:
+            if "Package" in out.columns and "Product" in out.columns:
+                pkg = _normalize_text_simple(out.at[idx, "Package"]) or _extract_package_from_text(str(out.loc[idx].to_dict()))
+                out.at[idx, "Product"] = current_family
+                if pkg and not _normalize_text_simple(out.at[idx, "Package"]):
+                    out.at[idx, "Package"] = pkg
+    return out
+
+
+def _assistant_export_ready_df(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame(columns=_source_generator_output_columns())
+    out = _ensure_preview_row_id(df).copy()
+    if "Keep" in out.columns:
+        out = out[out["Keep"].fillna(True)].copy()
+    out = out.drop(columns=[c for c in ["__row_id", "Keep", "Review Reason"] if c in out.columns], errors="ignore")
+    expected = _source_generator_output_columns()
+    for c in expected:
+        if c not in out.columns:
+            out[c] = ""
+    out = out[expected].copy()
+    out["Base Price"] = pd.to_numeric(out["Base Price"], errors="coerce")
+    out["Price"] = out["Base Price"]
+    for col in ["SAP", "Product", "MM", "Package", "Category"]:
+        out[col] = out[col].fillna("").astype(str).str.strip()
+    out = out[~(out["Product"].eq("") & out["SAP"].eq("") & out["Base Price"].isna())].copy()
+    return out.reset_index(drop=True)
+
+
 def _delete_selected_preview_rows_from_state(state_key: str, selected_row_ids) -> int:
     df = st.session_state.get(state_key)
     if df is None or not isinstance(df, pd.DataFrame) or df.empty:
@@ -5938,8 +6057,7 @@ PDF_CONSUMPTION_PATTERNS = [
     r'\bκαταναλωσ(?:η|ης|εων)?\b', r'\bconsumption\b', r'\bcoverage\b', r'\byield\b',
     r'\bπεριπου\b', r'\bapprox\.?\b', r'\bkg\s*/\s*m2\b', r'\bkg\s*/\s*m²\b',
     r'\bgr\s*/\s*m2\b', r'\bgr\s*/\s*m²\b', r'\bml\s*/\s*m2\b', r'\bml\s*/\s*m²\b',
-    r'\bανά?\s*m2\b', r'\bανά?\s*m²\b', r'\bανά?\s*m3\b', r'\bανά?\s*m³\b',
-    r'\bkg\s*/\s*mm\b', r'\bανά\s*στρώσ', r'\bconsumption\s*:', r'\bcoverage\s*:', r'\byield\s*:',
+    r'\bανά?\s*m2\b',
 ]
 PDF_HARD_REJECT_PATTERNS = [
     r'\bεπικοινων(?:ια|ίας)?\b', r'\bemail\b', r'\bwebsite\b', r'\bwww\.', r'\bτηλ\.?\b', r'\btelephone\b',
@@ -6128,12 +6246,9 @@ def _postprocess_pdf_source_df(source_df: pd.DataFrame, profile: str = 'generic'
     df = df[~df['Product'].str.lower().str.contains(PDF_EXPLANATORY_ROW_RE, regex=True, na=False)].copy()
     df = df[~df['Product'].apply(_looks_like_consumption_text)].copy()
     df = df[~df['Product'].apply(_looks_like_hard_reject_text)].copy()
-    df = df[~df['Product'].apply(_looks_like_non_product_descriptor)].copy()
 
-    # prefer product title with embedded packaging, but avoid generic package pollution
+    # prefer product title with embedded packaging
     merge_mask = df['Package'].astype(str).str.strip().ne('') & (~df['Product'].apply(_is_packaging_only_text))
-    generic_pkg = {'παλέτα','pallet','box','bag','bucket','ρολό','roll','pack'}
-    merge_mask = merge_mask & (~df['Package'].astype(str).str.lower().isin(generic_pkg))
     df.loc[merge_mask, 'Product'] = [
         _merge_packaging_into_product(prod, pkg)
         for prod, pkg in zip(df.loc[merge_mask, 'Product'], df.loc[merge_mask, 'Package'])
@@ -6149,12 +6264,6 @@ def _postprocess_pdf_source_df(source_df: pd.DataFrame, profile: str = 'generic'
     # profile-aware SAP hardening
     if profile == 'siniat':
         sap_re = r'^(?:\d{5,8}|[A-Z]{1,3}\d{2,5})$'
-        # rows without SAP and without a strong family anchor are too noisy for Siniat
-        df = df[~((df['SAP'].astype(str).str.strip()=='') & (~df['Product'].astype(str).str.contains(r'Nida|LADURA|Pregy|RESISTEX|CREASON|CREATEX|Adera', case=False, regex=True)))].copy()
-    elif profile == 'isomat':
-        df = df[~df['Product'].astype(str).str.contains(r'(?i)κατανάλωσ|consumption|coverage|yield|sand beige|light blue|dark blue|color|αποχρώσ|χρωματολ', regex=True, na=False)].copy()
-        df = df[~((df['Base Price'].isna()) & (df['SAP'].astype(str).str.strip()==''))].copy()
-        sap_re = r'^(?:\d{4,8}|[A-Z]{1,4}\d{1,5}[A-Z0-9./_-]{0,4})$'
     else:
         sap_re = r'^(?:\d{5,8}|[A-Z]{1,4}\d{1,5}[A-Z0-9./_-]{0,4})$'
     df['SAP'] = df['SAP'].where(df['SAP'].astype(str).str.match(sap_re, na=False), '')
@@ -6482,11 +6591,6 @@ def _build_pdf_source_product_name(product: str, package: str) -> str:
     package = _clean_pdf_package_text(package)
     if not product:
         return ''
-    low = product.lower()
-    # avoid polluting product names with generic packaging labels
-    if package and _normalize_package_label(package) in {'παλέτα','pallet','box','bag','bucket','ρολό','roll','pack'}:
-        package = ''
-    # if product already includes specific counts/boards, keep as-is
     if package and not _product_contains_package(product, package):
         return f"{product} - {package}"
     return product
@@ -6496,7 +6600,7 @@ def _is_pdf_noise_row(product: str, category: str, package: str) -> bool:
     blob = ' '.join([_normalize_text_simple(product), _normalize_text_simple(category), _normalize_text_simple(package)]).lower()
     if not blob:
         return True
-    if _looks_like_consumption_text(blob) or _looks_like_hard_reject_text(blob) or _looks_like_non_product_descriptor(blob):
+    if _looks_like_consumption_text(blob) or _looks_like_hard_reject_text(blob):
         return True
     noise_markers = [
         'εφαρμογ', 'χαρακτηριστικ', 'πλεονεκτημ', 'consumption', 'applications', 'features',
@@ -6568,7 +6672,6 @@ def _finalize_pdf_source_dataframe(source_df: pd.DataFrame) -> pd.DataFrame:
     df['Base Price'] = pd.to_numeric(df['Base Price'], errors='coerce')
     df['Price'] = df['Base Price']
     df = df[~df.apply(lambda r: _is_pdf_noise_row(r.get('Product', ''), r.get('Category', ''), r.get('Package', '')), axis=1)].copy()
-    df = df[~df['Product'].astype(str).apply(_looks_like_non_product_descriptor)].copy()
     df = df[~((df['Product'].astype(str).str.strip() == '') & df['Base Price'].isna())].copy()
     df = df[~(df['Product'].str.lower().isin(['περιεχομενα', 'contents', 'pdf catalog']))].copy()
     non_empty_sap = df['SAP'].astype(str).str.strip().ne('')
@@ -6619,55 +6722,6 @@ def _looks_like_pdf_product_code(value: str) -> bool:
     return bool(re.match(r'^[A-Za-z0-9./_-]{4,}$', v)) and any(ch.isdigit() for ch in v)
 
 
-
-
-def _looks_like_siniat_family_row(values) -> bool:
-    cleaned = [_normalize_text_simple(v) for v in (values or []) if _normalize_text_simple(v)]
-    if not cleaned:
-        return False
-    joined = ' '.join(cleaned)
-    low = joined.lower()
-    if _looks_like_pdf_section_title(joined) or _looks_like_hard_reject_text(joined) or _looks_like_consumption_text(joined):
-        return False
-    if any(_looks_like_pdf_product_code(v) for v in cleaned[:3]):
-        return False
-    if any(_to_float_or_none(_clean_pdf_price_text(v)) is not None for v in cleaned):
-        return False
-    return any(x in low for x in ['nida', 'ladura', 'pregy', 'resistex', 'creason', 'createx', 'adera']) and len(joined) <= 80
-
-
-def _siniat_choose_product_name(cleaned, active_name=''):
-    candidates = []
-    for v in cleaned:
-        vv = _normalize_text_simple(v)
-        if not vv:
-            continue
-        low = vv.lower()
-        if _looks_like_pdf_product_code(vv):
-            continue
-        if _to_float_or_none(_clean_pdf_price_text(vv)) is not None:
-            continue
-        if re.fullmatch(r'\d{3,4}', vv.replace(' ', '').replace('*','')):
-            continue
-        if low in {'m2','m²','m','pcs','pc','τεμ','παλετες','παλέτες','παλετα','παλέτα'}:
-            continue
-        if _is_packaging_only_text(vv) or _extract_piece_package_from_text(vv):
-            continue
-        if len(vv) < 3:
-            continue
-        candidates.append(vv)
-    if candidates:
-        return candidates[0]
-    return active_name or ''
-
-
-def _looks_like_non_product_descriptor(text: str) -> bool:
-    s = _normalize_text_simple(text).lower()
-    if not s:
-        return True
-    bad_markers = ['κατανάλωσ', 'consumption', 'coverage', 'yield', 'περίπου', 'approx', 'ανά m', 'kg/m', 'gr/m', 'ml/m', 'application', 'applications', 'features', 'πλεονεκτημ', 'ιδιοτ', 'χαρακτηριστ', 'χρωματολογ', 'αποχρωσ', 'shade', 'color system', 'sand beige', 'light blue', 'dark blue', 'light grey', 'dark grey']
-    return any(m in s for m in bad_markers)
-
 def _parse_pdf_table_variants(table, current_category: str = '', company_hint: str = ''):
     rows = []
     active_name = ''
@@ -6679,7 +6733,6 @@ def _parse_pdf_table_variants(table, current_category: str = '', company_hint: s
     active_weight_sale = ''
     active_price = None
 
-    profile = _pdf_vendor_profile(company_hint)
     for raw_row in table or []:
         original = raw_row or []
         cleaned = [_normalize_text_simple(v) for v in original]
@@ -6694,9 +6747,6 @@ def _parse_pdf_table_variants(table, current_category: str = '', company_hint: s
             continue
         if _looks_like_pdf_section_title(joined) and not any(_looks_like_pdf_product_code(v) for v in cleaned):
             active_category = joined
-            continue
-        if profile == 'siniat' and _looks_like_siniat_family_row(cleaned):
-            active_name = _siniat_choose_product_name(cleaned, active_name)
             continue
 
         code = ''
@@ -6717,12 +6767,8 @@ def _parse_pdf_table_variants(table, current_category: str = '', company_hint: s
                 break
 
         if len(cleaned) >= 9:
-            if profile == 'siniat':
-                name = name or _siniat_choose_product_name(cleaned[:2], active_name)
-                code = code or (cleaned[1] if _looks_like_pdf_product_code(cleaned[1]) else cleaned[0] if _looks_like_pdf_product_code(cleaned[0]) else '')
-            else:
-                name = name or cleaned[0]
-                code = code or cleaned[1]
+            name = name or cleaned[0]
+            code = code or cleaned[1]
             width = cleaned[2]
             length = cleaned[3]
             unit = cleaned[4]
@@ -6746,8 +6792,6 @@ def _parse_pdf_table_variants(table, current_category: str = '', company_hint: s
         if name:
             active_name = name
         else:
-            name = active_name
-        if profile == 'siniat' and _is_packaging_only_text(name):
             name = active_name
         width = width or active_width
         if width:
@@ -7011,7 +7055,7 @@ def _coerce_ai_pdf_rows(rows, current_category: str = '', company_hint: str = ''
         product = _normalize_text_simple(row.get('product_name') or row.get('product') or row.get('description') or row.get('name') or '')
         if not product or len(product) < 2:
             continue
-        if _looks_like_consumption_text(product) or _looks_like_hard_reject_text(product) or _looks_like_non_product_descriptor(product) or _is_attribute_only_text(product) or _is_packaging_only_text(product):
+        if _looks_like_consumption_text(product) or _looks_like_hard_reject_text(product) or _is_attribute_only_text(product) or _is_packaging_only_text(product):
             continue
         category = _normalize_text_simple(row.get('category') or current_category or 'PDF Catalog')
         sap = _normalize_text_simple(row.get('sap_code') or row.get('sap') or row.get('code') or '')
@@ -7076,7 +7120,7 @@ def _ai_extract_pdf_rows_from_text(text: str, current_category: str = '', compan
         'Εξάγεις ΜΟΝΟ γραμμές τιμοκαταλόγου με code/SAP, product, package, unit, price και category. '
         'Αγνόησε τεχνικές περιγραφές, applications, χαρακτηριστικά, marketing, headings χωρίς εμπορικά στοιχεία. '
         'Αν το ίδιο προϊόν έχει πολλές συσκευασίες, μήκη, πάχη ή SAP, επέστρεψε ξεχωριστό row για κάθε variant. '
-        'Μην επινοείς τιμές ή κωδικούς. Μην επιστρέφεις κατανάλωση, αποχρώσεις, marketing, επικοινωνία, explanatory rows ή σκέτο packaging. Αν η γραμμή είναι consumption/info/header, αγνόησέ την. Αν πολλές διαδοχικές γραμμές ανήκουν στην ίδια οικογένεια προϊόντος (π.χ. Nida/LADURA/ISOMAT family), κληρονόμησε το family title στο product_name των variants. Επέστρεψε μόνο JSON object με κλειδί rows.'
+        'Μην επινοείς τιμές ή κωδικούς. Μην επιστρέφεις κατανάλωση, αποχρώσεις, marketing, επικοινωνία, explanatory rows ή σκέτο packaging. Αν η γραμμή είναι consumption/info/header, αγνόησέ την. Επέστρεψε μόνο JSON object με κλειδί rows.'
     )
     user_prompt = (
         'Εξήγαγε source rows από το παρακάτω κείμενο PDF page.\n'
@@ -7895,6 +7939,35 @@ def render_sources():
                 st.session_state["generated_source_working_df"] = _ensure_preview_row_id(source_df)
                 st.session_state["generated_source_working_origin"] = current_generated_origin
 
+            if is_pdf_upload and is_admin_user():
+                st.markdown("##### PDF Assistant (Admin Review)")
+                st.caption("Το PDF δεν αποθηκεύεται αυτόματα. Κάνε review, καθάρισε τις προτεινόμενες γραμμές και μετά σώσε το ready source.")
+                ac1, ac2, ac3, ac4 = st.columns(4)
+                with ac1:
+                    if st.button("Suggest cleanup", key="pdf_assistant_suggest_cleanup", use_container_width=True):
+                        st.session_state["generated_source_working_df"] = _assistant_apply_cleanup(st.session_state["generated_source_working_df"], mode="suggest_only")
+                        st.rerun()
+                with ac2:
+                    if st.button("Apply cleanup", key="pdf_assistant_apply_cleanup", use_container_width=True):
+                        st.session_state["generated_source_working_df"] = _assistant_apply_cleanup(st.session_state["generated_source_working_df"], mode="conservative")
+                        st.rerun()
+                with ac3:
+                    if st.button("Fill family names", key="pdf_assistant_fill_family", use_container_width=True):
+                        st.session_state["generated_source_working_df"] = _assistant_apply_family_fill(st.session_state["generated_source_working_df"])
+                        st.rerun()
+                with ac4:
+                    if st.button("Reset review", key="pdf_assistant_reset_review", use_container_width=True):
+                        st.session_state["generated_source_working_df"] = _ensure_preview_row_id(source_df)
+                        st.rerun()
+                review_df = _ensure_preview_row_id(st.session_state["generated_source_working_df"])
+                if "Keep" not in review_df.columns:
+                    review_df["Keep"] = True
+                if "Review Reason" not in review_df.columns:
+                    review_df = _assistant_apply_cleanup(review_df, mode="suggest_only")
+                rr_counts = review_df["Review Reason"].fillna("").replace("", "ok").value_counts().to_dict()
+                st.caption("Review status: " + " • ".join([f"{k}: {v}" for k, v in rr_counts.items()]))
+                st.session_state["generated_source_working_df"] = review_df
+
             editable_df = st.data_editor(
                 _preview_display_df(st.session_state["generated_source_working_df"]),
                 use_container_width=True,
@@ -7902,6 +7975,8 @@ def render_sources():
                 key="generated_source_editor",
                 column_config={
                     "Row": st.column_config.NumberColumn("Row", disabled=True),
+                    "Keep": st.column_config.CheckboxColumn("Keep"),
+                    "Review Reason": st.column_config.TextColumn("Review Reason", disabled=True, width="medium"),
                     "SAP": st.column_config.TextColumn("SAP"),
                     "Product": st.column_config.TextColumn("Product", width="large"),
                     "Base Price": st.column_config.NumberColumn("Base Price", format="%.4f"),
@@ -7913,6 +7988,10 @@ def render_sources():
             )
 
             edited_df = _normalize_preview_editor_output(pd.DataFrame(editable_df))
+            if is_pdf_upload and is_admin_user():
+                edited_df = _assistant_apply_cleanup(edited_df, mode="suggest_only")
+                if "Keep" not in edited_df.columns:
+                    edited_df["Keep"] = True
             st.session_state["generated_source_working_df"] = edited_df
 
             delete_options = edited_df["__row_id"].astype(int).tolist()
@@ -7936,7 +8015,7 @@ def render_sources():
 
             edited_df = st.session_state["generated_source_working_df"].copy()
             edited_df["Price"] = edited_df["Base Price"]
-            export_edited_df = edited_df.drop(columns=["__row_id"], errors="ignore").copy()
+            export_edited_df = _assistant_export_ready_df(edited_df) if is_pdf_upload and is_admin_user() else edited_df.drop(columns=["__row_id"], errors="ignore").copy()
 
             generated_source_original_name = uploaded_supplier_file.name if not str(uploaded_supplier_file.name).lower().endswith(".pdf") else f"{Path(uploaded_supplier_file.name).stem}.xlsx"
             generated_default_name = get_next_version_filename(generator_company_code, generator_date_val, generated_source_original_name)
