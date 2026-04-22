@@ -7839,6 +7839,15 @@ def render_sources():
         source_df, conversion_stats = None, None
         uploaded_name = str(getattr(uploaded_supplier_file, "name", "") or "").lower()
         is_pdf_upload = uploaded_name.endswith(".pdf")
+        current_pdf_signature = None
+        if is_pdf_upload:
+            current_pdf_signature = f"{uploaded_supplier_file.name}|{generator_company_code}|{generator_date_val}"
+            if st.session_state.get("pdf_review_signature") != current_pdf_signature:
+                st.session_state.pop("pdf_review_source_df", None)
+                st.session_state.pop("pdf_review_conversion_stats", None)
+                st.session_state.pop("generated_source_working_df", None)
+                st.session_state.pop("generated_source_working_origin", None)
+                st.session_state["pdf_review_signature"] = current_pdf_signature
 
         progress_container = st.container() if is_pdf_upload else None
         status_placeholder = progress_container.empty() if progress_container is not None else None
@@ -7847,28 +7856,39 @@ def render_sources():
         try:
             if is_pdf_upload:
                 run_pdf = st.button("🚀 Convert PDF with AI", key="convert_pdf_with_ai_button", disabled=st.session_state.get("pdf_processing", False), use_container_width=True)
-                if not run_pdf:
+                cached_source_df = st.session_state.get("pdf_review_source_df")
+                cached_stats = st.session_state.get("pdf_review_conversion_stats")
+                if run_pdf:
+                    st.session_state["pdf_processing"] = True
+                    status_placeholder.info("🔍 Ανάλυση PDF τιμοκαταλόγου…")
+                    progress_bar = progress_placeholder.progress(10)
+                    time.sleep(0.05)
+
+                    status_placeholder.info("🧠 Εξαγωγή δεδομένων και αναγνώριση προϊόντων…")
+                    progress_bar.progress(35)
+                    time.sleep(0.05)
+
+                    source_df, conversion_stats = convert_supplier_pdf_to_source(uploaded_supplier_file)
+                    st.session_state["pdf_review_source_df"] = source_df.copy() if source_df is not None else None
+                    st.session_state["pdf_review_conversion_stats"] = dict(conversion_stats or {})
+
+                    status_placeholder.info("📊 Δομή καταλόγου και έλεγχος πεδίων…")
+                    progress_bar.progress(75)
+                    time.sleep(0.05)
+
+                    status_placeholder.info("📁 Δημιουργία δομημένου Excel preview…")
+                    progress_bar.progress(95)
+                    time.sleep(0.05)
+                    progress_bar.progress(100)
+                    status_placeholder.success("✅ Η έξυπνη εξαγωγή ολοκληρώθηκε.")
+                elif cached_source_df is not None:
+                    source_df = cached_source_df.copy()
+                    conversion_stats = dict(cached_stats or {})
+                    if status_placeholder is not None:
+                        status_placeholder.success("✅ Φορτώθηκε το προηγούμενο PDF review session.")
+                else:
+                    st.info("Ανέβασε PDF και πάτησε ‘Convert PDF with AI’ για να ξεκινήσει το review.")
                     st.stop()
-                st.session_state["pdf_processing"] = True
-                status_placeholder.info("🔍 Ανάλυση PDF τιμοκαταλόγου…")
-                progress_bar = progress_placeholder.progress(10)
-                time.sleep(0.05)
-
-                status_placeholder.info("🧠 Εξαγωγή δεδομένων και αναγνώριση προϊόντων…")
-                progress_bar.progress(35)
-                time.sleep(0.05)
-
-                source_df, conversion_stats = convert_supplier_pdf_to_source(uploaded_supplier_file)
-
-                status_placeholder.info("📊 Δομή καταλόγου και έλεγχος πεδίων…")
-                progress_bar.progress(75)
-                time.sleep(0.05)
-
-                status_placeholder.info("📁 Δημιουργία δομημένου Excel preview…")
-                progress_bar.progress(95)
-                time.sleep(0.05)
-                progress_bar.progress(100)
-                status_placeholder.success("✅ Η έξυπνη εξαγωγή ολοκληρώθηκε.")
             else:
                 source_df, conversion_stats = convert_supplier_pricelist_to_source(uploaded_supplier_file)
         except Exception as e:
@@ -7882,6 +7902,8 @@ def render_sources():
                 st.session_state["pdf_processing"] = False
 
         auto_ok = source_df is not None and not source_df.empty
+        if st.session_state.get("generated_source_save_success"):
+            st.success(st.session_state.pop("generated_source_save_success"))
 
         if source_df is None or source_df.empty:
             st.error("Could not convert this supplier file automatically.")
@@ -8052,7 +8074,7 @@ def render_sources():
                         path = get_company_folder(generator_company_code) / name
                         with open(path, "wb") as f:
                             f.write(_source_dataframe_to_excel_bytes(export_edited_df))
-                        st.success(f"Generated source saved as: {name}")
+                        st.session_state["generated_source_save_success"] = f"Generated source saved as: {name}"
                         refresh_source_file_views()
                         st.rerun()
             with preview_c3:
@@ -8079,7 +8101,7 @@ def render_sources():
                                 else:
                                     with open(path, "wb") as f:
                                         f.write(_source_dataframe_to_excel_bytes(export_edited_df))
-                                    st.success(f"Generated source saved as: {custom_filename}")
+                                    st.session_state["generated_source_save_success"] = f"Generated source saved as: {custom_filename}"
                                     refresh_source_file_views()
                                     st.rerun()
 
