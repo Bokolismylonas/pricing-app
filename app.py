@@ -6004,8 +6004,10 @@ def _pdf_page_classification(text: str) -> str:
         return 'INDEX'
     if _looks_like_pdf_marketing_page(s):
         return 'MARKETING'
-    if _looks_like_consumption_text(s) and len(re.findall(r'\d+[.,]\d+', s)) < 8:
+    if _looks_like_consumption_text(s) and len(re.findall(r'\d+[.,]\d+', s)) < 12:
         return 'CONSUMPTION'
+    if (_looks_like_hard_reject_text(s) or _matches_any_pattern(s, PDF_SECTION_TITLE_NEGATIVE_PATTERNS)) and len(re.findall(r'\d+[.,]\d+|\b\d{4,8}\b', s)) < 6:
+        return 'TECHNICAL'
     pricing_hits = len(re.findall(r'\d+[.,]\d+|\b\d{4,8}\b', s))
     unit_hits = len(re.findall(r'\b(?:m2|m²|kg|lt|ml|mm|cm|τεμ|pcs?)\b', s))
     table_hints = ('sap code' in s) or ('κωδικ' in s) or ('τιμη' in s) or ('list price' in s)
@@ -6022,11 +6024,11 @@ def _should_try_ai_on_pdf_page(page_text: str, profile: str, page_rows_count: in
     cls = _pdf_page_classification(txt)
     if not txt or cls in {'INDEX','MARKETING','CONSUMPTION','EMPTY'}:
         return False
-    if ai_calls_so_far >= int(os.getenv('OPENAI_PDF_MAX_CALLS', '16')):
+    if ai_calls_so_far >= int(os.getenv('OPENAI_PDF_MAX_CALLS', '48')):
         return False
-    if len(txt) > int(os.getenv('OPENAI_PDF_MAX_PAGE_CHARS', '18000')):
+    if len(txt) > int(os.getenv('OPENAI_PDF_MAX_PAGE_CHARS', '26000')):
         return False
-    return page_rows_count < (6 if profile in {'isomat','sika','heavy_catalog'} else 5) or cls == 'MIXED'
+    return cls in {'PRICE_LIST','MIXED','TECHNICAL'} or page_rows_count < (8 if profile in {'isomat','sika','heavy_catalog'} else 6)
 
 def _build_ai_pdf_page_payload(text: str) -> str:
     lines=[]
@@ -6816,13 +6818,125 @@ def _extract_json_payload_from_ai_text(text: str):
     return rows if isinstance(rows, list) else []
 
 
+def _split_pdf_text_into_ai_blocks(text: str, max_lines: int = 28, max_chars: int = 4200):
+    lines = []
+    for raw in str(text or '').splitlines():
+        line = _normalize_text_simple(raw)
+        if not line:
+            continue
+        if _looks_like_info_header_text(line):
+            continue
+        lines.append(line)
+    blocks = []
+    cur = []
+    cur_len = 0
+    for line in lines:
+        line_len = len(line) + 1
+        hard_break = _looks_like_pdf_section_title(line) or _looks_like_pdf_family_title(line)
+        if cur and (hard_break or len(cur) >= max_lines or cur_len + line_len > max_chars):
+            blocks.append("\n".join(cur))
+            cur = []
+            cur_len = 0
+        cur.append(line)
+        cur_len += line_len
+    if cur:
+        blocks.append("\n".join(cur))
+    return [b for b in blocks if b and len(b) >= 20]
+
+
+def _looks_like_ai_non_product_row_type(row_type: str) -> bool:
+    rt = _normalize_text_simple(row_type).lower()
+    if not rt:
+        return False
+    bad = {
+        'header','section','subcategory','category','info','marketing','consumption','technical',
+        'attribute','color','colour','packaging_only','package_only','note','description','toc','index'
+    }
+    return rt in bad
+
+
+def _call_openai_pdf_rows_json(client, system_prompt: str, user_prompt: str):
+    resp = client.chat.completions.create(
+        model=os.getenv('OPENAI_PDF_MODEL', 'gpt-4o-mini'),
+        temperature=0,
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+    )
+    content = ''
+    if getattr(resp, 'choices', None):
+        content = resp.choices[0].message.content or ''
+    rows = _extract_json_payload_from_ai_text(content)
+    usage = getattr(resp, 'usage', None)
+    usage_meta = {
+        'prompt_tokens': int(getattr(usage, 'prompt_tokens', 0) or 0),
+        'completion_tokens': int(getattr(usage, 'completion_tokens', 0) or 0),
+        'total_tokens': int(getattr(usage, 'total_tokens', 0) or 0),
+        'model': os.getenv('OPENAI_PDF_MODEL', 'gpt-4o-mini'),
+    }
+    return rows, usage_meta
+
+
+def _ai_extract_pdf_rows_from_blocks(text: str, current_category: str = '', company_hint: str = '', page_number=None):
+    txt = _normalize_text_simple(text)
+    if not txt or _looks_like_pdf_contents_page(txt) or _looks_like_pdf_marketing_page(txt):
+        return [], {}
+    client = get_openai_client_for_pdf_extraction()
+    if client is None:
+        return [], {}
+    system_prompt = (
+        'Είσαι engine εξαγωγής εμπορικών προϊόντων από blocks τιμοκαταλόγων PDF. '
+        'Δουλεύεις AI-first: καταλαβαίνεις context και επιστρέφεις ΜΟΝΟ πραγματικά εμπορικά προϊόντα/variants. '
+        'Αγνόησε κατηγορίες, headers, περιγραφές, κατανάλωση, εφαρμογές, ιδιότητες, αποχρώσεις, marketing, technical notes, content pages, σκέτο packaging. '
+        '1 row = 1 πραγματικό πωλούμενο SKU ή variant. '
+        'Αν βλέπεις συσκευασίες ή παραλλαγές κάτω από product title, σύνδεσέ τες με το προϊόν. '
+        'ΜΗΝ επινοείς SAP ή τιμές. Επίστρεψε μόνο JSON object με κλειδί rows.'
+    )
+    totals = {'prompt_tokens': 0, 'completion_tokens': 0, 'total_tokens': 0, 'calls': 0}
+    out_rows = []
+    blocks = _split_pdf_text_into_ai_blocks(text)
+    max_calls = max(1, int(os.getenv('OPENAI_PDF_MAX_CALLS_PER_PAGE', '6')))
+    for idx, block in enumerate(blocks[:max_calls], start=1):
+        user_prompt = (
+            'Εξήγαγε ΜΟΝΟ πραγματικά προϊόντα από το παρακάτω block τιμοκαταλόγου.\n'
+            f'Company hint: {company_hint or ""}\n'
+            f'Current category hint: {current_category or ""}\n'
+            f'Page: {page_number or ""} | Block: {idx}/{len(blocks)}\n\n'
+            'Schema JSON: {"rows": [...]} με fields: row_type, category, product_name, sap_code, code, package, unit, price, price_text, mm, thickness_mm, width_mm, length_mm, notes, confidence.\n'
+            'Rules:\n'
+            '- row_type πρέπει να είναι product ή variant για valid outputs.\n'
+            '- ΜΗΝ επιστρέψεις consumption/application/features/colors/headers/marketing/specs.\n'
+            '- Αν block έχει product title και από κάτω variants με package/price, επέστρεψε κάθε variant σαν ξεχωριστό row.\n'
+            '- Αν δεν υπάρχει σαφές προϊόν, επέστρεψε rows: [].\n\n'
+            'BLOCK:\n' + block
+        )
+        try:
+            rows, usage_meta = _call_openai_pdf_rows_json(client, system_prompt, user_prompt)
+            totals['prompt_tokens'] += usage_meta.get('prompt_tokens', 0)
+            totals['completion_tokens'] += usage_meta.get('completion_tokens', 0)
+            totals['total_tokens'] += usage_meta.get('total_tokens', 0)
+            totals['calls'] += 1
+            out_rows.extend(_coerce_ai_pdf_rows(rows, current_category=current_category, company_hint=company_hint, page_number=page_number))
+        except Exception as e:
+            totals['error'] = str(e)
+            continue
+    return out_rows, totals
+
+
 def _coerce_ai_pdf_rows(rows, current_category: str = '', company_hint: str = '', page_number=None):
     out = []
     for row in rows or []:
         if not isinstance(row, dict):
             continue
+        row_type = _normalize_text_simple(row.get('row_type') or row.get('type') or '')
+        if _looks_like_ai_non_product_row_type(row_type):
+            continue
         product = _normalize_text_simple(row.get('product_name') or row.get('product') or row.get('description') or row.get('name') or '')
         if not product or len(product) < 2:
+            continue
+        if _looks_like_consumption_text(product) or _looks_like_hard_reject_text(product) or _is_attribute_only_text(product) or _is_packaging_only_text(product):
             continue
         category = _normalize_text_simple(row.get('category') or current_category or 'PDF Catalog')
         sap = _normalize_text_simple(row.get('sap_code') or row.get('sap') or row.get('code') or '')
@@ -6851,7 +6965,9 @@ def _coerce_ai_pdf_rows(rows, current_category: str = '', company_hint: str = ''
             notes_bits.append(f'Source Page {page_number}')
         confidence = _to_float_or_none(row.get('confidence'))
         if confidence is None:
-            confidence = 0.86 if (sap and price is not None) else 0.76
+            confidence = 0.90 if (sap and price is not None) else 0.74
+        if float(confidence) < float(os.getenv('OPENAI_PDF_MIN_CONFIDENCE', '0.58')):
+            continue
         mm_final = mm_text or _extract_mm_from_text(product)
         package_final = package or _extract_piece_package_from_text(product) or _extract_package_from_text(product)
         if _looks_like_sparse_info_product(product, price=price, sap=sap, package=package_final, mm=mm_final):
@@ -7178,6 +7294,17 @@ def convert_supplier_pdf_to_source(uploaded_file):
                         state.family = line
 
                 tables = page.extract_tables() or []
+                ai_rows_early = []
+                if ai_enabled and _should_try_ai_on_pdf_page(text, profile=profile, page_rows_count=0, ai_calls_so_far=ai_usage_totals.get('calls', 0)):
+                    ai_rows_early, usage_meta = _ai_extract_pdf_rows_from_text(text, current_category=current_category, company_hint=company_hint, page_number=page_idx)
+                    ai_usage_totals['prompt_tokens'] += int(usage_meta.get('prompt_tokens', 0) or 0)
+                    ai_usage_totals['completion_tokens'] += int(usage_meta.get('completion_tokens', 0) or 0)
+                    ai_usage_totals['total_tokens'] += int(usage_meta.get('total_tokens', 0) or 0)
+                    ai_usage_totals['calls'] += int(usage_meta.get('calls', 0) or (1 if usage_meta.get('prompt_tokens') or usage_meta.get('completion_tokens') else 0))
+                    if ai_rows_early:
+                        page_rows.extend(ai_rows_early)
+                if ai_rows_early and len(ai_rows_early) >= 3:
+                    tables = []
                 for table in tables:
                     variant_rows = _parse_pdf_table_variants(table, current_category=current_category, company_hint=company_hint)
                     if variant_rows:
@@ -7203,13 +7330,12 @@ def convert_supplier_pdf_to_source(uploaded_file):
                     page_rows.extend(fallback_rows)
                     detected_section_titles.extend([f'{page_label}: {_normalize_pdf_category_name(title)}' for title in fallback_titles])
 
-                if ai_enabled and _should_try_ai_on_pdf_page(text, profile=profile, page_rows_count=len(page_rows), ai_calls_so_far=ai_usage_totals.get('calls', 0)):
+                if ai_enabled and (not page_rows) and _should_try_ai_on_pdf_page(text, profile=profile, page_rows_count=len(page_rows), ai_calls_so_far=ai_usage_totals.get('calls', 0)):
                     ai_rows, usage_meta = _ai_extract_pdf_rows_from_text(text, current_category=current_category, company_hint=company_hint, page_number=page_idx)
                     ai_usage_totals['prompt_tokens'] += int(usage_meta.get('prompt_tokens', 0) or 0)
                     ai_usage_totals['completion_tokens'] += int(usage_meta.get('completion_tokens', 0) or 0)
                     ai_usage_totals['total_tokens'] += int(usage_meta.get('total_tokens', 0) or 0)
-                    if usage_meta.get('prompt_tokens') or usage_meta.get('completion_tokens'):
-                        ai_usage_totals['calls'] += 1
+                    ai_usage_totals['calls'] += int(usage_meta.get('calls', 0) or (1 if usage_meta.get('prompt_tokens') or usage_meta.get('completion_tokens') else 0))
                     if ai_rows:
                         page_rows.extend(ai_rows)
 
