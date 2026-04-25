@@ -19,3 +19,4 @@ echo .streamlit/secrets.toml>>.gitignoreAI_Key.txt
 .env
 .env.local
 .streamlit/secrets.toml
+Microsoft.txt
