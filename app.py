@@ -10057,6 +10057,8 @@ def render_admin_panel():
 # -------------------------------------------------
 # ADMIN ORDERS
 # -------------------------------------------------
+ORDERS_MODULE_VERSION = "Orders v2.1 - 5 discounts / package rounding / dynamic Excel fields"
+
 def _order_safe_float(value, default=0.0):
     try:
         if value is None or value == "":
@@ -10371,6 +10373,7 @@ def render_admin_orders():
     st.markdown('<div class="app-card">', unsafe_allow_html=True)
     st.markdown("## Orders")
     st.caption("Admin-only order entry from Source files. Products are entered line-by-line in an Excel-style grid.")
+    st.info(ORDERS_MODULE_VERSION)
 
     company_options = {f"{row['name']} ({row['code']})": row["code"] for _, row in companies_df.iterrows()}
     if not company_options:
@@ -10429,7 +10432,7 @@ def render_admin_orders():
     st.caption("Select one product per row, add quantity, and fill up to 5 discounts per item. Discounts are applied sequentially from 1 to 5.")
     edited_order_df = st.data_editor(
         template_df,
-        key=f"orders_editor_v5discounts_{selected_company_code}_{source_path.name}_{int(source_path.stat().st_mtime)}",
+        key=f"orders_editor_v6_5discounts_dynamicfields_{selected_company_code}_{source_path.name}_{int(source_path.stat().st_mtime)}",
         num_rows="dynamic",
         use_container_width=True,
         hide_index=False,
@@ -10451,8 +10454,15 @@ def render_admin_orders():
     if order_output_df.empty:
         st.caption("No valid order lines yet. Choose products and quantities above.")
     else:
+        order_display_columns = [
+            "Line", "Company", "SAP", "Product", "Requested Quantity", "Quantity",
+            "MM", "Package", "Package Multiple", "Package Units", "Rounded to Package",
+            "Category", "Unit Price", "Discounts", "Effective Discount %",
+            "Final Unit Price", "Line Total", "Weight per Unit", "Total Weight", "Notes", "Source File",
+        ]
+        order_display_df = order_output_df[[col for col in order_display_columns if col in order_output_df.columns]]
         st.dataframe(
-            order_output_df,
+            order_display_df,
             use_container_width=True,
             hide_index=True,
             column_config={
