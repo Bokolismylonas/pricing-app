@@ -10057,7 +10057,8 @@ def render_admin_panel():
 # -------------------------------------------------
 # ADMIN ORDERS
 # -------------------------------------------------
-ORDERS_MODULE_VERSION = "Orders v5.0 - verified: pallet/manual rounding / row delete / Net Value only / 5 discounts"
+ORDERS_MODULE_VERSION = "Orders v6.0 - verified: pallet parsing / manual rounding / row delete / Net Value only / 5 discounts"
+
 
 def _order_safe_float(value, default=0.0):
     try:
@@ -10073,69 +10074,142 @@ def _order_safe_float(value, default=0.0):
         return default
 
 
-def _order_has_pallet_keyword(value):
-    text = str(value or "").strip().lower()
-    if not text or text in {"nan", "none", "not available"}:
-        return False
-    text = text.replace("ά", "α").replace("έ", "ε").replace("ή", "η").replace("ί", "ι").replace("ό", "ο").replace("ύ", "υ").replace("ώ", "ω")
-    return any(token in text for token in ["παλετ", "pallet", "palet"])
+def _order_clean_text(value):
+    text = str(value or "").strip()
+    if text.lower() in {"nan", "none", "nat", "<na>", "not available"}:
+        return ""
+    return text
 
 
-def _order_parse_pallet_multiple_from_text(package_value):
-    """Return a rounding multiple only when package text explicitly refers to pallet/palette."""
-    text = str(package_value or "").strip()
-    if not _order_has_pallet_keyword(text):
+def _order_norm(value):
+    text = _order_clean_text(value).lower().replace(",", ".")
+    replacements = {
+        "ά": "α", "έ": "ε", "ή": "η", "ί": "ι", "ό": "ο", "ύ": "υ", "ώ": "ω",
+        "ϊ": "ι", "ΐ": "ι", "ϋ": "υ", "ΰ": "υ", "²": "2", "×": "x",
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _order_col_key(value):
+    text = _order_norm(value)
+    return re.sub(r"[^a-z0-9α-ω]+", "", text)
+
+
+def _order_pick_column(df, candidates):
+    if df is None or df.empty:
         return None
-    text = text.replace(",", ".")
-    matches = re.findall(r"(?<!\d)(\d+(?:\.\d+)?)(?!\d)", text)
-    for raw in matches:
-        multiple = _order_safe_float(raw, 0.0)
-        if multiple > 0:
-            return multiple
+    col_map = {_order_col_key(col): col for col in df.columns}
+    for candidate in candidates:
+        key = _order_col_key(candidate)
+        if key in col_map:
+            return col_map[key]
     return None
 
 
-def _order_resolve_rounding_multiple(manual_rounding_qty, source_rounding_qty, package_value):
-    manual_multiple = _order_safe_float(manual_rounding_qty, 0.0)
-    if manual_multiple > 0:
-        return manual_multiple, "Manual"
+def _order_find_pallet_qty_column(df):
+    exact_candidates = [
+        "PACK_QTY", "PALLET_QTY", "PALLET QTY", "PALLET_QUANTITY", "PALLET QUANTITY",
+        "Pallet Qty", "Pallet Quantity", "Qty per pallet", "Quantity per pallet", "Units per pallet",
+        "Pack Qty", "Pack Quantity", "Minimum Order Qty", "Min Order Qty", "Rounding Qty",
+        "Ποσότητα Παλέτας", "Ποσοτητα Παλετας", "Τεμ/Παλέτα", "Τεμ/Παλετα",
+        "Τμχ/Παλέτα", "Τμχ/Παλετα", "Τεμάχια/Παλέτα", "Τεμαχια/Παλετα",
+        "m²/Παλέτα", "m2/Παλέτα", "m2/Παλετα", "Μ2/Παλέτα", "Μ2/Παλετα",
+    ]
+    picked = _order_pick_column(df, exact_candidates)
+    if picked is not None:
+        return picked
 
-    source_multiple = _order_safe_float(source_rounding_qty, 0.0)
-    if source_multiple > 0:
-        return source_multiple, "Source pallet qty"
+    for col in df.columns:
+        key = _order_norm(col)
+        has_pallet = any(token in key for token in ["pallet", "palet", "παλετ", "παλ"])
+        has_qty = any(token in key for token in ["qty", "quantity", "units", "pack", "τεμ", "τμχ", "ποσοτ", "m2", "m²"])
+        if has_pallet and has_qty:
+            numeric = pd.to_numeric(df[col], errors="coerce")
+            if numeric.notna().sum() > 0:
+                return col
+    return None
 
-    text_multiple = _order_parse_pallet_multiple_from_text(package_value)
-    if text_multiple:
-        return text_multiple, "Package pallet text"
 
-    return None, "Not available"
+def _order_has_pallet_keyword(value):
+    text = _order_norm(value)
+    return any(token in text for token in ["παλετ", "παλ", "pallet", "palet"])
 
 
-def _order_round_quantity_to_package(requested_qty, package_value, manual_rounding_qty=0.0, source_rounding_qty=0.0):
+def _order_parse_pallet_qty_from_text(value):
+    """Parse pallet/rounding quantity only from explicit pallet text.
+
+    Examples supported:
+    - 25 kg 24 τμχ./παλ. -> 24
+    - 60 m²/παλέτα -> 60
+    - 24 pcs/pallet -> 24
+    Plain sack/bucket weights are ignored unless the text explicitly says pallet.
+    """
+    text = _order_norm(value)
+    if not text or not _order_has_pallet_keyword(text):
+        return None
+
+    number = r"(?<!\d)(\d+(?:\.\d+)?)(?!\d)"
+    pallet = r"(?:παλ\.?|παλετα(?:ς|σ)?|παλετες|pallets?|palet)"
+    units = r"(?:τεμ\.?|τεμχ\.?|τμχ\.?|τμχ|τεμαχια|τεμαχιο|pcs?\.?|pieces?|items?|σακια|σακι|bags?|δοχεια|δοχειο|buckets?|ρολα|ρολο|rolls?|m2|m²|sqm|kg|lt|l)"
+
+    patterns = [
+        rf"{number}\s*{units}\s*(?:/|ανα|ανά|per)?\s*{pallet}",
+        rf"{number}\s*/\s*{pallet}",
+        rf"{pallet}\s*(?:[:=\-]|ανα|ανά|per)?\s*{number}",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.I)
+        if match:
+            for group in match.groups():
+                value_num = _order_safe_float(group, 0.0)
+                if value_num > 0:
+                    return value_num
+
+    # Fallback: if pallet keyword exists, use the last number before the pallet token.
+    pallet_match = re.search(pallet, text, flags=re.I)
+    if pallet_match:
+        before = text[:pallet_match.start()]
+        candidates = list(re.finditer(rf"{number}\s*([a-zα-ω0-9²\.]+)?", before, flags=re.I))
+        for match in reversed(candidates):
+            qty = _order_safe_float(match.group(1), 0.0)
+            if qty > 0:
+                return qty
+    return None
+
+
+def _order_round_quantity_to_multiple(requested_qty, rounding_qty):
     requested_qty = _order_safe_float(requested_qty, 0.0)
-    rounding_multiple, rounding_source = _order_resolve_rounding_multiple(
-        manual_rounding_qty,
-        source_rounding_qty,
-        package_value,
-    )
-    if requested_qty <= 0 or not rounding_multiple:
-        return requested_qty, None, None, False, rounding_source
+    rounding_qty = _order_safe_float(rounding_qty, 0.0)
+    if requested_qty <= 0 or rounding_qty <= 0:
+        return requested_qty, None, None, False
 
-    package_units = int(requested_qty / rounding_multiple)
-    if package_units * rounding_multiple < requested_qty - 1e-9:
-        package_units += 1
-    package_units = max(1, package_units)
-    rounded_qty = round(package_units * rounding_multiple, 3)
-    rounded_to_package = abs(rounded_qty - requested_qty) > 1e-9
-    return rounded_qty, rounding_multiple, package_units, rounded_to_package, rounding_source
+    units = int(requested_qty / rounding_qty)
+    if units * rounding_qty < requested_qty - 1e-9:
+        units += 1
+    units = max(1, units)
+    rounded_qty = round(units * rounding_qty, 3)
+    rounded = abs(rounded_qty - requested_qty) > 1e-9
+    return rounded_qty, rounding_qty, units, rounded
+
 
 def _order_collect_discounts(row):
     discounts = []
     for idx in range(1, 6):
         value = _order_safe_float(row.get(f"Discount {idx} %", 0), 0.0)
-        value = min(max(value, 0.0), 100.0)
-        discounts.append(value)
+        discounts.append(min(max(value, 0.0), 100.0))
     return discounts
+
+
+def _order_format_discounts(discounts):
+    visible = []
+    for discount in discounts:
+        value = _order_safe_float(discount, 0.0)
+        if value:
+            visible.append(f"{value:g}%")
+    return ", ".join(visible) if visible else "0%"
 
 
 def _order_apply_discounts(unit_price, discounts):
@@ -10211,50 +10285,46 @@ def _load_order_catalog_from_file(file_path_str: str, modified_ts: float):
         try:
             df = pd.read_excel(file_path, engine="openpyxl")
         except Exception:
-            return pd.DataFrame(), False, "", ""
+            return pd.DataFrame(), False, "", False, ""
 
     df.columns = [str(c).strip() for c in df.columns]
 
-    def pick(names):
-        cols = {str(c).strip().lower(): c for c in df.columns}
-        for n in names:
-            key = str(n).strip().lower()
-            if key in cols:
-                return cols[key]
-        return None
-
-    sap = pick(["SAP", "Κωδικός SAP", "Code", "Item Code", "Product Code"])
-    prod = pick(["Product", "Προϊόν", "Description", "Περιγραφή", "Είδος"])
-    price = pick(["Price", "Τιμή €/ΜΜ", "Τιμή", "Price €/MM", "Base Price", "List Price"])
-    mm = pick(["ΜΜ πώλησης", "MM", "Unit", "ΜΜ", "UOM", "Μονάδα"])
-    pack = pick(["Συσκευασία", "Package", "pack", "Packing"])
-    category = pick(["Κατηγορία", "Category", "category", "Ομάδα"])
-    weight = pick([
+    sap = _order_pick_column(df, ["SAP", "Κωδικός SAP", "Code", "Item Code", "Product Code", "Κωδικός"])
+    prod = _order_pick_column(df, ["Product", "Προϊόν", "Description", "Περιγραφή", "Είδος", "Item"])
+    price = _order_pick_column(df, ["Price", "Τιμή €/ΜΜ", "Τιμή", "Price €/MM", "Base Price", "List Price", "Unit Price"])
+    mm = _order_pick_column(df, ["ΜΜ πώλησης", "MM", "Unit", "ΜΜ", "UOM", "Μονάδα", "Selling Unit"])
+    pack = _order_pick_column(df, ["Συσκευασία", "Package", "pack", "Packing", "Packaging"])
+    category = _order_pick_column(df, ["Κατηγορία", "Category", "category", "Ομάδα", "Group"])
+    search_text = _order_pick_column(df, ["SEARCH_TEXT", "Search Text", "Search", "DISPLAY"])
+    weight = _order_pick_column(df, [
         "Weight", "Weight kg", "Weight KG", "Weight/Kg", "Kg", "KG", "kg", "Βάρος", "Βάρος kg",
-        "Βάρος/Kg", "Weight per unit", "Weight per MM", "Βάρος ανά μονάδα",
+        "Βάρος/Kg", "Βάρος kg/ΜΜ", "Weight per unit", "Weight per MM", "Βάρος ανά μονάδα",
     ])
-    pallet_qty = pick([
-        "PACK_QTY", "PALLET_QTY", "PALLET QTY", "Pallet Qty", "Pallet Quantity", "Palette Qty",
-        "Ποσότητα Παλέτας", "Ποσοτητα Παλετας", "Τεμ/Παλέτα", "Τεμ/Παλετα",
-        "TMX/ΠΑΛΕΤΑ", "m²/Παλέτα", "m2/Παλέτα", "M2/ΠΑΛΕΤΑ", "Μ2/ΠΑΛΕΤΑ",
-        "Qty per pallet", "Quantity per pallet", "Units per pallet", "Pack Qty", "Pack Quantity",
-    ])
+    pallet_qty_col = _order_find_pallet_qty_column(df)
 
     if prod is None:
-        return pd.DataFrame(), weight is not None, str(weight or ""), str(pallet_qty or "")
+        return pd.DataFrame(), weight is not None, str(weight or ""), pallet_qty_col is not None, str(pallet_qty_col or "")
 
     out = pd.DataFrame()
-    out["SAP"] = df[sap].astype(str).str.strip() if sap is not None else ""
-    out["Product"] = df[prod].astype(str).str.strip()
+    out["SAP"] = df[sap].apply(_order_clean_text) if sap is not None else ""
+    out["Product"] = df[prod].apply(_order_clean_text)
     out["Unit Price"] = pd.to_numeric(df[price], errors="coerce") if price is not None else 0.0
-    out["MM"] = df[mm].astype(str).str.strip() if mm is not None else ""
-    out["Package"] = df[pack].astype(str).str.strip() if pack is not None else ""
-    out["Category"] = df[category].astype(str).str.strip() if category is not None else ""
+    out["MM"] = df[mm].apply(_order_clean_text) if mm is not None else ""
+    out["Package"] = df[pack].apply(_order_clean_text) if pack is not None else ""
+    out["Category"] = df[category].apply(_order_clean_text) if category is not None else ""
+    out["_rounding_text"] = df[search_text].apply(_order_clean_text) if search_text is not None else ""
 
     weight_available = weight is not None
     weight_col_name = str(weight or "")
     out["Weight"] = pd.to_numeric(df[weight], errors="coerce") if weight_available else pd.NA
-    out["Pallet Qty"] = pd.to_numeric(df[pallet_qty], errors="coerce") if pallet_qty is not None else pd.NA
+
+    pallet_qty_available = pallet_qty_col is not None
+    pallet_qty_col_name = str(pallet_qty_col or "")
+    out["Source Pallet Qty"] = pd.to_numeric(df[pallet_qty_col], errors="coerce") if pallet_qty_col is not None else pd.NA
+    out["Package Text Rounding Qty"] = pd.to_numeric(out["Package"].apply(_order_parse_pallet_qty_from_text), errors="coerce")
+    search_parsed = pd.to_numeric(out["_rounding_text"].apply(_order_parse_pallet_qty_from_text), errors="coerce")
+    missing_text_qty = out["Package Text Rounding Qty"].isna() | (out["Package Text Rounding Qty"].fillna(0) <= 0)
+    out.loc[missing_text_qty, "Package Text Rounding Qty"] = search_parsed
 
     out = out[out["Product"].astype(str).str.strip().ne("")]
     out = out[out["Product"].astype(str).str.lower().ne("nan")]
@@ -10262,7 +10332,9 @@ def _load_order_catalog_from_file(file_path_str: str, modified_ts: float):
     sap_text = out["SAP"].astype(str).replace({"nan": "", "None": ""}).str.strip()
     out.loc[sap_text.ne(""), "DISPLAY"] = out.loc[sap_text.ne(""), "Product"].astype(str) + " | SAP " + sap_text[sap_text.ne("")]
     out = out.drop_duplicates(subset=["DISPLAY"]).reset_index(drop=True)
-    return out, weight_available, weight_col_name, str(pallet_qty or "")
+
+    has_any_rounding = pallet_qty_available or pd.to_numeric(out["Package Text Rounding Qty"], errors="coerce").fillna(0).gt(0).any()
+    return out, weight_available, weight_col_name, has_any_rounding, pallet_qty_col_name
 
 
 def _build_order_output(order_input_df: pd.DataFrame, catalog_df: pd.DataFrame, company_code: str, source_file: str, weight_available: bool):
@@ -10273,8 +10345,7 @@ def _build_order_output(order_input_df: pd.DataFrame, catalog_df: pd.DataFrame, 
     rows = []
     line_no = 1
     for _, row in order_input_df.iterrows():
-        delete_row = bool(row.get("Delete", False))
-        if delete_row:
+        if bool(row.get("Delete", False)):
             continue
 
         selected = str(row.get("Product", "") or "").strip()
@@ -10283,15 +10354,24 @@ def _build_order_output(order_input_df: pd.DataFrame, catalog_df: pd.DataFrame, 
             continue
 
         item = catalog_map[selected]
-        package_text = item.get("Package", "")
-        source_pallet_qty = item.get("Pallet Qty", pd.NA)
+        source_pallet_qty = _order_safe_float(item.get("Source Pallet Qty", 0), 0.0)
+        package_text_rounding_qty = _order_safe_float(item.get("Package Text Rounding Qty", 0), 0.0)
         manual_rounding_qty = _order_safe_float(row.get("Manual Rounding Qty", 0), 0.0)
-        rounded_qty, package_multiple, package_units, rounded_to_package, rounding_source = _order_round_quantity_to_package(
-            requested_qty,
-            package_text,
-            manual_rounding_qty=manual_rounding_qty,
-            source_rounding_qty=source_pallet_qty,
-        )
+
+        if manual_rounding_qty > 0:
+            rounding_qty = manual_rounding_qty
+            rounding_source = "Manual"
+        elif source_pallet_qty > 0:
+            rounding_qty = source_pallet_qty
+            rounding_source = "Source pallet qty"
+        elif package_text_rounding_qty > 0:
+            rounding_qty = package_text_rounding_qty
+            rounding_source = "Package pallet text"
+        else:
+            rounding_qty = 0.0
+            rounding_source = "Not available"
+
+        rounded_qty, resolved_rounding_qty, rounding_units, rounded_to_rounding_qty = _order_round_quantity_to_multiple(requested_qty, rounding_qty)
         unit_price = _order_safe_float(item.get("Unit Price", 0), 0.0)
         discounts = _order_collect_discounts(row)
         final_unit_price = _order_apply_discounts(unit_price, discounts)
@@ -10303,27 +10383,27 @@ def _build_order_output(order_input_df: pd.DataFrame, catalog_df: pd.DataFrame, 
         rows.append({
             "Line": line_no,
             "Company": company_code,
-            "SAP": item.get("SAP", ""),
-            "Product": item.get("Product", selected),
+            "SAP": _order_clean_text(item.get("SAP", "")),
+            "Product": _order_clean_text(item.get("Product", selected)),
             "Requested Quantity": round(requested_qty, 3),
             "Quantity": rounded_qty,
-            "MM": item.get("MM", ""),
-            "Package": package_text,
+            "MM": _order_clean_text(item.get("MM", "")),
+            "Package": _order_clean_text(item.get("Package", "")),
             "Manual Rounding Qty": round(manual_rounding_qty, 3) if manual_rounding_qty > 0 else "",
-            "Source Pallet Qty": round(_order_safe_float(source_pallet_qty, 0.0), 3) if _order_safe_float(source_pallet_qty, 0.0) > 0 else "Not available",
-            "Rounding Qty": round(package_multiple, 3) if package_multiple else "Not available",
-            "Package Multiple": round(package_multiple, 3) if package_multiple else "Not available",
-            "Package Units": package_units if package_units is not None else "Not available",
+            "Source Pallet Qty": round(source_pallet_qty, 3) if source_pallet_qty > 0 else "Not available",
+            "Package Text Rounding Qty": round(package_text_rounding_qty, 3) if package_text_rounding_qty > 0 else "Not available",
+            "Rounding Qty": round(resolved_rounding_qty, 3) if resolved_rounding_qty else "Not available",
+            "Rounding Units": rounding_units if rounding_units is not None else "Not available",
             "Rounding Source": rounding_source,
-            "Rounded to Package": "Yes" if rounded_to_package else "No",
-            "Category": item.get("Category", ""),
-            "Unit Price": unit_price,
+            "Rounded to Package": "Yes" if rounded_to_rounding_qty else "No",
+            "Category": _order_clean_text(item.get("Category", "")),
+            "Unit Price": round(unit_price, 2),
             "Discount 1 %": discounts[0],
             "Discount 2 %": discounts[1],
             "Discount 3 %": discounts[2],
             "Discount 4 %": discounts[3],
             "Discount 5 %": discounts[4],
-            "Discounts": format_total_discounts(discounts),
+            "Discounts": _order_format_discounts(discounts),
             "Effective Discount %": effective_discount_pct,
             "Final Unit Price": final_unit_price,
             "Line Total": line_total,
@@ -10336,6 +10416,7 @@ def _build_order_output(order_input_df: pd.DataFrame, catalog_df: pd.DataFrame, 
 
     return pd.DataFrame(rows)
 
+
 def _order_excel_report_columns(order_df: pd.DataFrame):
     if order_df is None or order_df.empty:
         return [], []
@@ -10343,76 +10424,90 @@ def _order_excel_report_columns(order_df: pd.DataFrame):
     individual_discount_cols = [f"Discount {idx} %" for idx in range(1, 6)]
     available_columns = [col for col in order_df.columns if col not in individual_discount_cols]
     preferred_default_columns = [
-        "Line",
-        "Company",
-        "SAP",
-        "Product",
-        "Requested Quantity",
-        "Quantity",
-        "MM",
-        "Package",
-        "Manual Rounding Qty",
-        "Source Pallet Qty",
-        "Rounding Qty",
-        "Package Units",
-        "Rounding Source",
-        "Rounded to Package",
-        "Category",
-        "Unit Price",
-        "Discounts",
-        "Effective Discount %",
-        "Final Unit Price",
-        "Line Total",
-        "Weight per Unit",
-        "Total Weight",
-        "Notes",
-        "Source File",
+        "Line", "Company", "SAP", "Product", "Requested Quantity", "Quantity", "MM",
+        "Package", "Manual Rounding Qty", "Source Pallet Qty", "Package Text Rounding Qty",
+        "Rounding Qty", "Rounding Units", "Rounding Source", "Rounded to Package",
+        "Category", "Unit Price", "Discounts", "Effective Discount %", "Final Unit Price", "Line Total",
+        "Weight per Unit", "Total Weight", "Notes", "Source File",
     ]
     default_columns = [col for col in preferred_default_columns if col in available_columns]
-    if not default_columns:
-        default_columns = available_columns
-    return available_columns, default_columns
+    return available_columns, default_columns or available_columns
 
 
-def _orders_dataframe_to_excel_bytes(order_df: pd.DataFrame, summary_df=None, selected_columns=None) -> bytes:
+def _orders_dataframe_to_excel_bytes(order_df: pd.DataFrame, summary_df: pd.DataFrame, selected_columns=None):
     output = io.BytesIO()
+    export_df = order_df.copy()
+    if selected_columns:
+        export_df = export_df[[col for col in selected_columns if col in export_df.columns]]
+    individual_discount_cols = [f"Discount {idx} %" for idx in range(1, 6)]
+    export_df = export_df.drop(columns=[col for col in individual_discount_cols if col in export_df.columns], errors="ignore")
+
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        export_df = order_df.copy() if order_df is not None else pd.DataFrame()
-        individual_discount_cols = [f"Discount {idx} %" for idx in range(1, 6)]
-        if selected_columns:
-            clean_columns = [col for col in selected_columns if col in export_df.columns and col not in individual_discount_cols]
-            if clean_columns:
-                export_df = export_df[clean_columns]
-        elif not export_df.empty:
-            available_columns, default_columns = _order_excel_report_columns(export_df)
-            export_df = export_df[default_columns or available_columns]
         export_df.to_excel(writer, index=False, sheet_name="ORDER")
+        ws = writer.book["ORDER"]
         try:
-            style_excel_worksheet(writer.book["ORDER"])
-        except Exception:
-            pass
-        try:
-            ws = writer.book["ORDER"]
-            headers = [cell.value for cell in ws[1]]
-            for idx, header in enumerate(headers, start=1):
+            style_excel_worksheet(ws)
+            for idx, cell in enumerate(ws[1], start=1):
+                header = str(cell.value or "")
                 if header in ["Unit Price", "Final Unit Price", "Line Total", "Effective Discount %"]:
-                    for cell in ws.iter_cols(min_col=idx, max_col=idx, min_row=2):
-                        for c in cell:
+                    for column_cells in ws.iter_cols(min_col=idx, max_col=idx, min_row=2):
+                        for c in column_cells:
                             c.number_format = "#,##0.00"
-                elif header in ["Requested Quantity", "Quantity", "Package Multiple", "Rounding Qty", "Manual Rounding Qty", "Source Pallet Qty", "Total Weight", "Weight per Unit"]:
-                    for cell in ws.iter_cols(min_col=idx, max_col=idx, min_row=2):
-                        for c in cell:
+                elif header in [
+                    "Requested Quantity", "Quantity", "Manual Rounding Qty", "Source Pallet Qty",
+                    "Package Text Rounding Qty", "Rounding Qty", "Weight per Unit", "Total Weight",
+                ]:
+                    for column_cells in ws.iter_cols(min_col=idx, max_col=idx, min_row=2):
+                        for c in column_cells:
                             c.number_format = "#,##0.000"
         except Exception:
             pass
+
         if summary_df is not None and not summary_df.empty:
             summary_df.to_excel(writer, index=False, sheet_name="SUMMARY")
             try:
                 style_excel_worksheet(writer.book["SUMMARY"])
             except Exception:
                 pass
+
     output.seek(0)
     return output.getvalue()
+
+
+def _orders_blank_template(default_rows=15):
+    return pd.DataFrame({
+        "Delete": [False] * default_rows,
+        "Product": [""] * default_rows,
+        "Quantity": [0.0] * default_rows,
+        "Manual Rounding Qty": [0.0] * default_rows,
+        "Discount 1 %": [0.0] * default_rows,
+        "Discount 2 %": [0.0] * default_rows,
+        "Discount 3 %": [0.0] * default_rows,
+        "Discount 4 %": [0.0] * default_rows,
+        "Discount 5 %": [0.0] * default_rows,
+        "Notes": [""] * default_rows,
+    })
+
+
+def _orders_normalize_editor_df(df, default_rows=15):
+    columns = list(_orders_blank_template(0).columns)
+    if df is None or not isinstance(df, pd.DataFrame):
+        df = _orders_blank_template(default_rows)
+    else:
+        df = df.copy()
+    if df.empty:
+        df = _orders_blank_template(default_rows)
+    for col in columns:
+        if col not in df.columns:
+            if col == "Delete":
+                df[col] = False
+            elif col in ["Product", "Notes"]:
+                df[col] = ""
+            else:
+                df[col] = 0.0
+    df = df[columns]
+    df["Delete"] = df["Delete"].fillna(False).astype(bool)
+    return df
 
 
 def render_admin_orders():
@@ -10433,13 +10528,13 @@ def render_admin_orders():
 
     top_c1, top_c2 = st.columns([1, 2])
     with top_c1:
-        selected_company_label = st.selectbox("Company", list(company_options.keys()), key="orders_company_select")
+        selected_company_label = st.selectbox("Company", list(company_options.keys()), key="orders_company_select_v6")
     selected_company_code = company_options[selected_company_label]
     source_candidates = _admin_order_source_candidates(selected_company_code)
 
     with top_c2:
         if source_candidates:
-            selected_source_label = st.selectbox("Source file", [x["label"] for x in source_candidates], key="orders_source_file_select")
+            selected_source_label = st.selectbox("Source file", [x["label"] for x in source_candidates], key="orders_source_file_select_v6")
             selected_source = next(x for x in source_candidates if x["label"] == selected_source_label)
         else:
             selected_source = None
@@ -10450,7 +10545,7 @@ def render_admin_orders():
         return
 
     source_path = Path(selected_source["path"])
-    catalog_df, weight_available, weight_col_name, pallet_qty_col_name = _load_order_catalog_from_file(str(source_path), source_path.stat().st_mtime)
+    catalog_df, weight_available, weight_col_name, rounding_available, pallet_qty_col_name = _load_order_catalog_from_file(str(source_path), source_path.stat().st_mtime)
 
     if catalog_df.empty:
         st.error("The selected Source file could not be read or has no products.")
@@ -10460,7 +10555,7 @@ def render_admin_orders():
     metric_c1, metric_c2, metric_c3, metric_c4 = st.columns(4)
     metric_c1.metric("Products", len(catalog_df))
     metric_c2.metric("Weight", "Available" if weight_available else "Not available")
-    metric_c3.metric("Pallet rounding", "Available" if pallet_qty_col_name else "Manual / package text")
+    metric_c3.metric("Pallet rounding", "Available" if rounding_available else "Manual only")
     metric_c4.metric("Source", source_path.name)
     if not weight_available:
         st.info("This Source file has no weight column, so weight fields are not available for this order.")
@@ -10468,41 +10563,32 @@ def render_admin_orders():
         st.caption(f"Weight column detected: {weight_col_name}")
     if pallet_qty_col_name:
         st.caption(f"Pallet/rounding quantity column detected: {pallet_qty_col_name}")
+    elif rounding_available:
+        st.caption("Pallet/rounding quantity is being read from package text, e.g. '24 τμχ./παλ.'.")
 
-    default_rows = 15
-    template_df = pd.DataFrame({
-        "Delete": [False] * default_rows,
-        "Product": [""] * default_rows,
-        "Quantity": [0.0] * default_rows,
-        "Manual Rounding Qty": [0.0] * default_rows,
-        "Discount 1 %": [0.0] * default_rows,
-        "Discount 2 %": [0.0] * default_rows,
-        "Discount 3 %": [0.0] * default_rows,
-        "Discount 4 %": [0.0] * default_rows,
-        "Discount 5 %": [0.0] * default_rows,
-        "Notes": [""] * default_rows,
-    })
+    base_key = f"orders_v6_{selected_company_code}_{source_path.name}_{int(source_path.stat().st_mtime)}"
+    data_key = f"{base_key}_data"
+    version_key = f"{base_key}_version"
+    if version_key not in st.session_state:
+        st.session_state[version_key] = 0
+    if data_key not in st.session_state:
+        st.session_state[data_key] = _orders_blank_template(15)
 
-    editor_seed_key = f"orders_input_rows_v5_{selected_company_code}_{source_path.name}_{int(source_path.stat().st_mtime)}"
-    editor_version_key = f"orders_editor_version_v5_{selected_company_code}_{source_path.name}_{int(source_path.stat().st_mtime)}"
-    if editor_seed_key not in st.session_state:
-        st.session_state[editor_seed_key] = template_df.copy()
-    if editor_version_key not in st.session_state:
-        st.session_state[editor_version_key] = 0
+    editor_df = _orders_normalize_editor_df(st.session_state[data_key], 15)
 
     st.markdown("### Order lines")
-    st.caption("Select one product per row, add quantity, optionally override the pallet/rounding quantity manually, and fill up to 5 discounts per item. Tick Delete and press the button to remove selected rows.")
+    st.caption("Select one product per row, add quantity, optionally override pallet/rounding quantity manually, and fill up to 5 discounts per item. Tick Delete and press the button to remove selected rows.")
     edited_order_df = st.data_editor(
-        st.session_state[editor_seed_key],
-        key=f"orders_editor_v5_{selected_company_code}_{source_path.name}_{int(source_path.stat().st_mtime)}_{st.session_state[editor_version_key]}",
+        editor_df,
+        key=f"{base_key}_editor_{st.session_state[version_key]}",
         num_rows="dynamic",
         use_container_width=True,
         hide_index=False,
         column_config={
-            "Delete": st.column_config.CheckboxColumn("Delete", help="Tick rows here, then press Delete selected lines.", default=False),
+            "Delete": st.column_config.CheckboxColumn("Delete", help="Tick rows and press Delete selected lines."),
             "Product": st.column_config.SelectboxColumn("Product", options=[""] + catalog_df["DISPLAY"].astype(str).tolist(), required=False, width="large"),
             "Quantity": st.column_config.NumberColumn("Quantity", min_value=0.0, step=1.0, format="%.3f"),
-            "Manual Rounding Qty": st.column_config.NumberColumn("Manual Rounding Qty", help="Optional. If > 0, this overrides pallet rounding from the Source file.", min_value=0.0, step=1.0, format="%.3f"),
+            "Manual Rounding Qty": st.column_config.NumberColumn("Manual Rounding Qty", help="Optional. If > 0, this overrides pallet/source rounding for this line.", min_value=0.0, step=1.0, format="%.3f"),
             "Discount 1 %": st.column_config.NumberColumn("Discount 1 %", min_value=0.0, max_value=100.0, step=0.5, format="%.2f"),
             "Discount 2 %": st.column_config.NumberColumn("Discount 2 %", min_value=0.0, max_value=100.0, step=0.5, format="%.2f"),
             "Discount 3 %": st.column_config.NumberColumn("Discount 3 %", min_value=0.0, max_value=100.0, step=0.5, format="%.2f"),
@@ -10511,30 +10597,23 @@ def render_admin_orders():
             "Notes": st.column_config.TextColumn("Notes", width="medium"),
         },
     )
+    edited_order_df = _orders_normalize_editor_df(edited_order_df, 1)
+    st.session_state[data_key] = edited_order_df
 
-    delete_count = 0
-    if edited_order_df is not None and not edited_order_df.empty and "Delete" in edited_order_df.columns:
-        try:
-            delete_count = int(edited_order_df["Delete"].fillna(False).astype(bool).sum())
-        except Exception:
-            delete_count = 0
-
-    if st.button(
-        f"Delete selected lines" + (f" ({delete_count})" if delete_count else ""),
-        key=f"orders_delete_selected_{selected_company_code}_{source_path.name}_{int(source_path.stat().st_mtime)}",
-        disabled=delete_count == 0,
-        use_container_width=False,
-    ):
-        cleaned_df = edited_order_df.copy()
-        cleaned_df = cleaned_df[~cleaned_df.get("Delete", False).fillna(False).astype(bool)].copy()
-        cleaned_df["Delete"] = False
-        cleaned_df = cleaned_df.reset_index(drop=True)
-        if len(cleaned_df) < default_rows:
-            missing_rows = default_rows - len(cleaned_df)
-            cleaned_df = pd.concat([cleaned_df, template_df.head(missing_rows)], ignore_index=True)
-        st.session_state[editor_seed_key] = cleaned_df
-        st.session_state[editor_version_key] += 1
-        st.rerun()
+    selected_for_delete = edited_order_df[edited_order_df["Delete"] == True]
+    delete_label = f"Delete selected lines ({len(selected_for_delete)})" if len(selected_for_delete) else "Delete selected lines"
+    if st.button(delete_label, key=f"{base_key}_delete_button"):
+        if len(selected_for_delete):
+            kept_df = edited_order_df[edited_order_df["Delete"] != True].copy().reset_index(drop=True)
+            if kept_df.empty:
+                kept_df = _orders_blank_template(15)
+            else:
+                kept_df["Delete"] = False
+            st.session_state[data_key] = _orders_normalize_editor_df(kept_df, 15)
+            st.session_state[version_key] += 1
+            st.rerun()
+        else:
+            st.info("Tick one or more rows in the Delete column first.")
 
     order_output_df = _build_order_output(edited_order_df, catalog_df, selected_company_code, str(source_path), weight_available)
 
@@ -10542,8 +10621,16 @@ def render_admin_orders():
     if order_output_df.empty:
         st.caption("No valid order lines yet. Choose products and quantities above.")
     else:
+        order_display_columns = [
+            "Line", "Company", "SAP", "Product", "Requested Quantity", "Quantity", "MM", "Package",
+            "Manual Rounding Qty", "Source Pallet Qty", "Package Text Rounding Qty", "Rounding Qty",
+            "Rounding Units", "Rounding Source", "Rounded to Package", "Category", "Unit Price",
+            "Discounts", "Effective Discount %", "Final Unit Price", "Line Total",
+            "Weight per Unit", "Total Weight", "Notes", "Source File",
+        ]
+        order_display_df = order_output_df[[col for col in order_display_columns if col in order_output_df.columns]]
         st.dataframe(
-            order_output_df,
+            order_display_df,
             use_container_width=True,
             hide_index=True,
             column_config={
@@ -10551,26 +10638,17 @@ def render_admin_orders():
                 "Quantity": st.column_config.NumberColumn("Quantity", format="%.3f"),
                 "Manual Rounding Qty": st.column_config.NumberColumn("Manual Rounding Qty", format="%.3f"),
                 "Source Pallet Qty": st.column_config.NumberColumn("Source Pallet Qty", format="%.3f"),
+                "Package Text Rounding Qty": st.column_config.NumberColumn("Package Text Rounding Qty", format="%.3f"),
                 "Rounding Qty": st.column_config.NumberColumn("Rounding Qty", format="%.3f"),
-                "Package Multiple": st.column_config.NumberColumn("Package Multiple", format="%.3f"),
                 "Unit Price": st.column_config.NumberColumn("Unit Price", format="%.2f"),
-                "Discount 1 %": st.column_config.NumberColumn("Discount 1 %", format="%.2f"),
-                "Discount 2 %": st.column_config.NumberColumn("Discount 2 %", format="%.2f"),
-                "Discount 3 %": st.column_config.NumberColumn("Discount 3 %", format="%.2f"),
-                "Discount 4 %": st.column_config.NumberColumn("Discount 4 %", format="%.2f"),
-                "Discount 5 %": st.column_config.NumberColumn("Discount 5 %", format="%.2f"),
                 "Effective Discount %": st.column_config.NumberColumn("Effective Discount %", format="%.2f"),
                 "Final Unit Price": st.column_config.NumberColumn("Final Unit Price", format="%.2f"),
                 "Line Total": st.column_config.NumberColumn("Line Total", format="%.2f"),
             },
         )
-        net_value = round(pd.to_numeric(order_output_df["Line Total"], errors="coerce").fillna(0).sum(), 2)
-        summary_data = {
-            "Metric": ["Net Value"],
-            "Value": [net_value],
-        }
-        summary_df = pd.DataFrame(summary_data)
 
+        net_value = round(pd.to_numeric(order_output_df["Line Total"], errors="coerce").fillna(0).sum(), 2)
+        summary_df = pd.DataFrame({"Metric": ["Net Value"], "Value": [net_value]})
         st.metric("Net Value", f"{net_value:,.2f}")
 
         st.markdown("### Excel report fields")
@@ -10580,7 +10658,7 @@ def render_admin_orders():
             "Fields to include",
             options=available_report_columns,
             default=default_report_columns,
-            key=f"orders_excel_fields_{selected_company_code}_{source_path.name}_{int(source_path.stat().st_mtime)}",
+            key=f"orders_excel_fields_v6_{selected_company_code}_{source_path.name}_{int(source_path.stat().st_mtime)}",
         )
 
         if not selected_report_columns:
@@ -10591,7 +10669,7 @@ def render_admin_orders():
                 data=_orders_dataframe_to_excel_bytes(order_output_df, summary_df, selected_report_columns),
                 file_name=f"order_{selected_company_code}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="orders_download_excel",
+                key=f"orders_download_excel_v6_{selected_company_code}_{source_path.name}",
                 use_container_width=True,
             )
 
