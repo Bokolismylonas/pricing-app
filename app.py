@@ -10054,11 +10054,10 @@ def render_admin_panel():
     st.markdown("</div>", unsafe_allow_html=True)
 
 
-
 # -------------------------------------------------
 # ADMIN ORDERS
 # -------------------------------------------------
-ORDERS_MODULE_VERSION = "Orders v7.0 - verified: stable order editor / pallet parsing / manual rounding / row delete / Net Value only / 5 discounts"
+ORDERS_MODULE_VERSION = "Orders v8.0 - verified: stable editor / pallet & manual rounding / row delete / manual net price / Net Value only / 5 discounts"
 
 
 def _order_safe_float(value, default=0.0):
@@ -10162,7 +10161,6 @@ def _order_parse_pallet_qty_from_text(value):
             if qty > 0:
                 return qty
 
-    # Fallback: if pallet keyword exists, use the last positive number before the pallet word.
     pallet_match = re.search(pallet, text, flags=re.I)
     if pallet_match:
         before = text[:pallet_match.start()]
@@ -10172,6 +10170,7 @@ def _order_parse_pallet_qty_from_text(value):
             if qty > 0:
                 return qty
     return None
+
 
 def _order_round_quantity_to_rounding_qty(requested_qty, rounding_qty):
     requested_qty = _order_safe_float(requested_qty, 0.0)
@@ -10372,7 +10371,14 @@ def _build_order_output(order_input_df: pd.DataFrame, catalog_df: pd.DataFrame, 
         rounded_qty, resolved_rounding_qty, rounding_units, rounded_to_rounding_qty = _order_round_quantity_to_rounding_qty(requested_qty, rounding_qty)
         unit_price = _order_safe_float(item.get("Unit Price", 0), 0.0)
         discounts = _order_collect_discounts(row)
-        final_unit_price = _order_apply_discounts(unit_price, discounts)
+        discounted_unit_price = _order_apply_discounts(unit_price, discounts)
+        manual_net_price = _order_safe_float(row.get("Manual Net Price", 0), 0.0)
+        if manual_net_price > 0:
+            final_unit_price = round(manual_net_price, 2)
+            price_source = "Manual Net Price"
+        else:
+            final_unit_price = discounted_unit_price
+            price_source = "Discounts"
         effective_discount_pct = _order_effective_discount_pct(unit_price, final_unit_price)
         line_total = round(rounded_qty * final_unit_price, 2)
         weight_per_unit = item.get("Weight") if weight_available else pd.NA
@@ -10401,6 +10407,9 @@ def _build_order_output(order_input_df: pd.DataFrame, catalog_df: pd.DataFrame, 
             "Discount 4 %": discounts[3],
             "Discount 5 %": discounts[4],
             "Discounts": _order_format_discounts(discounts),
+            "Discounted Unit Price": discounted_unit_price,
+            "Manual Net Price": round(manual_net_price, 2) if manual_net_price > 0 else "",
+            "Price Source": price_source,
             "Effective Discount %": effective_discount_pct,
             "Final Unit Price": final_unit_price,
             "Line Total": line_total,
@@ -10423,8 +10432,8 @@ def _order_excel_report_columns(order_df: pd.DataFrame):
     preferred_default_columns = [
         "Line", "Company", "SAP", "Product", "Requested Quantity", "Quantity", "MM",
         "Package", "Rounding Qty", "Rounding Units", "Rounding Source", "Rounded to Rounding Qty",
-        "Category", "Unit Price", "Discounts", "Effective Discount %", "Final Unit Price", "Line Total",
-        "Weight per Unit", "Total Weight", "Notes", "Source File",
+        "Category", "Unit Price", "Discounts", "Discounted Unit Price", "Manual Net Price", "Price Source",
+        "Effective Discount %", "Final Unit Price", "Line Total", "Weight per Unit", "Total Weight", "Notes", "Source File",
     ]
     default_columns = [col for col in preferred_default_columns if col in available_columns]
     if not default_columns:
@@ -10447,7 +10456,7 @@ def _orders_dataframe_to_excel_bytes(order_df: pd.DataFrame, summary_df: pd.Data
             style_excel_worksheet(ws)
             for idx, cell in enumerate(ws[1], start=1):
                 header = str(cell.value or "")
-                if header in ["Unit Price", "Final Unit Price", "Line Total"]:
+                if header in ["Unit Price", "Discounted Unit Price", "Manual Net Price", "Final Unit Price", "Line Total"]:
                     for column_cells in ws.iter_cols(min_col=idx, max_col=idx, min_row=2):
                         for c in column_cells:
                             c.number_format = "#,##0.00"
@@ -10478,6 +10487,7 @@ def _orders_blank_template(default_rows=15):
         "Discount 3 %": [0.0] * default_rows,
         "Discount 4 %": [0.0] * default_rows,
         "Discount 5 %": [0.0] * default_rows,
+        "Manual Net Price": [0.0] * default_rows,
         "Notes": [""] * default_rows,
     })
 
@@ -10500,7 +10510,7 @@ def _orders_normalize_editor_df(df, default_rows=15):
                 df[col] = 0.0
     df = df[columns]
     df["Delete"] = df["Delete"].fillna(False).astype(bool)
-    for numeric_col in ["Quantity", "Manual Rounding Qty", "Discount 1 %", "Discount 2 %", "Discount 3 %", "Discount 4 %", "Discount 5 %"]:
+    for numeric_col in ["Quantity", "Manual Rounding Qty", "Discount 1 %", "Discount 2 %", "Discount 3 %", "Discount 4 %", "Discount 5 %", "Manual Net Price"]:
         df[numeric_col] = pd.to_numeric(df[numeric_col], errors="coerce").fillna(0.0)
     df["Product"] = df["Product"].fillna("").astype(str)
     df["Notes"] = df["Notes"].fillna("").astype(str)
@@ -10525,13 +10535,13 @@ def render_admin_orders():
 
     top_c1, top_c2 = st.columns([1, 2])
     with top_c1:
-        selected_company_label = st.selectbox("Company", list(company_options.keys()), key="orders_company_select_v7")
+        selected_company_label = st.selectbox("Company", list(company_options.keys()), key="orders_company_select_v8")
     selected_company_code = company_options[selected_company_label]
     source_candidates = _admin_order_source_candidates(selected_company_code)
 
     with top_c2:
         if source_candidates:
-            selected_source_label = st.selectbox("Source file", [x["label"] for x in source_candidates], key="orders_source_file_select_v7")
+            selected_source_label = st.selectbox("Source file", [x["label"] for x in source_candidates], key="orders_source_file_select_v8")
             selected_source = next(x for x in source_candidates if x["label"] == selected_source_label)
         else:
             selected_source = None
@@ -10565,7 +10575,7 @@ def render_admin_orders():
 
     default_rows = 15
     template_df = _orders_blank_template(default_rows)
-    base_key = f"orders_v7_{selected_company_code}_{source_path.name}_{int(source_path.stat().st_mtime)}"
+    base_key = f"orders_v8_{selected_company_code}_{source_path.name}_{int(source_path.stat().st_mtime)}"
     data_key = f"{base_key}_data"
     version_key = f"{base_key}_version"
     if version_key not in st.session_state:
@@ -10577,7 +10587,9 @@ def render_admin_orders():
     st.markdown("### Order lines")
     st.caption(
         "Select one product per row, add quantity, optionally override pallet/rounding quantity manually, "
-        "and fill up to 5 discounts per item. Press Update order when you finish editing; this prevents the grid from rerunning and resetting while you type."
+        "fill up to 5 discounts per item, and optionally enter Manual Net Price. "
+        "If Manual Net Price is > 0, it overrides the discounted price. "
+        "Press Update order when you finish editing; this prevents the grid from rerunning and resetting while you type."
     )
 
     with st.form(key=f"{base_key}_form", clear_on_submit=False):
@@ -10597,6 +10609,7 @@ def render_admin_orders():
                 "Discount 3 %": st.column_config.NumberColumn("Discount 3 %", min_value=0.0, max_value=100.0, step=0.5, format="%.2f"),
                 "Discount 4 %": st.column_config.NumberColumn("Discount 4 %", min_value=0.0, max_value=100.0, step=0.5, format="%.2f"),
                 "Discount 5 %": st.column_config.NumberColumn("Discount 5 %", min_value=0.0, max_value=100.0, step=0.5, format="%.2f"),
+                "Manual Net Price": st.column_config.NumberColumn("Manual Net Price", help="Optional fixed net unit price. If > 0, it overrides the discounted price for this line.", min_value=0.0, step=0.01, format="%.2f"),
                 "Notes": st.column_config.TextColumn("Notes", width="medium"),
             },
         )
@@ -10638,8 +10651,8 @@ def render_admin_orders():
         order_display_columns = [
             "Line", "Company", "SAP", "Product", "Requested Quantity", "Quantity", "MM", "Package",
             "Source Rounding Qty", "Manual Rounding Qty", "Rounding Qty", "Rounding Units", "Rounding Source", "Rounded to Rounding Qty",
-            "Category", "Unit Price", "Discounts", "Effective Discount %", "Final Unit Price", "Line Total",
-            "Weight per Unit", "Total Weight", "Notes", "Source File",
+            "Category", "Unit Price", "Discounts", "Discounted Unit Price", "Manual Net Price", "Price Source",
+            "Effective Discount %", "Final Unit Price", "Line Total", "Weight per Unit", "Total Weight", "Notes", "Source File",
         ]
         order_display_df = order_output_df[[col for col in order_display_columns if col in order_output_df.columns]]
         st.dataframe(
@@ -10653,6 +10666,8 @@ def render_admin_orders():
                 "Manual Rounding Qty": st.column_config.NumberColumn("Manual Rounding Qty", format="%.3f"),
                 "Rounding Qty": st.column_config.NumberColumn("Rounding Qty", format="%.3f"),
                 "Unit Price": st.column_config.NumberColumn("Unit Price", format="%.2f"),
+                "Discounted Unit Price": st.column_config.NumberColumn("Discounted Unit Price", format="%.2f"),
+                "Manual Net Price": st.column_config.NumberColumn("Manual Net Price", format="%.2f"),
                 "Effective Discount %": st.column_config.NumberColumn("Effective Discount %", format="%.2f"),
                 "Final Unit Price": st.column_config.NumberColumn("Final Unit Price", format="%.2f"),
                 "Line Total": st.column_config.NumberColumn("Line Total", format="%.2f"),
@@ -10669,7 +10684,7 @@ def render_admin_orders():
             "Fields to include",
             options=available_report_columns,
             default=default_report_columns,
-            key=f"orders_excel_fields_v7_{selected_company_code}_{source_path.name}_{int(source_path.stat().st_mtime)}",
+            key=f"orders_excel_fields_v8_{selected_company_code}_{source_path.name}_{int(source_path.stat().st_mtime)}",
         )
 
         if not selected_report_columns:
@@ -10680,12 +10695,11 @@ def render_admin_orders():
                 data=_orders_dataframe_to_excel_bytes(order_output_df, summary_df, selected_report_columns),
                 file_name=f"order_{selected_company_code}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key=f"orders_download_excel_v7_{selected_company_code}_{source_path.name}",
+                key=f"orders_download_excel_v8_{selected_company_code}_{source_path.name}",
                 use_container_width=True,
             )
 
     st.markdown("</div>", unsafe_allow_html=True)
-
 
 # -------------------------------------------------
 # RENDER CURRENT VIEW
