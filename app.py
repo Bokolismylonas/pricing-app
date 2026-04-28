@@ -10057,7 +10057,7 @@ def render_admin_panel():
 # -------------------------------------------------
 # ADMIN ORDERS
 # -------------------------------------------------
-ORDERS_MODULE_VERSION = "Orders v8.0 - verified: stable editor / pallet & manual rounding / row delete / manual net price / Net Value only / 5 discounts"
+ORDERS_MODULE_VERSION = "Orders v9.0 - verified: saved orders / load-edit / save as / cancel / stable editor / manual net price"
 
 
 def _order_safe_float(value, default=0.0):
@@ -10517,6 +10517,191 @@ def _orders_normalize_editor_df(df, default_rows=15):
     return df
 
 
+ORDERS_SAVED_FILE = ADMIN_DIR / "saved_orders.json"
+
+
+def _orders_json_safe_value(value):
+    try:
+        if value is None:
+            return ""
+        if pd.isna(value):
+            return ""
+    except Exception:
+        pass
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, (bool, int, float, str)):
+        return value
+    try:
+        return float(value)
+    except Exception:
+        return str(value)
+
+
+def _orders_load_saved_orders():
+    if not ORDERS_SAVED_FILE.exists():
+        return []
+    try:
+        data = json.loads(ORDERS_SAVED_FILE.read_text(encoding="utf-8"))
+        if not isinstance(data, list):
+            return []
+        for row in data:
+            if isinstance(row, dict):
+                row.setdefault("id", str(uuid.uuid4()))
+                row.setdefault("name", "Untitled order")
+                row.setdefault("created_at", now_iso())
+                row.setdefault("updated_at", row.get("created_at", now_iso()))
+                row.setdefault("lines", [])
+        return sorted([r for r in data if isinstance(r, dict)], key=lambda r: str(r.get("updated_at", "")), reverse=True)
+    except Exception:
+        return []
+
+
+def _orders_save_saved_orders(records):
+    ORDERS_SAVED_FILE.parent.mkdir(parents=True, exist_ok=True)
+    clean_records = [r for r in records if isinstance(r, dict)]
+    ORDERS_SAVED_FILE.write_text(json.dumps(clean_records, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+
+
+def _orders_saved_order_label(record):
+    name = str(record.get("name") or "Untitled order").strip()
+    company = str(record.get("company_code") or "-").strip()
+    source = str(record.get("source_filename") or "").strip()
+    updated = str(record.get("updated_at") or "").replace("T", " ")[:16]
+    try:
+        net_value = float(record.get("net_value", 0) or 0)
+        net_text = f"€{net_value:,.2f}"
+    except Exception:
+        net_text = "€0.00"
+    return f"{name} • {company} • {net_text} • {source} • {updated}"
+
+
+def _orders_meaningful_editor_rows(df):
+    df = _orders_normalize_editor_df(df, 0).copy()
+    if df.empty:
+        return df
+    numeric_cols = ["Quantity", "Manual Rounding Qty", "Discount 1 %", "Discount 2 %", "Discount 3 %", "Discount 4 %", "Discount 5 %", "Manual Net Price"]
+    mask = df["Product"].astype(str).str.strip().ne("")
+    for col in numeric_cols:
+        mask = mask | (pd.to_numeric(df[col], errors="coerce").fillna(0.0) != 0)
+    mask = mask | df["Notes"].astype(str).str.strip().ne("")
+    out = df[mask].copy()
+    if "Delete" in out.columns:
+        out["Delete"] = False
+    return out.reset_index(drop=True)
+
+
+def _orders_editor_rows_to_json_records(df):
+    out = []
+    meaningful = _orders_meaningful_editor_rows(df)
+    for row in meaningful.to_dict("records"):
+        out.append({str(k): _orders_json_safe_value(v) for k, v in row.items()})
+    return out
+
+
+def _orders_record_to_editor_df(record, default_rows=15):
+    rows = record.get("lines", []) if isinstance(record, dict) else []
+    if not isinstance(rows, list):
+        rows = []
+    try:
+        df = pd.DataFrame(rows)
+    except Exception:
+        df = _orders_blank_template(default_rows)
+    return _orders_normalize_editor_df(df, default_rows)
+
+
+def _orders_find_record(records, record_id):
+    record_id = str(record_id or "")
+    for record in records:
+        if str(record.get("id", "")) == record_id:
+            return record
+    return None
+
+
+def _orders_find_company_label_by_code(company_options, company_code):
+    target = str(company_code or "").strip()
+    for label, code in company_options.items():
+        if str(code).strip() == target:
+            return label
+    return None
+
+
+def _orders_find_source_candidate_for_record(record, source_candidates):
+    if not isinstance(record, dict) or not source_candidates:
+        return None
+    saved_path = str(record.get("source_path") or "").strip()
+    saved_filename = str(record.get("source_filename") or record.get("source_file") or "").strip()
+    if saved_path:
+        for candidate in source_candidates:
+            try:
+                if str(Path(candidate.get("path", "")).resolve()) == str(Path(saved_path).resolve()):
+                    return candidate
+            except Exception:
+                if str(candidate.get("path", "")) == saved_path:
+                    return candidate
+    if saved_filename:
+        for candidate in source_candidates:
+            if str(candidate.get("filename", "")).strip() == saved_filename:
+                return candidate
+    return None
+
+
+def _orders_build_saved_order_record(order_df, output_df, *, name, company_code, company_label, source_path, existing_record=None):
+    existing_record = existing_record or {}
+    now_value = now_iso()
+    source_path = Path(source_path)
+    lines = _orders_editor_rows_to_json_records(order_df)
+    net_value = 0.0
+    line_count = 0
+    try:
+        if output_df is not None and not output_df.empty:
+            net_value = round(pd.to_numeric(output_df["Line Total"], errors="coerce").fillna(0).sum(), 2)
+            line_count = int(len(output_df))
+    except Exception:
+        net_value = 0.0
+        line_count = 0
+    return {
+        "id": str(existing_record.get("id") or uuid.uuid4()),
+        "name": str(name or existing_record.get("name") or "Untitled order").strip(),
+        "company_code": str(company_code or "").strip(),
+        "company_label": str(company_label or "").strip(),
+        "source_path": str(source_path),
+        "source_filename": source_path.name,
+        "source_mtime": source_path.stat().st_mtime if source_path.exists() else None,
+        "lines": lines,
+        "net_value": net_value,
+        "line_count": line_count,
+        "created_at": existing_record.get("created_at") or now_value,
+        "updated_at": now_value,
+        "created_by": existing_record.get("created_by") or get_current_user_email(),
+        "updated_by": get_current_user_email(),
+    }
+
+
+def _orders_upsert_saved_record(record):
+    records = _orders_load_saved_orders()
+    rid = str(record.get("id") or "")
+    updated = False
+    for idx, existing in enumerate(records):
+        if str(existing.get("id", "")) == rid:
+            records[idx] = record
+            updated = True
+            break
+    if not updated:
+        records.append(record)
+    _orders_save_saved_orders(sorted(records, key=lambda r: str(r.get("updated_at", "")), reverse=True))
+    return record
+
+
+def _orders_delete_saved_record(record_id):
+    records = _orders_load_saved_orders()
+    remaining = [record for record in records if str(record.get("id", "")) != str(record_id or "")]
+    _orders_save_saved_orders(remaining)
+    return len(records) != len(remaining)
+
+
 def render_admin_orders():
     if not is_admin_user():
         st.warning("Orders is available only for Admin users.")
@@ -10533,15 +10718,74 @@ def render_admin_orders():
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
+    saved_records = _orders_load_saved_orders()
+    pending_load = st.session_state.pop("orders_pending_load_record", None)
+    if pending_load:
+        st.session_state["orders_loaded_order_record"] = pending_load
+        st.session_state["orders_loaded_editor_signature"] = ""
+        loaded_company_label = _orders_find_company_label_by_code(company_options, pending_load.get("company_code"))
+        if loaded_company_label:
+            st.session_state["orders_company_select_v9"] = loaded_company_label
+        st.toast(f"Loaded order: {pending_load.get('name', 'Untitled order')}")
+
+    loaded_order_record = st.session_state.get("orders_loaded_order_record")
+    flash_message = st.session_state.pop("orders_flash_message", "")
+    if flash_message:
+        st.success(flash_message)
+
+    with st.expander("Saved orders", expanded=bool(saved_records)):
+        if not saved_records:
+            st.caption("No saved orders yet.")
+        else:
+            saved_labels = {_orders_saved_order_label(record): record for record in saved_records}
+            saved_label_options = list(saved_labels.keys())
+            if st.session_state.get("orders_saved_order_select_v9") not in saved_label_options:
+                st.session_state["orders_saved_order_select_v9"] = saved_label_options[0]
+            selected_saved_label = st.selectbox(
+                "Load previous order",
+                saved_label_options,
+                key="orders_saved_order_select_v9",
+            )
+            selected_saved_record = saved_labels.get(selected_saved_label)
+            load_c1, load_c2, load_c3 = st.columns([1, 1, 3])
+            with load_c1:
+                if st.button("Load order", use_container_width=True, key="orders_load_saved_order_v9"):
+                    if selected_saved_record:
+                        st.session_state["orders_pending_load_record"] = selected_saved_record
+                        st.rerun()
+            with load_c2:
+                if st.button("Delete saved", use_container_width=True, key="orders_delete_saved_order_v9"):
+                    if selected_saved_record and _orders_delete_saved_record(selected_saved_record.get("id")):
+                        if loaded_order_record and loaded_order_record.get("id") == selected_saved_record.get("id"):
+                            st.session_state.pop("orders_loaded_order_record", None)
+                            st.session_state.pop("orders_loaded_editor_signature", None)
+                        st.session_state["orders_flash_message"] = "Saved order deleted."
+                        st.rerun()
+            if loaded_order_record:
+                st.info(f"Editing saved order: {loaded_order_record.get('name', 'Untitled order')}")
+
+    company_label_options = list(company_options.keys())
+    if st.session_state.get("orders_company_select_v9") not in company_label_options:
+        st.session_state["orders_company_select_v9"] = company_label_options[0]
+
     top_c1, top_c2 = st.columns([1, 2])
     with top_c1:
-        selected_company_label = st.selectbox("Company", list(company_options.keys()), key="orders_company_select_v8")
+        selected_company_label = st.selectbox("Company", company_label_options, key="orders_company_select_v9")
     selected_company_code = company_options[selected_company_label]
     source_candidates = _admin_order_source_candidates(selected_company_code)
 
+    if loaded_order_record and str(loaded_order_record.get("company_code", "")) == str(selected_company_code):
+        matched_source = _orders_find_source_candidate_for_record(loaded_order_record, source_candidates)
+        if matched_source:
+            st.session_state["orders_source_file_select_v9"] = matched_source["label"]
+
     with top_c2:
         if source_candidates:
-            selected_source_label = st.selectbox("Source file", [x["label"] for x in source_candidates], key="orders_source_file_select_v8")
+            source_labels = [x["label"] for x in source_candidates]
+            current_source_state = st.session_state.get("orders_source_file_select_v9")
+            if current_source_state not in source_labels:
+                st.session_state["orders_source_file_select_v9"] = source_labels[0]
+            selected_source_label = st.selectbox("Source file", source_labels, key="orders_source_file_select_v9")
             selected_source = next(x for x in source_candidates if x["label"] == selected_source_label)
         else:
             selected_source = None
@@ -10575,13 +10819,34 @@ def render_admin_orders():
 
     default_rows = 15
     template_df = _orders_blank_template(default_rows)
-    base_key = f"orders_v8_{selected_company_code}_{source_path.name}_{int(source_path.stat().st_mtime)}"
+    base_key = f"orders_v9_{selected_company_code}_{source_path.name}_{int(source_path.stat().st_mtime)}"
     data_key = f"{base_key}_data"
     version_key = f"{base_key}_version"
+    name_key = f"{base_key}_order_name"
     if version_key not in st.session_state:
         st.session_state[version_key] = 0
     if data_key not in st.session_state:
         st.session_state[data_key] = template_df
+
+    loaded_order_record = st.session_state.get("orders_loaded_order_record")
+    loaded_signature = ""
+    if loaded_order_record:
+        loaded_signature = f"{loaded_order_record.get('id')}::{data_key}"
+        source_match = _orders_find_source_candidate_for_record(loaded_order_record, [selected_source])
+        company_match = str(loaded_order_record.get("company_code", "")) == str(selected_company_code)
+        if company_match and source_match and st.session_state.get("orders_loaded_editor_signature") != loaded_signature:
+            st.session_state[data_key] = _orders_record_to_editor_df(loaded_order_record, default_rows)
+            st.session_state[name_key] = str(loaded_order_record.get("name") or "Untitled order")
+            st.session_state[version_key] += 1
+            st.session_state["orders_loaded_editor_signature"] = loaded_signature
+        elif loaded_order_record and not company_match:
+            st.warning("The loaded order belongs to a different company. Choose its company or cancel the loaded order.")
+        elif loaded_order_record and company_match and not source_match:
+            st.warning("The saved order source file could not be matched. Choose the correct Source file or cancel the loaded order.")
+
+    if name_key not in st.session_state:
+        st.session_state[name_key] = f"Order {selected_company_code} {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+
     editor_df = _orders_normalize_editor_df(st.session_state[data_key], default_rows)
 
     st.markdown("### Order lines")
@@ -10589,10 +10854,21 @@ def render_admin_orders():
         "Select one product per row, add quantity, optionally override pallet/rounding quantity manually, "
         "fill up to 5 discounts per item, and optionally enter Manual Net Price. "
         "If Manual Net Price is > 0, it overrides the discounted price. "
-        "Press Update order when you finish editing; this prevents the grid from rerunning and resetting while you type."
+        "Press Update order when you finish editing; this prevents the grid from rerunning and resetting while you type. "
+        "Use Save as to create a saved order, Load order to reopen it later, Save changes to update a loaded order, and Cancel to discard the current edit screen."
     )
 
+    update_order_clicked = False
+    delete_order_clicked = False
+    save_as_clicked = False
+    save_changes_clicked = False
+    cancel_clicked = False
+    edited_order_df = editor_df
+    selected_for_delete = pd.DataFrame()
+    order_name_input = st.session_state.get(name_key, "")
+
     with st.form(key=f"{base_key}_form", clear_on_submit=False):
+        order_name_input = st.text_input("Order name", key=name_key)
         edited_order_df = st.data_editor(
             editor_df,
             key=f"{base_key}_editor_{st.session_state[version_key]}",
@@ -10616,16 +10892,34 @@ def render_admin_orders():
         edited_order_df = _orders_normalize_editor_df(edited_order_df, 1)
         selected_for_delete = edited_order_df[edited_order_df["Delete"] == True]
         delete_label = f"Delete selected lines ({len(selected_for_delete)})" if len(selected_for_delete) else "Delete selected lines"
-        action_c1, action_c2, action_c3 = st.columns([1, 1, 3])
+        action_c1, action_c2, action_c3, action_c4, action_c5 = st.columns([1, 1, 1, 1, 1])
         with action_c1:
             update_order_clicked = st.form_submit_button("Update order", use_container_width=True)
         with action_c2:
+            save_as_clicked = st.form_submit_button("Save as", use_container_width=True)
+        with action_c3:
+            if loaded_order_record:
+                save_changes_clicked = st.form_submit_button("Save changes", use_container_width=True)
+            else:
+                st.form_submit_button("Save changes", use_container_width=True, disabled=True)
+        with action_c4:
+            cancel_clicked = st.form_submit_button("Cancel", use_container_width=True)
+        with action_c5:
             delete_order_clicked = st.form_submit_button(delete_label, use_container_width=True)
 
     if update_order_clicked:
         saved_df = edited_order_df.copy()
         saved_df["Delete"] = False
         st.session_state[data_key] = _orders_normalize_editor_df(saved_df, 15)
+        st.rerun()
+
+    if cancel_clicked:
+        st.session_state[data_key] = _orders_blank_template(15)
+        st.session_state[version_key] += 1
+        st.session_state[name_key] = f"Order {selected_company_code} {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        st.session_state.pop("orders_loaded_order_record", None)
+        st.session_state.pop("orders_loaded_editor_signature", None)
+        st.session_state["orders_flash_message"] = "Order edit cancelled."
         st.rerun()
 
     if delete_order_clicked:
@@ -10640,6 +10934,50 @@ def render_admin_orders():
             st.rerun()
         else:
             st.info("Tick one or more rows in the Delete column first.")
+
+    if save_as_clicked or save_changes_clicked:
+        candidate_name = str(order_name_input or "").strip()
+        if not candidate_name:
+            st.warning("Please enter an order name before saving.")
+        else:
+            save_df = edited_order_df.copy()
+            save_df["Delete"] = False
+            save_df = _orders_normalize_editor_df(save_df, 15)
+            save_output_df = _build_order_output(save_df, catalog_df, selected_company_code, str(source_path), weight_available)
+            if save_output_df.empty:
+                st.warning("Add at least one valid product line before saving.")
+            else:
+                if save_changes_clicked and loaded_order_record:
+                    existing = _orders_find_record(_orders_load_saved_orders(), loaded_order_record.get("id")) or loaded_order_record
+                    saved_record = _orders_build_saved_order_record(
+                        save_df,
+                        save_output_df,
+                        name=candidate_name,
+                        company_code=selected_company_code,
+                        company_label=selected_company_label,
+                        source_path=source_path,
+                        existing_record=existing,
+                    )
+                    _orders_upsert_saved_record(saved_record)
+                    st.session_state["orders_loaded_order_record"] = saved_record
+                    st.session_state["orders_flash_message"] = f"Saved changes to order: {candidate_name}"
+                else:
+                    saved_record = _orders_build_saved_order_record(
+                        save_df,
+                        save_output_df,
+                        name=candidate_name,
+                        company_code=selected_company_code,
+                        company_label=selected_company_label,
+                        source_path=source_path,
+                        existing_record=None,
+                    )
+                    _orders_upsert_saved_record(saved_record)
+                    st.session_state["orders_loaded_order_record"] = saved_record
+                    st.session_state["orders_loaded_editor_signature"] = f"{saved_record.get('id')}::{data_key}"
+                    st.session_state["orders_flash_message"] = f"Order saved as: {candidate_name}"
+                st.session_state[data_key] = save_df
+                st.session_state[version_key] += 1
+                st.rerun()
 
     active_order_df = _orders_normalize_editor_df(st.session_state[data_key], 15)
     order_output_df = _build_order_output(active_order_df, catalog_df, selected_company_code, str(source_path), weight_available)
@@ -10684,7 +11022,7 @@ def render_admin_orders():
             "Fields to include",
             options=available_report_columns,
             default=default_report_columns,
-            key=f"orders_excel_fields_v8_{selected_company_code}_{source_path.name}_{int(source_path.stat().st_mtime)}",
+            key=f"orders_excel_fields_v9_{selected_company_code}_{source_path.name}_{int(source_path.stat().st_mtime)}",
         )
 
         if not selected_report_columns:
@@ -10695,7 +11033,7 @@ def render_admin_orders():
                 data=_orders_dataframe_to_excel_bytes(order_output_df, summary_df, selected_report_columns),
                 file_name=f"order_{selected_company_code}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key=f"orders_download_excel_v8_{selected_company_code}_{source_path.name}",
+                key=f"orders_download_excel_v9_{selected_company_code}_{source_path.name}",
                 use_container_width=True,
             )
 
